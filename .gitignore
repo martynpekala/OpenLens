@@ -1,0 +1,12 @@
+.DS_Store
+.vscode/
+.opencode/
+*.derivedData-appstore
+buildServer.json
+.build/
+DerivedData/
+OpenLens.xcodeproj/
+Config/Signing.local.xcconfig
+xcuserdata/
+*.xcbkptlist
+*.xcuserstate

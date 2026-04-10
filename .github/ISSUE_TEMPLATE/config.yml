@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support And Setup Guide
+    url: https://github.com/martynpekala/OpenLens#support-and-community
+    about: Start here for setup guidance, support expectations, and where to ask the right kind of question.
+  - name: Security Reporting
+    url: https://github.com/martynpekala/OpenLens/security/policy
+    about: Read the security policy and use private vulnerability reporting for sensitive issues.
+  - name: Project Roadmap
+    url: https://github.com/martynpekala/OpenLens#roadmap
+    about: Check the current project direction before opening broad feature requests.

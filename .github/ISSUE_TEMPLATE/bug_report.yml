@@ -1,0 +1,88 @@
+name: Bug report
+description: Report a reproducible problem in the app, widget, or bundled tools
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+      placeholder: A short description of the bug.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - iOS app
+        - Live Activity widget
+        - Connection / networking
+        - Chat / sessions
+        - Workspace / review
+        - openlens-qr CLI
+        - App Store Shot Studio
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Tap ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: iPhone 16 Pro, iPhone simulator, Mac model, etc.
+
+  - type: input
+    id: ios
+    attributes:
+      label: OS version
+      placeholder: iOS 26.0, macOS 15.0, etc.
+
+  - type: input
+    id: opencode
+    attributes:
+      label: OpenCode version
+      placeholder: output of `opencode --version`, if relevant
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or context
+      description: Redact passwords, deep links, tokens, and private local network details.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched for existing issues first.
+          required: true
+        - label: I removed sensitive information from logs and screenshots.
+          required: true

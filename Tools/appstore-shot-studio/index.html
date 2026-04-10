@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>App Store Shot Studio</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="controls">
+      <div class="panel panel-brand">
+        <p class="eyebrow">Tool</p>
+        <h1>App Store Shot Studio</h1>
+        <p class="lede">Drop in a device screenshot, choose an App Store preset, add one line of promo text, and export a ready-to-use PNG.</p>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <h2>Source</h2>
+          <button id="resetButton" class="ghost-button" type="button">Reset</button>
+        </div>
+        <label class="dropzone" for="fileInput" id="dropzone">
+          <input id="fileInput" type="file" accept="image/*">
+          <span class="dropzone-title">Drop screenshot here</span>
+          <span class="dropzone-copy">or click to choose a PNG/JPG from your Mac</span>
+          <span class="dropzone-status" id="fileStatus">No file loaded</span>
+        </label>
+      </div>
+
+      <div class="panel two-column-grid">
+        <div>
+          <label for="presetSelect">Preset</label>
+          <select id="presetSelect"></select>
+        </div>
+        <div>
+          <label for="themeSelect">Theme</label>
+          <select id="themeSelect"></select>
+        </div>
+        <div>
+          <label for="fontSelect">Font</label>
+          <select id="fontSelect"></select>
+        </div>
+        <div>
+          <label for="fontWeightSelect">Font weight</label>
+          <select id="fontWeightSelect"></select>
+        </div>
+        <div>
+          <label>Device mockup</label>
+          <input id="deviceMockupInput" type="text" value="iPhone 17 Pro Max 2025" readonly>
+        </div>
+        <div>
+          <label for="textAlignSelect">Text alignment</label>
+          <select id="textAlignSelect">
+            <option value="left">Left</option>
+            <option value="center">Center</option>
+          </select>
+        </div>
+        <div>
+          <label for="templateSelect">Copy template</label>
+          <select id="templateSelect"></select>
+        </div>
+        <div>
+          <label for="filenameInput">Export base name</label>
+          <input id="filenameInput" type="text" maxlength="64" value="openlens-appstore-shot">
+        </div>
+      </div>
+
+      <div class="panel stacked-fields">
+        <div>
+          <label for="headlineInput">Text above mockup</label>
+          <textarea id="headlineInput" rows="3">Stay on top of every coding session.</textarea>
+        </div>
+      </div>
+
+      <div class="panel stacked-fields">
+        <div class="section-head">
+          <h2>Gradient Background</h2>
+          <span class="mini-meta" id="gradientAngleLabel">135°</span>
+        </div>
+        <div class="gradient-grid">
+          <div>
+            <label for="gradientStartInput">Start color</label>
+            <input id="gradientStartInput" class="color-input" type="color" value="#f4ecde">
+          </div>
+          <div>
+            <label for="gradientMiddleInput">Middle color</label>
+            <input id="gradientMiddleInput" class="color-input" type="color" value="#ebe2d2">
+          </div>
+          <div>
+            <label for="gradientEndInput">End color</label>
+            <input id="gradientEndInput" class="color-input" type="color" value="#f9f5ee">
+          </div>
+        </div>
+        <div>
+          <label for="gradientAngleRange">Gradient angle</label>
+          <input id="gradientAngleRange" type="range" min="0" max="360" step="1" value="135">
+        </div>
+      </div>
+
+      <div class="panel slider-grid">
+        <div>
+          <label for="fitModeSelect">Image fit</label>
+          <select id="fitModeSelect">
+            <option value="stretch">Stretch to frame</option>
+            <option value="cover">Cover frame</option>
+            <option value="contain">Contain in frame</option>
+          </select>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button id="fitNowButton" class="ghost-button fit-button" type="button">Fit now</button>
+        </div>
+        <div>
+          <label for="fontSizeRange">Font size</label>
+          <input id="fontSizeRange" type="range" min="0.7" max="1.4" step="0.01" value="1">
+          <span class="mini-meta" id="fontSizeValue">100%</span>
+        </div>
+        <div>
+          <label for="textOffsetYRange">Text vertical position</label>
+          <input id="textOffsetYRange" type="range" min="-220" max="220" step="1" value="0">
+          <span class="mini-meta" id="textOffsetYValue">0 px</span>
+        </div>
+        <div>
+          <label for="zoomRange">Screenshot zoom</label>
+          <input id="zoomRange" type="range" min="0.7" max="1.6" step="0.01" value="1">
+        </div>
+        <div>
+          <label for="offsetXRange">Horizontal position</label>
+          <input id="offsetXRange" type="range" min="-220" max="220" step="1" value="0">
+        </div>
+        <div>
+          <label for="offsetYRange">Vertical position</label>
+          <input id="offsetYRange" type="range" min="-320" max="320" step="1" value="0">
+        </div>
+        <div>
+          <label for="deviceScaleRange">Device size</label>
+          <input id="deviceScaleRange" type="range" min="0.72" max="1.28" step="0.01" value="0.92">
+        </div>
+      </div>
+
+      <div class="panel toggle-grid">
+        <label class="toggle-row" for="autoFitCheckbox">
+          <span>Auto-fit on import</span>
+          <input id="autoFitCheckbox" type="checkbox" checked>
+        </label>
+        <label class="toggle-row" for="gradientOnlyCheckbox">
+          <span>Gradient-only background</span>
+          <input id="gradientOnlyCheckbox" type="checkbox">
+        </label>
+        <label class="toggle-row" for="showFrameCheckbox">
+          <span>Show device mockup</span>
+          <input id="showFrameCheckbox" type="checkbox" checked>
+        </label>
+        <label class="toggle-row" for="showShadowCheckbox">
+          <span>Show device shadow</span>
+          <input id="showShadowCheckbox" type="checkbox" checked>
+        </label>
+        <label class="toggle-row" for="showTextPanelCheckbox">
+          <span>Show top text</span>
+          <input id="showTextPanelCheckbox" type="checkbox" checked>
+        </label>
+      </div>
+
+      <div class="panel action-row">
+        <button id="downloadButton" class="primary-button" type="button">Download PNG</button>
+        <button id="downloadAllButton" class="primary-button secondary-button" type="button">Export All Presets</button>
+        <button id="copySpecButton" class="ghost-button" type="button">Copy Spec</button>
+      </div>
+    </aside>
+
+    <main class="preview-stage">
+      <div class="stage-header">
+        <div>
+          <p class="eyebrow">Preview</p>
+          <h2 id="stageTitle">iPhone 6.9" Portrait</h2>
+        </div>
+        <p id="stageMeta">1320 × 2868</p>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="previewCanvas" width="1320" height="2868"></canvas>
+      </div>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

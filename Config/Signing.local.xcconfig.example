@@ -1,0 +1,7 @@
+// Copy this file to Config/Signing.local.xcconfig and adjust the values for local device builds.
+OPENLENS_DEVELOPMENT_TEAM = ABCDE12345
+OPENLENS_CODE_SIGN_STYLE = Automatic
+OPENLENS_APP_BUNDLE_ID = com.example.OpenLens
+OPENLENS_WIDGET_BUNDLE_ID = com.example.OpenLens.OpenLensActivityWidget
+OPENLENS_TESTS_BUNDLE_ID = com.example.OpenLensTests
+OPENLENS_APP_GROUP = group.com.example.OpenLens
