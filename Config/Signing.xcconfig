@@ -3,6 +3,8 @@ OPENLENS_CODE_SIGN_STYLE = Automatic
 OPENLENS_APP_BUNDLE_ID = dev.openlens.OpenLens
 OPENLENS_WIDGET_BUNDLE_ID = dev.openlens.OpenLens.OpenLensActivityWidget
 OPENLENS_TESTS_BUNDLE_ID = dev.openlens.OpenLensTests
+OPENLENS_WATCH_APP_BUNDLE_ID = dev.openlens.OpenLens.watchkitapp
+OPENLENS_WATCH_EXTENSION_BUNDLE_ID = dev.openlens.OpenLens.watchkitapp.watchkitextension
 OPENLENS_APP_GROUP = group.dev.openlens.shared
 
 #include? "Signing.local.xcconfig"

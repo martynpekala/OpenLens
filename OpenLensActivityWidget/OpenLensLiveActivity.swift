@@ -1,4 +1,5 @@
 import ActivityKit
+import AppIntents
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -107,9 +108,34 @@ struct OpenLensLiveActivity: Widget {
                     }
                 }
 
-                // Expanded bottom — last completed step
+                // Expanded bottom — approve/deny buttons for permission, or last completed step
                 DynamicIslandExpandedRegion(.bottom) {
-                    if let prev = context.state.previousIntent, !context.state.isFinished {
+                    if let pendingUserResponse = context.state.pendingUserResponse,
+                       pendingUserResponse.kind == .permission,
+                       let requestID = pendingUserResponse.requestID {
+                        HStack(spacing: 8) {
+                            Button(intent: DenyPermissionIntent(requestID: requestID)) {
+                                Text("Deny")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.laSecondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 4)
+                                    .background(Color.laTertiary, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+
+                            Button(intent: ApprovePermissionIntent(requestID: requestID)) {
+                                Text("Approve")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.laPrimary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 4)
+                                    .background(Color.laSeparator, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 4)
+                    } else if let prev = context.state.previousIntent, !context.state.isFinished {
                         HStack(spacing: 5) {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 8, weight: .bold))
@@ -204,17 +230,6 @@ struct OpenLensLiveActivity: Widget {
                             Capsule()
                                 .fill(highlighted ? Color.laTertiary : Color.laSeparator.opacity(0.6))
                         )
-                } else {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.laPrimary)
-                            .frame(width: 5, height: 5)
-                            .symbolEffect(.pulse)
-                        Text("OpenCode")
-                            .font(.system(size: 11, design: .rounded))
-                            .foregroundStyle(Color.laSecondary)
-                    }
-                    .transition(.blurReplace)
                 }
             }
             .padding(.horizontal, 14)
@@ -234,12 +249,19 @@ struct OpenLensLiveActivity: Widget {
                     .frame(maxWidth: .infinity)
                     .transition(.blurReplace)
                 } else if let pendingUserResponse {
-                    PendingUserResponseCard(response: pendingUserResponse)
-                        .padding(.horizontal, 14)
-                        .transition(.blurReplace)
+                    if pendingUserResponse.kind == .permission {
+                        PermissionActionCard(response: pendingUserResponse)
+                            .padding(.horizontal, 14)
+                            .transition(.blurReplace)
+                    } else {
+                        PendingUserResponseCard(response: pendingUserResponse)
+                            .padding(.horizontal, 14)
+                            .transition(.blurReplace)
+                    }
                 } else if isInitialState {
                     // Initial state — show user task as bubble
                     Text(context.attributes.userTask)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .font(.system(size: 13, design: .rounded))
                         .foregroundStyle(Color.laPrimary.opacity(0.7))
                         .lineLimit(2)
@@ -250,7 +272,6 @@ struct OpenLensLiveActivity: Widget {
                                 .fill(Color.laSurface)
                                 .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
                         )
-                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 14)
                         .transition(.blurReplace)
                 } else {
@@ -334,7 +355,6 @@ struct IntentCard: View {
                 .font(.system(size: 13, design: .rounded))
                 .foregroundStyle(Color.laPrimary)
                 .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -355,6 +375,62 @@ struct IntentCard: View {
         ))
     }
 }
+
+// MARK: - Permission Action Card (interactive, with Approve/Deny buttons)
+
+struct PermissionActionCard: View {
+    let response: OpenLensActivityAttributes.PendingUserResponse
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.laPrimary)
+                    .frame(width: 16)
+                Text(response.detail)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundStyle(Color.laPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+
+            if let requestID = response.requestID {
+                HStack(spacing: 8) {
+                    Button(intent: DenyPermissionIntent(requestID: requestID)) {
+                        Text("Deny")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.laSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color.laTertiary, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(intent: ApprovePermissionIntent(requestID: requestID)) {
+                        Text("Approve")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.laPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color.laSeparator, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.laSurface)
+                .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+        )
+    }
+}
+
+// MARK: - Pending User Response Card (read-only, for questions)
 
 struct PendingUserResponseCard: View {
     let response: OpenLensActivityAttributes.PendingUserResponse

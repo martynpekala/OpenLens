@@ -34,18 +34,9 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     private var baseURL: URL
     private var authHeader: String?
-    private var shouldReconnect = true
-    private var reconnectDelay: TimeInterval = 2.0
     private var buffer: String = ""
     private var task: URLSessionDataTask?
     private var session: URLSession?
-    private var reconnectWorkItem: DispatchWorkItem?
-
-    // MARK: - Constants
-
-    private static let initialReconnectDelay: TimeInterval = 2.0
-    private static let maxReconnectDelay: TimeInterval = 30.0
-    private static let reconnectBackoffMultiplier: Double = 1.5
 
     // MARK: - Init
 
@@ -67,17 +58,12 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     func connect() {
         queue.async { [self] in
             guard state == .disconnected else { return }
-            shouldReconnect = true
-            reconnectDelay = Self.initialReconnectDelay
             startConnection()
         }
     }
 
     func disconnect() {
         queue.async { [self] in
-            shouldReconnect = false
-            reconnectWorkItem?.cancel()
-            reconnectWorkItem = nil
             cleanupConnection()
             updateState(.disconnected)
         }
@@ -135,7 +121,6 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     ) {
         // Already on `queue` (delegateQueue).
         if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-            reconnectDelay = Self.initialReconnectDelay
             updateState(.connected)
         }
         completionHandler(.allow)
@@ -152,7 +137,6 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         // Already on `queue`.
         cleanupConnection()
         updateState(.disconnected)
-        scheduleReconnect()
     }
 
     // MARK: - SSE Parsing (called on `queue`)
@@ -207,22 +191,6 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return String(afterPrefix.dropFirst())
         }
         return String(afterPrefix)
-    }
-
-    // MARK: - Reconnect (called on `queue`)
-
-    private func scheduleReconnect() {
-        guard shouldReconnect else { return }
-
-        let delay = reconnectDelay
-        reconnectDelay = min(reconnectDelay * Self.reconnectBackoffMultiplier, Self.maxReconnectDelay)
-
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.shouldReconnect else { return }
-            self.startConnection()
-        }
-        reconnectWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     // MARK: - State Management

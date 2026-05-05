@@ -4,4 +4,6 @@ OPENLENS_CODE_SIGN_STYLE = Automatic
 OPENLENS_APP_BUNDLE_ID = com.example.OpenLens
 OPENLENS_WIDGET_BUNDLE_ID = com.example.OpenLens.OpenLensActivityWidget
 OPENLENS_TESTS_BUNDLE_ID = com.example.OpenLensTests
+OPENLENS_WATCH_APP_BUNDLE_ID = com.example.OpenLens.watchkitapp
+OPENLENS_WATCH_EXTENSION_BUNDLE_ID = com.example.OpenLens.watchkitapp.watchkitextension
 OPENLENS_APP_GROUP = group.com.example.OpenLens

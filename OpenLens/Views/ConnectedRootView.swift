@@ -9,20 +9,33 @@ struct ConnectedRootView: View {
         @Bindable var router = router
 
         TabView(selection: $router.selectedTab) {
-            Tab(AppTab.chat.title, systemImage: AppTab.chat.icon, value: .chat) {
+            Tab(value: AppTab.chat) {
                 tabNavigationView(for: .chat)
+            } label: {
+                tabLabel(for: .chat, selectedTab: router.selectedTab)
             }
-            Tab(AppTab.review.title, systemImage: AppTab.review.icon, value: .review) {
+            Tab(value: AppTab.review) {
                 tabNavigationView(for: .review)
+            } label: {
+                tabLabel(for: .review, selectedTab: router.selectedTab)
             }
-            Tab(AppTab.workspace.title, systemImage: AppTab.workspace.icon, value: .workspace) {
+            Tab(value: AppTab.workspace) {
                 tabNavigationView(for: .workspace)
+            } label: {
+                tabLabel(for: .workspace, selectedTab: router.selectedTab)
             }
-            Tab(AppTab.settings.title, systemImage: AppTab.settings.icon, value: .settings, role: .search) {
+            Tab(value: AppTab.settings, role: .search) {
                 tabNavigationView(for: .settings)
+            } label: {
+                tabLabel(for: .settings, selectedTab: router.selectedTab)
             }
         }
         .tint(Color.appPrimary)
+    }
+
+    private func tabLabel(for tab: AppTab, selectedTab: AppTab) -> some View {
+        Label(tab.title, systemImage: tab.icon)
+            .environment(\.symbolVariants, selectedTab == tab ? .fill : .none)
     }
 
     private func tabNavigationView(for tab: AppTab) -> some View {

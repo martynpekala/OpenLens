@@ -109,8 +109,8 @@ targets:
           - "**/*.entitlements"
           - "**/*.md"
           - Assets.xcassets
-    resources:
       - path: OpenLens/Assets.xcassets
+        buildPhase: resources
     dependencies:
       - target: OpenLensActivityWidgetExtension
         embed: true
@@ -126,6 +126,7 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: Info.plist
+        INFOPLIST_KEY_OpenLensAppGroup: $(OPENLENS_APP_GROUP)
         INFOPLIST_KEY_NSSupportsLiveActivities: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
@@ -158,9 +159,10 @@ targets:
           - Info.plist
           - "**/*.entitlements"
           - Assets.xcassets
-      - path: OpenLens/Models/OpenLensActivityAttributes.swift
-    resources:
       - path: OpenLensActivityWidget/Assets.xcassets
+        buildPhase: resources
+      - path: OpenLens/Models/OpenLensActivityAttributes.swift
+      - path: OpenLens/Models/SharedConnectionStore.swift
     settings:
       base:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor

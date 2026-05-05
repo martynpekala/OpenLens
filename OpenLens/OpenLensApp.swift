@@ -1,5 +1,37 @@
 import SwiftUI
 
+private enum ChatPreviewMode: String {
+    case demo
+    case debug
+
+    var script: DemoScript {
+        switch self {
+        case .demo:
+            return .showcase
+        case .debug:
+            return .debugBaseline
+        }
+    }
+
+    var projectName: String {
+        switch self {
+        case .demo:
+            return "openlens-demo"
+        case .debug:
+            return "chat-debug-baseline"
+        }
+    }
+
+    var branch: String {
+        switch self {
+        case .demo:
+            return "tour"
+        case .debug:
+            return "baseline"
+        }
+    }
+}
+
 
 @main
 struct OpenLensApp: App {
@@ -20,10 +52,10 @@ struct OpenLensApp: App {
 
     @State private var chatClient: ChatClient
 
-    /// When true, presents a demo ChatView over the connect screen.
-    @State private var isDemoMode: Bool = false
-    @State private var demoChatClient: ChatClient?
-    @State private var demoConnection: ConnectionManager?
+    /// When non-nil, presents a preview ChatView over the connect screen.
+    @State private var activePreviewMode: ChatPreviewMode?
+    @State private var previewChatClient: ChatClient?
+    @State private var previewConnection: ConnectionManager?
 
     @AppStorage("onboardingCompleted") private var onboardingCompleted: Bool = false
 
@@ -106,7 +138,8 @@ struct OpenLensApp: App {
                         .transition(.opacity)
                 } else {
                     ConnectView(
-                        onStartDemo: startDemo,
+                        onStartDemo: { startPreview(.demo) },
+                        onStartDebug: { startPreview(.debug) },
                         pendingDeepLink: $pendingDeepLink,
                         pendingSessionNavigationID: $pendingSessionNavigationID
                     )
@@ -124,15 +157,15 @@ struct OpenLensApp: App {
             .environment(\.inboxService, inboxService)
             .environment(\.workspaceService, workspaceService)
             .environment(\.sessionInsightsService, sessionInsightsService)
-            .sheet(isPresented: demoPresentationBinding) {
-                if let demoClient = demoChatClient, let demoConn = demoConnection {
+            .sheet(isPresented: previewPresentationBinding) {
+                if let previewClient = previewChatClient, let previewConn = previewConnection {
                     NavigationStack {
-                        ChatView(chatClient: demoClient)
-                            .environment(\.connection, demoConn)
+                        ChatView(chatClient: previewClient)
+                            .environment(\.connection, previewConn)
                             .toolbar {
                                 ToolbarItem(placement: .topBarLeading) {
                                     Button {
-                                        exitDemo()
+                                        exitPreview()
                                     } label: {
                                         Image(systemName: "xmark")
                                     }
@@ -140,9 +173,9 @@ struct OpenLensApp: App {
                             }
                     }
                     .interactiveDismissDisabled(true)
-                    .onChange(of: demoConn.state) { _, newState in
+                    .onChange(of: previewConn.state) { _, newState in
                         if case .disconnected = newState {
-                            exitDemo()
+                            exitPreview()
                         }
                     }
                 }
@@ -150,7 +183,7 @@ struct OpenLensApp: App {
             .onOpenURL { url in
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
-                if connection.isConnected || connection.isReconnecting || isDemoMode {
+                if connection.isConnected || connection.isReconnecting || isPreviewMode {
                     pendingDeepLink = deepLink
                     showDeepLinkSwitch = true
                 } else {
@@ -170,7 +203,7 @@ struct OpenLensApp: App {
                 isPresented: $showDeepLinkSwitch
             ) {
                 Button(AppText.switchAction, role: .destructive) {
-                    if isDemoMode { exitDemo() }
+                    if isPreviewMode { exitPreview() }
                     connection.disconnect()
                     // pendingDeepLink is already set — ConnectView will pick it up
                 }
@@ -184,31 +217,38 @@ struct OpenLensApp: App {
         }
     }
 
-    // MARK: - Demo Mode
+    // MARK: - Preview Modes
 
-    private func startDemo() {
-        let demoConn = ConnectionManager()
-        demoConn.configureDemoState()
-
-        let demoClient = ChatClient(demoMode: true)
-
-        self.demoConnection = demoConn
-        self.demoChatClient = demoClient
-        self.isDemoMode = true
+    private var isPreviewMode: Bool {
+        activePreviewMode != nil
     }
 
-    private func exitDemo() {
-        isDemoMode = false
-        demoChatClient = nil
-        demoConnection = nil
+    private func startPreview(_ mode: ChatPreviewMode) {
+        let previewConn = ConnectionManager()
+        previewConn.configureDemoState(
+            projectName: mode.projectName,
+            branch: mode.branch
+        )
+
+        let previewClient = ChatClient(demoMode: true, script: mode.script)
+
+        self.previewConnection = previewConn
+        self.previewChatClient = previewClient
+        self.activePreviewMode = mode
     }
 
-    private var demoPresentationBinding: Binding<Bool> {
+    private func exitPreview() {
+        activePreviewMode = nil
+        previewChatClient = nil
+        previewConnection = nil
+    }
+
+    private var previewPresentationBinding: Binding<Bool> {
         Binding(
-            get: { isDemoMode && demoChatClient != nil && demoConnection != nil },
+            get: { isPreviewMode && previewChatClient != nil && previewConnection != nil },
             set: { isPresented in
-                if !isPresented, isDemoMode {
-                    exitDemo()
+                if !isPresented, isPreviewMode {
+                    exitPreview()
                 }
             }
         )
@@ -216,9 +256,9 @@ struct OpenLensApp: App {
 
     @MainActor
     private func openDeepLinkedSessionIfNeeded() async {
-        guard !isDemoMode,
-              connection.isConnected,
-              let sessionID = pendingSessionNavigationID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
+        guard !isPreviewMode,
+               connection.isConnected,
+               let sessionID = pendingSessionNavigationID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
             return
         }
 

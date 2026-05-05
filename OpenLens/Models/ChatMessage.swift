@@ -35,7 +35,9 @@ final class ChatMessage: Identifiable {
     let role: OCMessageRole
 
     var content: String {
-        didSet { rebuildDerivedState() }
+        didSet {
+            if !isStreaming { rebuildDerivedState() }
+        }
     }
     var parts: [OCPart] {
         didSet { rebuildDerivedState() }
@@ -146,7 +148,7 @@ final class ChatMessage: Identifiable {
             }
         }
 
-          if isStreaming,
+          if !isStreaming,
               !hasTextPart,
               let content = content.nilIfBlank {
             segments.append(AssistantSegment(id: "streaming-text-\(id)", kind: .text(content)))

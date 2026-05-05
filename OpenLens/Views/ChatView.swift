@@ -15,6 +15,7 @@ struct ChatView: View {
     @Bindable var chatClient: ChatClient
 
     @FocusState private var isInputFocused: Bool
+    @GestureState private var isInputBarPressed = false
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.connection) private var connection
@@ -48,20 +49,19 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(Color.appSurface)
                 .overlay(alignment: .top) {
                     Color.appSeparator.frame(height: 0.5)
                 }
             }
-
-            VStack(spacing: 0) {
-                if chatClient.currentSession != nil {
-                    modelSelectionRow
-                }
-                inputBar
-            }
         }
-        .background(Color.appBackground)
+        .safeAreaInset(edge: .bottom) {
+            chatComposerInset
+                .background(
+                    LinearGradient(
+                        gradient: Gradient(colors: [.clear, Color.appBackground.opacity(0.7)]), startPoint: .top, endPoint: .bottom
+                    )
+                )
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ChatHeaderToolbar(
@@ -74,9 +74,13 @@ struct ChatView: View {
 
         // Initial load: ensure session is loaded when view appears
         .task {
+            connection.setChatReconnectEnabled(true)
             chatClient.setupSSEHandlers()
             await loadCommands(force: true)
             await chatClient.ensureSession()
+        }
+        .onDisappear {
+            connection.setChatReconnectEnabled(false)
         }
 
         // Foreground recovery: refresh messages and questions when app becomes active
@@ -159,8 +163,9 @@ struct ChatView: View {
         .onChange(of: chatClient.inputText) { _, newValue in
             guard newValue.hasPrefix("/"),
                   !newValue.dropFirst().contains(where: { $0.isWhitespace || $0.isNewline }),
-                availableSlashActions.isEmpty,
-                  !isLoadingCommands else {
+                  availableSlashActions.isEmpty,
+                  !isLoadingCommands
+            else {
                 return
             }
 
@@ -170,30 +175,40 @@ struct ChatView: View {
         }
     }
 
+    private var chatComposerInset: some View {
+        VStack(spacing: 8) {
+            if chatClient.currentSession != nil {
+                modelSelectionRow
+            }
+            inputBar
+        }
+        .padding(.bottom, isInputFocused ? 12 : 0)
+        .padding(.horizontal, isInputFocused ? 0 : 16)
+        .animation(.easeOut(duration: 0.4), value: isInputFocused)
+    }
+
     // MARK: - Model Selector
 
     private var modelSelectionRow: some View {
-        
-            HStack(spacing: 8) {
-                modelSelectorButton
+        HStack(spacing: 8) {
+            modelSelectorButton
 
-                if chatClient.showsThinkingEffortPicker {
-                    thinkingEffortMenu
-                }
-                Spacer()
-                if let contextUsage = chatClient.contextUsageSummary {
-                    Button {
-                        showContextStatus = true
-                    } label: {
-                        ChatContextUsageRing(summary: contextUsage)
-                    }
-                    .buttonStyle(.plain)
-                }
+            if chatClient.showsThinkingEffortPicker {
+                thinkingEffortMenu
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 2)
-        
+            Spacer()
+            if let contextUsage = chatClient.contextUsageSummary {
+                Button {
+                    showContextStatus = true
+                } label: {
+                    ChatContextUsageRing(summary: contextUsage)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
     }
 
     private var modelSelectorButton: some View {
@@ -215,6 +230,7 @@ struct ChatView: View {
             .padding(.vertical, 5)
             .background(Color.appTertiary)
             .clipShape(Capsule())
+            .glassEffect()
         }
     }
 
@@ -245,8 +261,6 @@ struct ChatView: View {
             HStack(spacing: 5) {
                 Image(systemName: "brain")
                     .font(.system(size: 11, weight: .medium))
-                Text(AppText.thinking)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
                 Text(chatClient.selectedVariantDisplayName)
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                 Image(systemName: "chevron.up.chevron.down")
@@ -270,56 +284,65 @@ struct ChatView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            HStack(alignment: .bottom, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .center, spacing: 8) {
                     TextField(AppText.messagePlaceholder, text: $chatClient.inputText, axis: .vertical)
                         .focused($isInputFocused)
                         .lineLimit(1 ... 5)
                         .font(.system(size: 16))
                         .foregroundStyle(Color.appPrimary)
-                        .tint(Color.appAccent)
                         .disabled(chatClient.currentSession == nil)
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
 
-                    if chatClient.isLoading {
-                        Button {
-                            chatClient.abort()
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.red)
-                                    .frame(width: 32, height: 32)
-                                Image(systemName: "stop.fill")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.white)
-                            }
-                        }
-                    } else {
-                        Button {
-                            isInputFocused = false
-                            chatClient.send()
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .fill(canSend ? Color.appAccent : Color.appTertiary)
-                                    .frame(width: 32, height: 32)
-                                Image(systemName: "arrow.up")
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundStyle(canSend ? Color.appOnAccent : Color.appSecondary.opacity(0.4))
-                            }
-                        }
-                        .disabled(!canSend)
-                    }
+                    composerActionButton
+                        .padding(4)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color.appSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-                .surfaceShadow()
+                .padding(.leading, 16)
+                .padding(.trailing, 4)
+                .padding(.vertical, 4)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(Color.appSeparator.opacity(0.8), lineWidth: 1)
+                }
+                .subtleShadow()
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.appBackground)
+    }
+
+    private var composerActionButton: some View {
+        Group {
+            if chatClient.isLoading {
+                Button {
+                    chatClient.abort()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 32, height: 32)
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                }
+            } else {
+                Button {
+                    isInputFocused = false
+                    chatClient.send()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 30))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(
+                            canSend ? Color.white : Color.appSecondary.opacity(0.55),
+                            canSend ? Color.appAccent : Color.appTertiary
+                        )
+                        .contentShape(Circle())
+                }
+                .disabled(!canSend)
+            }
+        }
     }
 
     private var slashCommandPicker: some View {
@@ -553,7 +576,8 @@ private struct ChatContextUsageRing: View {
     private var accessibilityLabel: String {
         if let usagePercent = summary.usagePercent,
            let limitTokens = summary.limitTokens,
-           limitTokens > 0 {
+           limitTokens > 0
+        {
             return AppText.contextUsageLabel(usagePercent, usedTokens: summary.usedTokens, limitTokens: limitTokens)
         }
 
@@ -581,12 +605,10 @@ private struct ChatContextStatusSheet: View {
                 .padding(.vertical, 16)
 
             VStack(alignment: .leading, spacing: 12) {
-                
-
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text("Context")
-                    .font(.system(size: 14, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
 
                     if let usagePercent = summary.usagePercent {
                         Text("\(usagePercent)% used")
@@ -664,58 +686,118 @@ private struct ChatMessagesListView: View {
     @Bindable var chatClient: ChatClient
 
     @State private var lastAutoScrollDate: Date = .distantPast
+    @State private var bottomMarkerMinY: CGFloat = 0
+    @State private var shouldAutoScrollStreaming = true
 
+    private let bottomAnchorID = "bottom"
+    private let scrollCoordinateSpace = "chat-scroll"
     private let streamingScrollInterval: TimeInterval = 0.18
+    private let scrollToBottomVisibilityThreshold: CGFloat = 56
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                Color.clear.frame(height: 72)
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        Color.clear.frame(height: 72)
 
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    if chatClient.hasEarlierMessages {
-                        Button {
-                            chatClient.loadEarlierMessages()
-                        } label: {
-                            Text("Load earlier messages")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
+                        LazyVStack(alignment: .leading, spacing: 16) {
+                            if chatClient.hasEarlierMessages {
+                                Button {
+                                    chatClient.loadEarlierMessages()
+                                } label: {
+                                    Text("Load earlier messages")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                }
+                            }
+
+                            ForEach(chatClient.displayedMessages) { message in
+                                MessageBubbleView(message: message)
+                            }
                         }
+                        .padding(.horizontal, 16)
+
+                        Color.clear
+                            .frame(height: 17)
+                            .background {
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: ChatBottomMarkerMinYPreferenceKey.self,
+                                        value: proxy.frame(in: .named(scrollCoordinateSpace)).minY
+                                    )
+                                }
+                            }
+                            .id(bottomAnchorID)
+                            .padding(.horizontal, 16)
+                    }
+                    .coordinateSpace(name: scrollCoordinateSpace)
+                    .onPreferenceChange(ChatBottomMarkerMinYPreferenceKey.self) { bottomMarkerMinY = $0 }
+                    .onChange(of: chatClient.contentVersion) {
+                        guard chatClient.isLoading else { return }
+                        guard shouldAutoScrollStreaming else { return }
+
+                        let now = Date()
+                        guard now.timeIntervalSince(lastAutoScrollDate) >= streamingScrollInterval else { return }
+
+                        lastAutoScrollDate = now
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                    .onChange(of: chatClient.scrollAnchor) {
+                        // No animation — feels natural during streaming and avoids
+                        // queued-up easeOut animations on rapid 40ms flushes.
+                        lastAutoScrollDate = Date()
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                    .onChange(of: chatClient.completedStreamAnchor) {
+                        guard shouldAutoScrollStreaming else { return }
+                        lastAutoScrollDate = Date()
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                    .onChange(of: bottomMarkerMinY) { _, newValue in
+                        shouldAutoScrollStreaming = newValue <= geometry.size.height + scrollToBottomVisibilityThreshold
+                    }
+                    .scrollDismissesKeyboard(.interactively)
+                    .onTapGesture {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                     }
 
-                    ForEach(chatClient.displayedMessages) { message in
-                        MessageBubbleView(message: message)
-                            // Suppress layout animation on the streaming bubble so
-                            // growing text doesn't cause height-change animations.
-                            .animation(nil, value: message.content)
+                    if showsScrollToBottomButton(in: geometry.size.height) {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                            }
+                            shouldAutoScrollStreaming = true
+                        } label: {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 34))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(Color.white, Color.appAccent)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 16)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                        .accessibilityLabel("Scroll to latest message")
                     }
-
-                    Color.clear
-                        .frame(height: 1)
-                        .id("bottom")
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
+                .animation(.easeOut(duration: 0.18), value: showsScrollToBottomButton(in: geometry.size.height))
             }
-            .onChange(of: chatClient.contentVersion) {
-                guard chatClient.isLoading else { return }
-
-                let now = Date()
-                guard now.timeIntervalSince(lastAutoScrollDate) >= streamingScrollInterval else { return }
-
-                lastAutoScrollDate = now
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            .onChange(of: chatClient.scrollAnchor) {
-                // No animation — feels natural during streaming and avoids
-                // queued-up easeOut animations on rapid 40ms flushes.
-                lastAutoScrollDate = Date()
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .background(Color.appBackground)
         }
+    }
+
+    private func showsScrollToBottomButton(in viewportHeight: CGFloat) -> Bool {
+        guard !chatClient.displayedMessages.isEmpty else { return false }
+        return bottomMarkerMinY > viewportHeight + scrollToBottomVisibilityThreshold
+    }
+}
+
+private struct ChatBottomMarkerMinYPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

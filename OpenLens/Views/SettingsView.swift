@@ -15,7 +15,6 @@ struct SettingsView: View {
     @State private var showDisconnectConfirmation = false
     @State private var showForgetConfirmation = false
     @Environment(\.savedConnections) private var savedConnections
-    @AppStorage("autoReconnect") private var autoReconnect: Bool = true
 
     private var activeConnection: SavedConnection? {
         savedConnections.activeConnection ?? (ScreenshotFixtures.isEnabled ? ScreenshotFixtures.savedConnection : nil)
@@ -262,16 +261,6 @@ struct SettingsView: View {
                     infoRow(label: AppText.user, value: active?.username ?? "—")
                     SurfaceDivider()
                     infoRow(label: "Auth", value: (active?.password.isEmpty ?? true) ? AppText.none : AppText.basicAuth)
-                    SurfaceDivider()
-
-                    Toggle(isOn: $autoReconnect) {
-                        Text(AppText.autoReconnect)
-                            .font(.system(size: 15, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                    }
-                    .tint(Color.appAccent)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
 
                     if savedConnections.activeConnection != nil {
                         SurfaceDivider()

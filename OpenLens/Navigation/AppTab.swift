@@ -20,9 +20,9 @@ enum AppTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .chat: "message"
-        case .review: "doc.text.magnifyingglass"
-        case .workspace: "folder.fill"
-        case .settings: "gearshape.fill"
+        case .review: "magnifyingglass.circle"
+        case .workspace: "folder"
+        case .settings: "gearshape"
         }
     }
 }

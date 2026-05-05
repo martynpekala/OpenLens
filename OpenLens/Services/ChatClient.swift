@@ -25,6 +25,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Incremented when the chat should programmatically snap to the bottom.
     var scrollAnchor: UInt = 0
 
+    /// Incremented when a streaming response finishes and the view may keep the
+    /// latest message pinned only if the user is already near the bottom.
+    var completedStreamAnchor: UInt = 0
+
     /// Incremented when message content changes and the scroll view may need to
     /// update layout without forcing a scroll jump on every streaming flush.
     var contentVersion: UInt = 0
@@ -297,6 +301,9 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// When true, `send()` replays a demo script instead of hitting the network.
     @ObservationIgnored let isDemoMode: Bool
 
+    /// Script used by preview/demo chat modes.
+    @ObservationIgnored private let demoScript: DemoScript
+
     /// Replays demo scripts when `isDemoMode` is true.
     @ObservationIgnored private var demoPlayer: DemoPlayer?
 
@@ -389,6 +396,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         savedConnectionsStore: SavedConnectionsStore
     ) {
         self.isDemoMode = false
+        self.demoScript = .showcase
         self.connection = connection
         self.sessionsService = sessionsService
         self.messagesService = messagesService
@@ -397,7 +405,9 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.savedConnectionsStore = savedConnectionsStore
 
         let haptics = HapticController()
-        let tracker = LiveActivityTracker(liveActivity: liveActivity)
+        let tracker = LiveActivityTracker(
+            liveActivity: liveActivity
+        )
 
         self.haptics = haptics
         self.liveActivityTracker = tracker
@@ -447,9 +457,10 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     /// Creates a ChatClient in demo mode — no server connection required.
     /// The DemoPlayer drives the same streaming/activity paths as real SSE events.
-    init(demoMode: Bool) {
+    init(demoMode: Bool, script: DemoScript = .showcase) {
         precondition(demoMode, "Use the full init for non-demo mode")
         self.isDemoMode = true
+        self.demoScript = script
         self.connection = nil
         self.sessionsService = nil
         self.messagesService = nil
@@ -479,7 +490,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                 ? ScreenshotFixtures.defaultSession
                 : OCSession(
                     id: UUID().uuidString,
-                    title: DemoScript.showcase.sessionTitle,
+                    title: demoScript.sessionTitle,
                     time: OCSessionTime(created: Date.now.timeIntervalSince1970, updated: Date.now.timeIntervalSince1970)
                 )
             currentSession = session
@@ -489,7 +500,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             lastCompletedActivity = nil
             errorMessage = nil
             // Auto-start demo playback after session is ready
-            demoPlayer?.play(.showcase)
+            demoPlayer?.play(demoScript)
             return
         }
 
@@ -511,7 +522,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             currentActivity = nil
             lastCompletedActivity = nil
             errorMessage = nil
-            demoPlayer?.play(.showcase)
+            demoPlayer?.play(demoScript)
             return
         }
 
@@ -674,7 +685,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         if isDemoMode {
             inputText = ""
-            demoPlayer?.play(.showcase)
+            demoPlayer?.play(demoScript)
             return
         }
 
@@ -841,7 +852,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Auto-starts demo playback. Call after `ensureSession()` in demo mode.
     func startDemoPlayback() {
         guard isDemoMode else { return }
-        demoPlayer?.play(.showcase)
+        demoPlayer?.play(demoScript)
     }
 
     // MARK: - Abort
@@ -1017,11 +1028,13 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     private func ensureFlushTimer() {
         guard flushTimer == nil else { return }
-        flushTimer = Timer.scheduledTimer(withTimeInterval: Self.flushInterval, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.flushInterval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.flushStreamingBuffer()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        flushTimer = timer
     }
 
     private func flushStreamingBuffer() {
@@ -1095,6 +1108,6 @@ final class ChatClient: SSEEventHandlerDelegate {
         sessionStatus = nil
 
         contentVersion &+= 1
-        scrollAnchor &+= 1
+        completedStreamAnchor &+= 1
     }
 }

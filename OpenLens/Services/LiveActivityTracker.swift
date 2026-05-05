@@ -72,7 +72,8 @@ final class LiveActivityTracker {
     func setPendingPermission(_ permission: OCPermissionRequest) {
         pendingUserResponse = .init(
             kind: .permission,
-            detail: permissionLiveActivityDetail(permission)
+            detail: permissionLiveActivityDetail(permission),
+            requestID: permission.id
         )
         pushCurrentState()
     }

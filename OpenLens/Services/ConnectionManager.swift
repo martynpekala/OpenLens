@@ -19,10 +19,8 @@ final class ConnectionManager: ConnectionProviding {
     private(set) var branch: String?
     private(set) var selectedProjectDirectory: String?
     private(set) var connectionMethod: ConnectionMethod?
-
-    /// Set to `true` when the user explicitly disconnects via Settings.
-    /// Prevents auto-reconnect from firing until the user manually connects again.
-    private(set) var didManuallyDisconnect: Bool = false
+    private var chatReconnectEnabled = false
+    private var reconnectTask: Task<Void, Never>?
 
     /// Reference to the shared saved connections store, set from the composition root.
     @ObservationIgnored var savedConnectionsStore: SavedConnectionsStore?
@@ -50,7 +48,6 @@ final class ConnectionManager: ConnectionProviding {
         return false
     }
 
-    /// True when SSE is reconnecting after a drop. UI can show "Reconnecting..." state.
     var isReconnecting: Bool {
         if case .reconnecting = state { return true }
         return false
@@ -68,7 +65,6 @@ final class ConnectionManager: ConnectionProviding {
         password: String = "",
         method: ConnectionMethod = .manual
     ) async {
-        didManuallyDisconnect = false
         connectionMethod = method
 
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -120,6 +116,8 @@ final class ConnectionManager: ConnectionProviding {
             self.sseClient = sse
             self.selectedProjectDirectory = restoredProjectDirectory?.nilIfBlank
 
+            SharedConnectionStore.save(baseURL: baseURL.absoluteString, authHeader: authHeader)
+
             await refreshProjectMetadata()
 
             savedConnectionsStore?.saveConnection(
@@ -143,16 +141,17 @@ final class ConnectionManager: ConnectionProviding {
                     self.sseConnectionContinuation?.resume()
                     self.sseConnectionContinuation = nil
                 case .connecting:
-                    // Only show reconnecting if we were previously connected.
-                    // During initial connect we already show .connecting.
-                    if self.state == .connected {
-                        self.enterReconnectingState(trackDisconnection: false)
+                    if self.chatReconnectEnabled, self.state == .connected || self.state == .reconnecting {
+                        self.state = .reconnecting
                     }
                 case .disconnected:
-                    // SSE dropped. It will auto-reconnect, so show reconnecting
-                    // unless we explicitly disconnected (shouldReconnect = false).
-                    if self.state == .connected || self.state == .reconnecting {
-                        self.enterReconnectingState(trackDisconnection: true)
+                    guard self.state == .connected || self.state == .reconnecting else { return }
+                    self.stopHeartbeatWatchdog()
+                    if self.chatReconnectEnabled {
+                        self.state = .reconnecting
+                        self.scheduleReconnectIfNeeded()
+                    } else {
+                        self.disconnect()
                     }
                 }
             }
@@ -174,9 +173,15 @@ final class ConnectionManager: ConnectionProviding {
         }
     }
 
-    /// Reconnect using saved config.
+    // MARK: - Disconnect
+
     func reconnect() async {
-        guard let saved = savedConnectionsStore?.mostRecent, saved.isConfigured else { return }
+        guard let saved = savedConnectionsStore?.activeConnection ?? savedConnectionsStore?.mostRecent,
+              saved.isConfigured else {
+            disconnect()
+            return
+        }
+
         await connect(
             url: saved.serverURL,
             username: saved.username,
@@ -185,9 +190,9 @@ final class ConnectionManager: ConnectionProviding {
         )
     }
 
-    // MARK: - Disconnect
-
     func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         sseConnectionContinuation?.resume()
         sseConnectionContinuation = nil
         stopHeartbeatWatchdog()
@@ -201,6 +206,7 @@ final class ConnectionManager: ConnectionProviding {
         selectedProjectDirectory = nil
         connectionMethod = nil
         savedConnectionsStore?.clearActiveConnection()
+        SharedConnectionStore.clear()
     }
 
     func setProjectContext(directory: String?) async {
@@ -269,11 +275,20 @@ final class ConnectionManager: ConnectionProviding {
         }
     }
 
-    /// Disconnect triggered explicitly by the user (e.g. from Settings).
-    /// Suppresses auto-reconnect until the next manual connect.
     func manualDisconnect() {
         disconnect()
-        didManuallyDisconnect = true
+    }
+
+    func setChatReconnectEnabled(_ isEnabled: Bool) {
+        chatReconnectEnabled = isEnabled
+
+        if !isEnabled, state == .reconnecting {
+            disconnect()
+        }
+
+        if isEnabled, state == .reconnecting {
+            scheduleReconnectIfNeeded()
+        }
     }
 
     // MARK: - Heartbeat
@@ -283,7 +298,6 @@ final class ConnectionManager: ConnectionProviding {
     func receivedHeartbeat() {
         lastHeartbeat = Date()
 
-        // If we were in .reconnecting due to a stale heartbeat, recover to .connected.
         if state == .reconnecting {
             state = .connected
         }
@@ -300,7 +314,12 @@ final class ConnectionManager: ConnectionProviding {
                 let elapsed = Date().timeIntervalSince(self.lastHeartbeat)
                 if elapsed > Self.heartbeatTimeout, self.state == .connected {
                     Logger.connection.warning("Heartbeat timeout (\(elapsed, format: .fixed(precision: 0))s since last heartbeat)")
-                    self.enterReconnectingState(trackDisconnection: true)
+                    if self.chatReconnectEnabled {
+                        self.state = .reconnecting
+                        self.scheduleReconnectIfNeeded()
+                    } else {
+                        self.disconnect()
+                    }
                 }
             }
         }
@@ -308,13 +327,19 @@ final class ConnectionManager: ConnectionProviding {
         heartbeatWatchdog = timer
     }
 
-    private func enterReconnectingState(trackDisconnection: Bool) {
-        state = .reconnecting
-    }
-
     private func stopHeartbeatWatchdog() {
         heartbeatWatchdog?.invalidate()
         heartbeatWatchdog = nil
+    }
+
+    private func scheduleReconnectIfNeeded() {
+        guard chatReconnectEnabled, state == .reconnecting, reconnectTask == nil else { return }
+
+        reconnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.reconnectTask = nil }
+            await self.reconnect()
+        }
     }
 
     private func normalizeScopedIPv4Address(in rawURL: String) -> String {

@@ -14,11 +14,9 @@ protocol ConnectionProviding: AnyObject {
     var projectName: String? { get }
     var branch: String? { get }
 
-    /// Whether the user explicitly disconnected (suppresses auto-reconnect).
-    var didManuallyDisconnect: Bool { get }
-
     @MainActor func connect(url: String, username: String, password: String) async
     @MainActor func disconnect()
     @MainActor func manualDisconnect()
     @MainActor func reconnect() async
+    @MainActor func setChatReconnectEnabled(_ isEnabled: Bool)
 }

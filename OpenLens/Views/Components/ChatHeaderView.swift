@@ -17,7 +17,7 @@ struct ChatHeaderToolbar: ToolbarContent {
 
     private var statusText: String {
         switch connectionState {
-        case .connected: ""
+        case .connected: AppText.statusConnected
         case .reconnecting: AppText.statusReconnecting
         case .connecting: AppText.statusConnecting
         case .disconnected: AppText.statusOffline
@@ -26,45 +26,61 @@ struct ChatHeaderToolbar: ToolbarContent {
     }
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            VStack(alignment: .center, spacing: 1) {
-                Text(sessionTitle ?? "OpenCode")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+        ToolbarItem(placement: .title) {
+                VStack(alignment: .center, spacing: 0) {
+                    Text(sessionTitle ?? "OpenCode")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .padding(.vertical, 4)
+                        .padding(.horizontal)
+                        // .glassEffect(.regular, in: Capsule())
 
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 6, height: 6)
-                    Text(statusText)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.gray)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 6, height: 6)
+                            .symbolEffect(.pulse, isActive: connectionState == .connected)
+                            .padding(.trailing, 4)
+
+                        if let projectName {
+                            Text(projectName)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        if let branch {
+                            Text("\u{00B7}")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.gray)
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.gray)
+                            Text(branch)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal)
+                    .glassEffect(.regular, in: Capsule())
                     
-                    if let projectName {
-                        Text("\u{00B7}")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.gray)
-                        Text(projectName)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    if let branch {
-                        Text("\u{00B7}")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.gray)
-                        Image(systemName: "arrow.triangle.branch")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.gray)
-                        Text(branch)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    // HStack(spacing: 4) {
+                    //     Circle()
+                    //         .fill(statusColor)
+                    //         .frame(width: 6, height: 6)
+                    //     Text(statusText)
+                    //         .font(.system(size: 13))
+                    //         .foregroundStyle(.gray)
+                    // }
+                    // .padding(.vertical, 4)
+                    // .padding(.horizontal)
+                    // .glassEffect(.regular, in: Capsule())
                 }
-            }
+                .safeAreaPadding(.vertical)
+            
         }
     }
 }

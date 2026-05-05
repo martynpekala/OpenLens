@@ -44,6 +44,12 @@ struct MessageBubbleView: View {
                 segmentView(segment)
             }
 
+            if message.isStreaming,
+               !message.parts.contains(where: { $0.type == .text && $0.text?.nilIfBlank != nil }),
+               let text = message.content.nilIfBlank {
+                assistantTextBubble(text)
+            }
+
             if let cost = message.cost, cost > 0 {
                 Text(String(format: "$%.4f", cost))
                     .font(.system(size: 11))
@@ -83,6 +89,7 @@ struct MessageBubbleView: View {
                 .fill(Color.appSurface)
         )
         .surfaceShadow()
+        .animation(nil, value: text)
     }
 
     private func reasoningSegment(text: String, todoItems: [TodoListCardView.Item]) -> some View {

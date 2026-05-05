@@ -15,6 +15,8 @@ Thanks for taking the time to improve OpenLens.
 
 - `OpenLens/` - main iOS app
 - `OpenLensActivityWidget/` - Live Activity widget extension
+- `OpenLensWatchApp/` - Apple Watch app container
+- `OpenLensWatchExtension/` - Apple Watch companion UI and logic
 - `OpenLensTests/` - app tests
 - `Tools/openlens-qr/` - Swift CLI for QR-based setup
 - `Tools/appstore-shot-studio/` - local browser tool for marketing screenshots

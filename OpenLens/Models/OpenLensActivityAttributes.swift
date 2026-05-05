@@ -61,6 +61,7 @@ struct OpenLensActivityAttributes: ActivityAttributes {
 
         var kind: Kind
         var detail: String
+        var requestID: String?
     }
 
     /// Dynamic state that updates as the agent works.
@@ -183,7 +184,8 @@ extension OpenLensActivityAttributes.ContentState {
             costTotal: "$0.012",
             pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse(
                 kind: .permission,
-                detail: "bash: npm test -- auth middleware"
+                detail: "bash: npm test -- auth middleware",
+                requestID: "preview-permission-id"
             )
         )
     }

@@ -10,12 +10,24 @@ enum DemoEvent {
     /// Begin an assistant response (creates pendingAssistantMessage).
     case assistantStart
 
+    /// Add a reasoning part to the pending assistant message.
+    case reasoning(String)
+
     /// Stream text in chunks with per-chunk delay.
     /// `chunkSize` controls how many characters are flushed per tick.
     case streamText(String, chunkSize: Int = 3, delay: TimeInterval = 0.02)
 
     /// Show a tool call activity step (shimmer + completed step).
     case toolCall(name: String, detail: String, category: ToolCategory, duration: TimeInterval = 0.8)
+
+    /// Show a persisted tool call inside the message bubble and the activity card.
+    case toolCallPart(
+        name: String,
+        detail: String,
+        category: ToolCategory,
+        output: String? = nil,
+        duration: TimeInterval = 0.8
+    )
 
     /// Update the "Thinking..." shimmer label.
     case thinking(String)
@@ -88,6 +100,19 @@ final class DemoPlayer {
                 client.currentActivity?.currentLabel = "Thinking..."
                 client.scrollAnchor &+= 1
 
+            case .reasoning(let text):
+                guard let pending = client.pendingAssistantMessage else { continue }
+                let reasoningPart = OCPart(
+                    id: UUID().uuidString,
+                    sessionID: currentSessionID(for: client),
+                    messageID: pending.id,
+                    type: .reasoning,
+                    text: text
+                )
+                upsertPart(reasoningPart, on: pending)
+                client.currentActivity?.thinkingText = text
+                client.scrollAnchor &+= 1
+
             case .streamText(let text, let chunkSize, let delay):
                 guard let pending = client.pendingAssistantMessage else { continue }
                 // Stream character chunks through the same buffer path
@@ -102,25 +127,54 @@ final class DemoPlayer {
                 }
 
             case .toolCall(let name, let detail, let category, let duration):
-                guard let activity = client.currentActivity else { continue }
-                let label = "\(name): \(detail)"
-                activity.currentLabel = label
-                activity.steps.append(ActivityStep(
-                    type: .toolCall,
-                    label: label,
+                await runActivityToolCall(
+                    name: name,
                     detail: detail,
-                    toolCategory: category
-                ))
-                client.scrollAnchor &+= 1
+                    category: category,
+                    duration: duration,
+                    on: client
+                )
 
-                try? await Task.sleep(for: .seconds(duration))
+            case .toolCallPart(let name, let detail, let category, let output, let duration):
+                guard let pending = client.pendingAssistantMessage else { continue }
+                let partID = UUID().uuidString
+                let input = toolInput(for: category, detail: detail)
+                let toolName = name.lowercased()
+
+                upsertPart(
+                    OCPart(
+                        id: partID,
+                        sessionID: currentSessionID(for: client),
+                        messageID: pending.id,
+                        type: .tool,
+                        callID: partID,
+                        tool: toolName,
+                        state: OCToolState(status: .running, input: input)
+                    ),
+                    on: pending
+                )
+
+                await runActivityToolCall(
+                    name: name,
+                    detail: detail,
+                    category: category,
+                    duration: duration,
+                    on: client
+                )
+
                 guard !Task.isCancelled else { return }
-
-                // Complete the step
-                if let idx = activity.steps.lastIndex(where: { $0.label == label }) {
-                    activity.steps[idx].isCompleted = true
-                }
-                activity.currentLabel = "Thinking..."
+                upsertPart(
+                    OCPart(
+                        id: partID,
+                        sessionID: currentSessionID(for: client),
+                        messageID: pending.id,
+                        type: .tool,
+                        callID: partID,
+                        tool: toolName,
+                        state: OCToolState(status: .completed, input: input, output: output)
+                    ),
+                    on: pending
+                )
 
             case .thinking(let label):
                 client.currentActivity?.currentLabel = label
@@ -133,11 +187,69 @@ final class DemoPlayer {
             }
         }
     }
+
+    private func currentSessionID(for client: ChatClient) -> String {
+        client.currentSession?.id ?? "demo-session"
+    }
+
+    private func upsertPart(_ part: OCPart, on message: ChatMessage) {
+        if let existingIndex = message.parts.firstIndex(where: { $0.id == part.id }) {
+            message.parts[existingIndex] = part
+        } else {
+            message.parts.append(part)
+        }
+    }
+
+    private func toolInput(for category: ToolCategory, detail: String) -> AnyCodable? {
+        switch category {
+        case .read, .write, .edit:
+            return AnyCodable(["path": detail])
+        case .search:
+            return AnyCodable(["pattern": detail])
+        case .bash:
+            return AnyCodable(["command": detail])
+        default:
+            return detail.isEmpty ? nil : AnyCodable(["path": detail])
+        }
+    }
+
+    private func runActivityToolCall(
+        name: String,
+        detail: String,
+        category: ToolCategory,
+        duration: TimeInterval,
+        on client: ChatClient
+    ) async {
+        guard let activity = client.currentActivity else { return }
+
+        let label = "\(name): \(detail)"
+        activity.currentLabel = label
+        activity.steps.append(ActivityStep(
+            type: .toolCall,
+            label: label,
+            detail: detail,
+            toolCategory: category
+        ))
+        client.scrollAnchor &+= 1
+
+        try? await Task.sleep(for: .seconds(duration))
+        guard !Task.isCancelled else { return }
+
+        if let idx = activity.steps.lastIndex(where: { $0.label == label }) {
+            activity.steps[idx].isCompleted = true
+        }
+        activity.currentLabel = "Thinking..."
+    }
 }
 
 // MARK: - Built-in Demo Scripts
 
 extension DemoScript {
+
+    private static let debugBaselineLongParagraph = Array(
+        repeating: "The chat should keep feeling continuous even while new deltas arrive, the message bubble grows, tool rows appear, and the renderer eventually swaps the lightweight streaming text for a fully parsed markdown view.",
+        count: 6
+    ).joined(separator: " ")
 
     /// A showcase script demonstrating streaming, tool calls, markdown, and code blocks.
     static let showcase = DemoScript(
@@ -267,6 +379,75 @@ extension DemoScript {
             Everything looks good — the health check endpoint is working correctly and existing tests still pass.
             """, chunkSize: 3, delay: 0.012),
 
+            .finish,
+        ]
+    )
+
+    /// A deterministic stress script for comparing chat behavior before and after rendering changes.
+    static let debugBaseline = DemoScript(
+        sessionTitle: "Debug: Chat Baseline",
+        events: [
+            .userMessage("Stress-test the chat so I can compare the current behavior with an improved build."),
+            .pause(0.25),
+
+            .assistantStart,
+            .thinking("Inspecting stream cadence..."),
+            .reasoning("""
+            1. Watching how fast deltas land in the pending message.
+            2. Checking whether tool rows shift layout while the answer is still streaming.
+            3. Comparing plain streaming text with the final markdown render handoff.
+            """),
+            .pause(0.15),
+
+            .toolCallPart(name: "Read", detail: "OpenLens/Views/ChatView.swift", category: .read, duration: 0.35),
+            .toolCallPart(name: "Read", detail: "OpenLens/Views/Components/MarkdownContentView.swift", category: .read, duration: 0.28),
+            .toolCallPart(
+                name: "Bash",
+                detail: "instruments trace --focus chat-stream",
+                category: .bash,
+                output: "Collected 4 samples; main-thread spikes line up with scroll and markdown handoff.",
+                duration: 0.45
+            ),
+
+            .streamText("""
+            Here's a deliberately heavy baseline response for visual comparison.
+
+            ## What this scenario is stressing
+
+            - **Long streaming text** so you can watch the cadence of incoming deltas.
+            - **Reasoning content** so the bubble contains auxiliary sections before the answer finishes.
+            - **Tool call rows** so layout changes happen while the stream is still active.
+            - **Markdown handoff** so the final render includes headings, lists, and code blocks.
+
+            ### Observations
+
+            \(debugBaselineLongParagraph)
+
+            \(debugBaselineLongParagraph)
+
+            ```swift
+            struct ChatStreamSample {
+                let flushInterval: Double
+                let scrollThrottle: Double
+                let usesMarkdownAfterFinish: Bool
+            }
+
+            let baseline = ChatStreamSample(
+                flushInterval: 0.04,
+                scrollThrottle: 0.18,
+                usesMarkdownAfterFinish: true
+            )
+            ```
+
+            ### Why this helps
+
+            1. If the stream looks smooth here, buffering and scroll cadence are probably healthy.
+            2. If it stalls near the end, the markdown handoff is likely the most visible hitch.
+            3. If it keeps dragging you back to the bottom while you scroll up, follow-latest logic needs attention.
+            4. If tool rows pop in with jumps, message part updates are doing too much work during rendering.
+
+            Final note: this response is intentionally long, formatted, and streamed in tiny chunks so it behaves like a repeatable stress test for the current chat UI.
+            """, chunkSize: 1, delay: 0.005),
             .finish,
         ]
     )

@@ -4,6 +4,7 @@ import SwiftUI
 struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
+    var onStartDebug: (() -> Void)?
 
     /// Deep link received from `openlens://connect` URL or QR scan.
     @Binding var pendingDeepLink: DeepLinkConnection?
@@ -20,7 +21,6 @@ struct ConnectView: View {
     @State private var connectionFailed: Bool = false
     @State private var connectionError: String?
     @State private var connectionTask: Task<Void, Never>?
-    @State private var isAutoReconnect: Bool = false
     @State private var currentConnectionMethod: ConnectionMethod = .manual
 
     @State private var showQRScanner: Bool = false
@@ -28,8 +28,6 @@ struct ConnectView: View {
 
     @Environment(\.connection) private var connection
     @Environment(\.savedConnections) private var savedConnections
-    @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("autoReconnect") private var autoReconnect: Bool = true
 
     var body: some View {
         NavigationStack {
@@ -39,14 +37,14 @@ struct ConnectView: View {
 
                     qrScanSection
 
+                    manualConnectionSection
+
                     if !savedConnections.connections.isEmpty {
                         savedConnectionsSection
                     }
 
-                    manualConnectionSection
-
-                    if let onStartDemo {
-                        demoButton(onStartDemo)
+                    if onStartDebug != nil || onStartDemo != nil {
+                        previewModesSection
                     }
                 }
                 .padding(.horizontal, 20)
@@ -64,25 +62,6 @@ struct ConnectView: View {
                             .foregroundStyle(Color.appPrimary)
                     }
                 }
-            }
-        }
-        .onAppear {
-            if let recent = savedConnections.mostRecent {
-                manualURL = recent.serverURL
-                username = recent.username
-                password = recent.password
-            }
-
-            if autoReconnect, savedConnections.mostRecent?.isConfigured == true,
-               !connection.didManuallyDisconnect {
-                startConnect(auto: true)
-            }
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active, autoReconnect, !connection.isConnected, !showConnectionSheet,
-               !connection.didManuallyDisconnect,
-               savedConnections.mostRecent?.isConfigured == true {
-                startConnect(auto: true)
             }
         }
         .sheet(isPresented: $showConnectionSheet, onDismiss: cancelConnection) {
@@ -428,17 +407,6 @@ struct ConnectView: View {
 
                         SurfaceDivider()
 
-                        Toggle(isOn: $autoReconnect) {
-                            Text(AppText.autoReconnect)
-                                .font(.system(size: 15, design: .rounded))
-                                .foregroundStyle(Color.appPrimary)
-                        }
-                        .tint(Color.appAccent)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-
-                        SurfaceDivider()
-
                         Button {
                             connectManual()
                         } label: {
@@ -460,17 +428,43 @@ struct ConnectView: View {
         }
     }
 
-    // MARK: - Demo Button
+    // MARK: - Preview Buttons
 
-    private func demoButton(_ action: @escaping () -> Void) -> some View {
+    @ViewBuilder
+    private var previewModesSection: some View {
+        VStack(spacing: 12) {
+            if let onStartDebug {
+                previewButton(
+                    title: AppText.tryDebugChat,
+                    subtitle: AppText.tryDebugChatSubtitle,
+                    systemImage: "ladybug.fill",
+                    action: onStartDebug
+                )
+            }
+
+            if let onStartDemo {
+                previewButton(
+                    title: AppText.tryDemo,
+                    subtitle: AppText.tryDemoSubtitle,
+                    systemImage: "play.fill",
+                    action: onStartDemo
+                )
+            }
+        }
+    }
+
+    private func previewButton(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
         VStack(spacing: 6) {
-            Button(action: {
-                action()
-            }) {
+            Button(action: action) {
                 HStack(spacing: 8) {
-                    Image(systemName: "play.fill")
+                    Image(systemName: systemImage)
                         .font(.system(size: 11))
-                    Text(AppText.tryDemo)
+                    Text(title)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                 }
                 .frame(maxWidth: .infinity)
@@ -483,7 +477,7 @@ struct ConnectView: View {
                 .surfaceShadow()
             }
 
-            Text(AppText.tryDemoSubtitle)
+            Text(subtitle)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.appSecondary.opacity(0.5))
         }
@@ -515,16 +509,12 @@ struct ConnectView: View {
             }
 
             VStack(spacing: 8) {
-                Text(isAutoReconnect
-                    ? AppText.reconnecting
-                    : AppText.connecting)
+                Text(AppText.connecting)
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundStyle(Color.appPrimary)
 
-                Text(isAutoReconnect
-                    ? AppText.reconnectingSubtitle
-                    : AppText.connectingSubtitle)
+                Text(AppText.connectingSubtitle)
                     .font(.body)
                     .foregroundStyle(Color.appSecondary)
                     .multilineTextAlignment(.center)
@@ -614,36 +604,24 @@ struct ConnectView: View {
     // MARK: - Failure Copy
 
     private var failureTitle: String {
-        isAutoReconnect
-            ? AppText.autoReconnectErrorTitle
-            : AppText.manualConnectErrorTitle
+        AppText.manualConnectErrorTitle
     }
 
     private var failureMessage: String {
-        if isAutoReconnect {
-            return AppText.autoReconnectErrorBody
-        }
         if let error = connectionError { return error }
         return AppText.manualConnectErrorBody
     }
 
     // MARK: - Connection Actions
 
-    private func startConnect(auto: Bool) {
+    private func startConnect() {
         connectionTask?.cancel()
-        isAutoReconnect = auto
         connectionFailed = false
         connectionError = nil
         showConnectionSheet = true
 
-        let method: ConnectionMethod = auto ? .autoReconnect : currentConnectionMethod
-
         connectionTask = Task {
-            if auto {
-                await connection.reconnect()
-            } else {
-                await connection.connect(url: manualURL, username: username, password: password, method: method)
-            }
+            await connection.connect(url: manualURL, username: username, password: password, method: currentConnectionMethod)
 
             guard !Task.isCancelled else { return }
 
@@ -661,7 +639,7 @@ struct ConnectView: View {
     private func retryConnection() {
         connectionFailed = false
         connectionError = nil
-        startConnect(auto: isAutoReconnect)
+        startConnect()
     }
 
     private func cancelConnection() {
@@ -692,7 +670,7 @@ struct ConnectView: View {
         manualURL = saved.serverURL
         username = saved.username
         password = saved.password
-        startConnect(auto: false)
+        startConnect()
     }
 
     private func fillFromSaved(_ saved: SavedConnection) {
@@ -705,7 +683,7 @@ struct ConnectView: View {
     private func connectManual() {
         pendingSessionNavigationID = nil
         currentConnectionMethod = .manual
-        startConnect(auto: false)
+        startConnect()
     }
 
     // MARK: - Deep Link
@@ -716,6 +694,6 @@ struct ConnectView: View {
         username = deepLink.username
         password = deepLink.password
         showManualEntry = true
-        startConnect(auto: false)
+        startConnect()
     }
 }

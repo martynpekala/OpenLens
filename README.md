@@ -8,7 +8,7 @@
   </a>
 </p>
 
-OpenLens connects to an OpenCode server running on your Mac and gives you a native iOS interface to chat, review changes, run tests, manage sessions, and switch models — all from the couch.
+OpenLens connects to an OpenCode server running on your Mac and gives you a native iPhone and iPad interface to chat, review changes, browse workspace context, answer agent questions, and manage sessions away from the keyboard.
 
 <p align="center">
   <img src="PromoScreenshots/0x0ss-2.png" width="220" alt="OpenLens promo screenshot 1" />
@@ -26,25 +26,29 @@ OpenLens connects to an OpenCode server running on your Mac and gives you a nati
 
 - **App Store**: install OpenLens on iPhone or iPad from the App Store using the badge above.
 - **From source**: clone the repo, run `xcodegen generate`, then open the generated `OpenLens.xcodeproj` in Xcode 26 or newer.
-- **Bundled tools**: `openlens-qr` and `appstore-shot-studio` are source-first helper tools included in this repository.
+- **Bundled tools**: `openlens-qr`, `openlens-qr-menubar`, and `appstore-shot-studio` are source-first helper tools included in this repository.
 
 ## Releases
 
 - **iOS app releases**: the primary end-user distribution channel is the App Store.
 - **Source builds**: contributors and self-hosters can build from `main` or from tagged revisions in Git.
-- **Compatibility**: the repository currently targets iOS 26+ and current OpenCode server behavior on macOS.
+- **Compatibility**: the repository currently targets iOS/iPadOS 26+ and current OpenCode server behavior on macOS.
 
 
 ## Features
 
-- **Native chat interface** — rich Markdown rendering, code blocks, thinking indicators, agent activity cards
-- **Multiple connection methods** — QR code scan, Bonjour auto-discovery on local network, manual URL entry, deep links
-- **Session management** — browse, switch, and continue existing OpenCode sessions
-- **Model picker** — switch between AI models (Claude Sonnet, Opus, etc.) directly from the app
+- **Native session chat** — rich Markdown rendering, code blocks, thinking indicators, agent activity cards, permission prompts, and question flows
+- **Flexible connection flows** — QR code scan, Bonjour auto-discovery, manual URL entry, saved servers, auto-reconnect, and `openlens://` deep links
+- **Session management** — browse, create, delete, switch, and continue existing OpenCode sessions
+- **Review tab** — inspect session-wide changes or a single agent update, open diffs, and revert one update without discarding the whole session
+- **Workspace tab** — browse files, worktrees, slash commands, and changed files, then request branch switches, pushes, and pull requests through the active session
+- **Inbox and insights** — answer pending questions, approve permissions, and inspect local cost, token usage, and model breakdowns for a session
+- **Model controls** — switch between AI providers/models and available reasoning variants directly from the app
 - **Live Activities** — track agent progress on your Lock Screen and Dynamic Island
 - **Demo mode** — try the app without a server to see how it works
 - **Setup wizard & onboarding** — guided first-launch experience
 - **`openlens-qr` CLI tool** — generate a QR code from your terminal for instant phone connection
+- **`openlens-qr-menubar` helper** — launch the QR flow from the macOS menu bar with a remembered workspace folder
 - **`appstore-shot-studio` tool** — turn raw screenshots into App Store-ready promo images
 
 
@@ -75,7 +79,7 @@ This will:
 ### 3. Open OpenLens on your iPhone and connect
 
 - **Scan QR** — tap "Scan QR Code" and point at the terminal
-- **Auto-discover** — tap "Tap to scan for nearby servers" (Bonjour)
+- **Auto-discover** — tap "Tap to scan for nearby servers" (Bonjour; start OpenCode with `--mdns` if you want discovery)
 - **Manual** — enter your Mac's IP and port (e.g. `192.168.1.50:4096`)
 
 That's it. You're chatting with your AI coding assistant from your phone.
@@ -113,6 +117,30 @@ openlens-qr 192.168.1.50:4096            # explicit address, QR only
 ```
 
 
+## `openlens-qr-menubar`
+
+Menubar helper for macOS that launches `openlens-qr --serve` in your default terminal app using a workspace folder you choose once and reuse later.
+
+```bash
+cd Tools/openlens-qr-menubar
+./run-menubar.sh
+```
+
+What it does:
+
+1. builds the menubar app with Tuist
+2. opens a menu bar extra named `OpenLens QR`
+3. lets you pick the folder where OpenCode should run
+4. remembers the last selected folder
+5. opens your default terminal app and runs `openlens-qr --serve` from that folder
+
+Requirements:
+
+- `tuist` installed locally for the menubar app build
+- Xcode command line tools for `xcrun swift build`
+- `opencode` installed and available in `PATH`
+
+
 ## `appstore-shot-studio`
 
 Compose App Store visuals from raw screenshots:
@@ -140,12 +168,24 @@ opencode serve --port 4096 --hostname 0.0.0.0
 
 Then connect from the app using your Mac's local IP address.
 
+If you want OpenLens to find the server via Bonjour, start OpenCode with `--mdns` as well.
+
 
 ## Requirements
 
-- **iOS app**: iPhone with iOS 26+
+- **iOS app**: iPhone or iPad with iOS/iPadOS 26+
 - **Server**: macOS with [OpenCode](https://opencode.ai) installed
-- **Network**: both devices on the same local network
+- **Network**: both devices on the same local network for QR, manual, or Bonjour-based setup
+
+
+## Project Layout
+
+- `OpenLens/` — main iOS app
+- `OpenLensActivityWidget/` — Live Activity widget extension
+- `OpenLensTests/` — unit tests
+- `Tools/openlens-qr/` — Swift CLI for QR-based setup
+- `Tools/openlens-qr-menubar/` — macOS menu bar launcher for the QR flow
+- `Tools/appstore-shot-studio/` — local browser tool for App Store screenshots
 
 
 ## Development
@@ -198,6 +238,8 @@ openlens://connect?url=192.168.1.50:4096&user=opencode&pass=optional&sessionID=a
 ```
 
 The `openlens-qr` tool encodes this into the QR code automatically.
+
+If `sessionID` is present, OpenLens connects first and then opens that session automatically.
 
 
 ## License
