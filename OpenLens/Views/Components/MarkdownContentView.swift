@@ -18,6 +18,10 @@ struct MarkdownContentView: View {
     /// Split very long plain paragraphs into smaller chunks to avoid expensive
     /// single Text layout passes when huge content is visible.
     private static let paragraphChunkSize = 1_600
+    private static let prewarmQueue = DispatchQueue(
+        label: "com.openlens.MarkdownContentView.prewarm",
+        qos: .utility
+    )
 
     /// Number of blocks currently visible (nil = show all).
     @State private var visibleBlockCount: Int?
@@ -41,11 +45,7 @@ struct MarkdownContentView: View {
         self.text = text
         self.foregroundColor = foregroundColor
 
-        // Use Swift Hasher for the cache key — O(n) like NSString hash but
-        // avoids the NSString copy overhead for long messages (10K+ chars).
-        var hasher = Hasher()
-        hasher.combine(text)
-        let key = NSNumber(value: hasher.finalize())
+        let key = Self.cacheKey(for: text)
 
         if let cached = Self.blockCache.object(forKey: key) {
             self.cachedBlocks = cached.blocks
@@ -54,6 +54,34 @@ struct MarkdownContentView: View {
             Self.blockCache.setObject(BlocksBox(parsed), forKey: key)
             self.cachedBlocks = parsed
         }
+    }
+
+    static func isCached(_ text: String) -> Bool {
+        blockCache.object(forKey: cacheKey(for: text)) != nil
+    }
+
+    static func prewarm(_ text: String) {
+        guard !text.isEmpty else { return }
+
+        let key = cacheKey(for: text)
+        guard blockCache.object(forKey: key) == nil else { return }
+
+        prewarmQueue.async {
+            guard blockCache.object(forKey: key) == nil else { return }
+
+            let signpostID = ChatStreamInstrumentation.beginMarkdownPrewarm(characterCount: text.count)
+            let parsed = parseBlocks(from: text)
+            blockCache.setObject(BlocksBox(parsed), forKey: key)
+            ChatStreamInstrumentation.endMarkdownPrewarm(signpostID)
+        }
+    }
+
+    private static func cacheKey(for text: String) -> NSNumber {
+        // Use Swift Hasher for the cache key — O(n) like NSString hash but
+        // avoids the NSString copy overhead for long messages (10K+ chars).
+        var hasher = Hasher()
+        hasher.combine(text)
+        return NSNumber(value: hasher.finalize())
     }
 
     /// Whether the content exceeds the initial block limit.

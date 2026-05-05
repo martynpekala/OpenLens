@@ -7,6 +7,7 @@ import os
 /// Thread safety: All mutable state is protected by a private serial `DispatchQueue`.
 /// URLSession delegate callbacks are dispatched onto the same queue.
 /// Public callbacks (`onEvent`, `onStateChange`) are always called on the **main queue**.
+/// Rapid `message.part.delta` text events are coalesced on the private queue before delivery.
 final class SSEClient: NSObject, URLSessionDataDelegate {
 
     // MARK: - Types
@@ -15,6 +16,13 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         case disconnected
         case connecting
         case connected
+    }
+
+    private struct PendingTextDelta {
+        let sessionID: String
+        let messageID: String
+        let field: String
+        var delta: String
     }
 
     // MARK: - Public (read-only)
@@ -34,9 +42,21 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     private var baseURL: URL
     private var authHeader: String?
+    private var shouldReconnect = true
+    private var reconnectDelay: TimeInterval = 2.0
     private var buffer: String = ""
     private var task: URLSessionDataTask?
     private var session: URLSession?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var pendingTextDelta: PendingTextDelta?
+    private var pendingTextDeltaWorkItem: DispatchWorkItem?
+
+    // MARK: - Constants
+
+    private static let initialReconnectDelay: TimeInterval = 2.0
+    private static let maxReconnectDelay: TimeInterval = 30.0
+    private static let reconnectBackoffMultiplier: Double = 1.5
+    private static let textDeltaCoalescingInterval: TimeInterval = 0.02
 
     // MARK: - Init
 
@@ -58,12 +78,17 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     func connect() {
         queue.async { [self] in
             guard state == .disconnected else { return }
+            shouldReconnect = true
+            reconnectDelay = Self.initialReconnectDelay
             startConnection()
         }
     }
 
     func disconnect() {
         queue.async { [self] in
+            shouldReconnect = false
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
             cleanupConnection()
             updateState(.disconnected)
         }
@@ -104,6 +129,9 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     /// Cancels the current task/session and resets transient state. Must be called on `queue`.
     private func cleanupConnection() {
+        pendingTextDeltaWorkItem?.cancel()
+        pendingTextDeltaWorkItem = nil
+        pendingTextDelta = nil
         task?.cancel()
         task = nil
         session?.invalidateAndCancel()
@@ -121,6 +149,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     ) {
         // Already on `queue` (delegateQueue).
         if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+            reconnectDelay = Self.initialReconnectDelay
             updateState(.connected)
         }
         completionHandler(.allow)
@@ -128,6 +157,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         // Already on `queue`.
+        ChatStreamInstrumentation.recordSSEReceive(byteCount: data.count)
         guard let text = String(data: data, encoding: .utf8) else { return }
         buffer += text
         processBuffer()
@@ -135,8 +165,10 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         // Already on `queue`.
+        flushPendingTextDelta()
         cleanupConnection()
         updateState(.disconnected)
+        scheduleReconnect()
     }
 
     // MARK: - SSE Parsing (called on `queue`)
@@ -172,13 +204,92 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         guard let jsonString = data,
               let jsonData = jsonString.data(using: .utf8) else { return }
 
+        let signpostID = ChatStreamInstrumentation.beginSSEDecode(byteCount: jsonData.count)
+        defer {
+            ChatStreamInstrumentation.endSSEDecode(signpostID)
+        }
+
         do {
-            Task { @MainActor [weak self] in
-                let event = try JSONDecoder().decode(OCEvent.self, from: jsonData)
-                self?.onEvent?(event)
-            }
+            let event = try JSONDecoder().decode(OCEvent.self, from: jsonData)
+            enqueueEvent(event)
         } catch {
             Logger.sse.error("Parse error: \(error, privacy: .public) for data: \(jsonString.prefix(200), privacy: .private)")
+        }
+    }
+
+    private func enqueueEvent(_ event: OCEvent) {
+        guard !coalesceTextDeltaIfNeeded(event) else { return }
+        flushPendingTextDelta()
+        deliverEvent(event)
+    }
+
+    private func coalesceTextDeltaIfNeeded(_ event: OCEvent) -> Bool {
+        guard event.type == "message.part.delta",
+              let props = event.properties?.value as? [String: Any],
+              let sessionID = props["sessionID"] as? String,
+              let messageID = props["messageID"] as? String,
+              let field = props["field"] as? String,
+              field == "text",
+              let delta = props["delta"] as? String
+        else {
+            return false
+        }
+
+        if var pending = pendingTextDelta,
+           pending.sessionID == sessionID,
+           pending.messageID == messageID,
+           pending.field == field {
+            pending.delta.append(delta)
+            pendingTextDelta = pending
+        } else {
+            flushPendingTextDelta()
+            pendingTextDelta = PendingTextDelta(
+                sessionID: sessionID,
+                messageID: messageID,
+                field: field,
+                delta: delta
+            )
+        }
+
+        schedulePendingTextDeltaFlush()
+        return true
+    }
+
+    private func schedulePendingTextDeltaFlush() {
+        guard pendingTextDeltaWorkItem == nil else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushPendingTextDelta()
+        }
+        pendingTextDeltaWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + Self.textDeltaCoalescingInterval, execute: workItem)
+    }
+
+    private func flushPendingTextDelta() {
+        pendingTextDeltaWorkItem?.cancel()
+        pendingTextDeltaWorkItem = nil
+
+        guard let pending = pendingTextDelta else { return }
+        pendingTextDelta = nil
+
+        ChatStreamInstrumentation.recordCoalescedTextDelta(characterCount: pending.delta.count)
+        deliverEvent(
+            OCEvent(
+                type: "message.part.delta",
+                properties: AnyCodable([
+                    "sessionID": pending.sessionID,
+                    "messageID": pending.messageID,
+                    "field": pending.field,
+                    "delta": pending.delta,
+                ])
+            )
+        )
+    }
+
+    private func deliverEvent(_ event: OCEvent) {
+        let callback = onEvent
+        DispatchQueue.main.async {
+            callback?(event)
         }
     }
 
@@ -191,6 +302,22 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return String(afterPrefix.dropFirst())
         }
         return String(afterPrefix)
+    }
+
+    // MARK: - Reconnect (called on `queue`)
+
+    private func scheduleReconnect() {
+        guard shouldReconnect else { return }
+
+        let delay = reconnectDelay
+        reconnectDelay = min(reconnectDelay * Self.reconnectBackoffMultiplier, Self.maxReconnectDelay)
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.shouldReconnect else { return }
+            self.startConnection()
+        }
+        reconnectWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     // MARK: - State Management

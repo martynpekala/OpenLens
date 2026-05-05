@@ -7,6 +7,11 @@ import SwiftUI
 /// - **Completed** (`isStreaming == false`): `MarkdownContentView` — one-time parse.
 struct MessageBubbleView: View {
     let message: ChatMessage
+    @State private var preparedMarkdownText: String?
+    @State private var markdownHandoffTask: Task<Void, Never>?
+
+    private static let markdownHandoffDelay: Duration = .milliseconds(120)
+    private static let deferredMarkdownThreshold = 600
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -17,6 +22,30 @@ struct MessageBubbleView: View {
                 assistantBubble
                 Spacer(minLength: 32)
             }
+        }
+        .onAppear {
+            if message.isStreaming {
+                preparedMarkdownText = nil
+            } else {
+                prepareMarkdownHandoff(deferred: false)
+            }
+        }
+        .onDisappear {
+            markdownHandoffTask?.cancel()
+            markdownHandoffTask = nil
+        }
+        .onChange(of: message.isStreaming) { _, isStreaming in
+            if isStreaming {
+                markdownHandoffTask?.cancel()
+                markdownHandoffTask = nil
+                preparedMarkdownText = nil
+            } else {
+                prepareMarkdownHandoff(deferred: true)
+            }
+        }
+        .onChange(of: message.content) { _, _ in
+            guard !message.isStreaming else { return }
+            prepareMarkdownHandoff(deferred: false)
         }
     }
 
@@ -45,9 +74,9 @@ struct MessageBubbleView: View {
             }
 
             if message.isStreaming,
-               !message.parts.contains(where: { $0.type == .text && $0.text?.nilIfBlank != nil }),
+               !message.hasRenderableTextPart,
                let text = message.content.nilIfBlank {
-                assistantTextBubble(text)
+                assistantTextBubble(text, usesDeferredMarkdownHandoff: true)
             }
 
             if let cost = message.cost, cost > 0 {
@@ -64,7 +93,10 @@ struct MessageBubbleView: View {
     private func segmentView(_ segment: ChatMessage.AssistantSegment) -> some View {
         switch segment.kind {
         case .text(let text):
-            assistantTextBubble(text)
+            assistantTextBubble(
+                text,
+                usesDeferredMarkdownHandoff: !message.hasRenderableTextPart
+            )
         case .reasoning(let text, let todoItems):
             reasoningSegment(text: text, todoItems: todoItems)
         case .tool(let step):
@@ -72,14 +104,14 @@ struct MessageBubbleView: View {
         }
     }
 
-    private func assistantTextBubble(_ text: String) -> some View {
+    private func assistantTextBubble(_ text: String, usesDeferredMarkdownHandoff: Bool) -> some View {
         Group {
-            if message.isStreaming {
+            if shouldRenderMarkdown(text, usesDeferredMarkdownHandoff: usesDeferredMarkdownHandoff) {
+                MarkdownContentView(text, foregroundColor: Color.appPrimary)
+            } else {
                 Text(text)
                     .font(.system(size: 16))
                     .foregroundStyle(Color.appPrimary)
-            } else {
-                MarkdownContentView(text, foregroundColor: Color.appPrimary)
             }
         }
         .padding(.horizontal, 16)
@@ -90,6 +122,60 @@ struct MessageBubbleView: View {
         )
         .surfaceShadow()
         .animation(nil, value: text)
+    }
+
+    private func shouldRenderMarkdown(_ text: String, usesDeferredMarkdownHandoff: Bool) -> Bool {
+        guard !message.isStreaming else { return false }
+        guard usesDeferredMarkdownHandoff else { return true }
+        return preparedMarkdownText == text
+    }
+
+    private func prepareMarkdownHandoff(deferred: Bool) {
+        markdownHandoffTask?.cancel()
+        markdownHandoffTask = nil
+
+        guard let text = deferredMarkdownText else {
+            preparedMarkdownText = nil
+            return
+        }
+
+        guard deferred,
+              shouldDeferMarkdownHandoff(for: text),
+              !MarkdownContentView.isCached(text)
+        else {
+            preparedMarkdownText = text
+            return
+        }
+
+        preparedMarkdownText = nil
+        MarkdownContentView.prewarm(text)
+
+        markdownHandoffTask = Task { [messageID = message.id, text] in
+            try? await Task.sleep(for: Self.markdownHandoffDelay)
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard message.id == messageID,
+                      !message.isStreaming,
+                      deferredMarkdownText == text else { return }
+                preparedMarkdownText = text
+            }
+        }
+    }
+
+    private var deferredMarkdownText: String? {
+        guard message.role == .assistant, !message.hasRenderableTextPart else { return nil }
+        return message.content.nilIfBlank
+    }
+
+    private func shouldDeferMarkdownHandoff(for text: String) -> Bool {
+        guard text.count >= Self.deferredMarkdownThreshold else { return false }
+        return text.contains("\n") ||
+            text.contains("`") ||
+            text.contains("*") ||
+            text.contains("#") ||
+            text.contains("- ") ||
+            text.contains("> ")
     }
 
     private func reasoningSegment(text: String, todoItems: [TodoListCardView.Item]) -> some View {

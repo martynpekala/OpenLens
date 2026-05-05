@@ -93,6 +93,10 @@ final class ChatMessage: Identifiable {
         parts.filter { $0.type == .tool }
     }
 
+    var hasRenderableTextPart: Bool {
+        parts.contains { $0.type == .text && $0.text?.nilIfBlank != nil }
+    }
+
     /// Whether the message has any active (running) tool calls.
     var hasRunningTools: Bool {
         toolParts.contains { $0.state?.status == .running }
@@ -118,9 +122,7 @@ final class ChatMessage: Identifiable {
         guard role == .assistant else { return [] }
 
         var segments: [AssistantSegment] = []
-        let hasTextPart = parts.contains { part in
-            part.type == .text && part.text?.nilIfBlank != nil
-        }
+        let hasTextPart = hasRenderableTextPart
 
         for part in parts {
             switch part.type {
@@ -148,10 +150,10 @@ final class ChatMessage: Identifiable {
             }
         }
 
-          if !isStreaming,
-              !hasTextPart,
-              let content = content.nilIfBlank {
-            segments.append(AssistantSegment(id: "streaming-text-\(id)", kind: .text(content)))
+        if !isStreaming,
+           !hasTextPart,
+           let content = content.nilIfBlank {
+            segments.append(AssistantSegment(id: "content-text-\(id)", kind: .text(content)))
         }
 
         if isStreaming, segments.isEmpty {

@@ -209,7 +209,7 @@ final class SavedConnectionsStore {
         activeConnectionID = nil
     }
 
-    /// Returns the most recently used connection.
+    /// Returns the most recently used connection (for auto-reconnect).
     var mostRecent: SavedConnection? {
         connections.first
     }

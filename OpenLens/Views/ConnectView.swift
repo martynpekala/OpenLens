@@ -21,6 +21,7 @@ struct ConnectView: View {
     @State private var connectionFailed: Bool = false
     @State private var connectionError: String?
     @State private var connectionTask: Task<Void, Never>?
+    @State private var isAutoReconnect: Bool = false
     @State private var currentConnectionMethod: ConnectionMethod = .manual
 
     @State private var showQRScanner: Bool = false
@@ -28,6 +29,8 @@ struct ConnectView: View {
 
     @Environment(\.connection) private var connection
     @Environment(\.savedConnections) private var savedConnections
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("autoReconnect") private var autoReconnect: Bool = true
 
     var body: some View {
         NavigationStack {
@@ -62,6 +65,29 @@ struct ConnectView: View {
                             .foregroundStyle(Color.appPrimary)
                     }
                 }
+            }
+        }
+//        .onAppear {
+//            if consumePendingDeepLinkIfNeeded() {
+//                return
+//            }
+//
+//            if let recent = savedConnections.mostRecent {
+//                manualURL = recent.serverURL
+//                username = recent.username
+//                password = recent.password
+//            }
+//
+//            if autoReconnect, savedConnections.mostRecent?.isConfigured == true,
+//               !connection.didManuallyDisconnect {
+//                startConnect(auto: true)
+//            }
+//        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active, autoReconnect, !connection.isConnected, !showConnectionSheet,
+               !connection.didManuallyDisconnect,
+               savedConnections.mostRecent?.isConfigured == true {
+                startConnect(auto: true)
             }
         }
         .sheet(isPresented: $showConnectionSheet, onDismiss: cancelConnection) {
@@ -407,6 +433,17 @@ struct ConnectView: View {
 
                         SurfaceDivider()
 
+                        Toggle(isOn: $autoReconnect) {
+                            Text(AppText.autoReconnect)
+                                .font(.system(size: 15, design: .rounded))
+                                .foregroundStyle(Color.appPrimary)
+                        }
+                        .tint(Color.appAccent)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+
+                        SurfaceDivider()
+
                         Button {
                             connectManual()
                         } label: {
@@ -509,12 +546,16 @@ struct ConnectView: View {
             }
 
             VStack(spacing: 8) {
-                Text(AppText.connecting)
+                Text(isAutoReconnect
+                    ? AppText.reconnecting
+                    : AppText.connecting)
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundStyle(Color.appPrimary)
 
-                Text(AppText.connectingSubtitle)
+                Text(isAutoReconnect
+                    ? AppText.reconnectingSubtitle
+                    : AppText.connectingSubtitle)
                     .font(.body)
                     .foregroundStyle(Color.appSecondary)
                     .multilineTextAlignment(.center)
@@ -604,24 +645,36 @@ struct ConnectView: View {
     // MARK: - Failure Copy
 
     private var failureTitle: String {
-        AppText.manualConnectErrorTitle
+        isAutoReconnect
+            ? AppText.autoReconnectErrorTitle
+            : AppText.manualConnectErrorTitle
     }
 
     private var failureMessage: String {
+        if isAutoReconnect {
+            return AppText.autoReconnectErrorBody
+        }
         if let error = connectionError { return error }
         return AppText.manualConnectErrorBody
     }
 
     // MARK: - Connection Actions
 
-    private func startConnect() {
+    private func startConnect(auto: Bool) {
         connectionTask?.cancel()
+        isAutoReconnect = auto
         connectionFailed = false
         connectionError = nil
         showConnectionSheet = true
 
+        let method: ConnectionMethod = auto ? .autoReconnect : currentConnectionMethod
+
         connectionTask = Task {
-            await connection.connect(url: manualURL, username: username, password: password, method: currentConnectionMethod)
+            if auto {
+                await connection.reconnect()
+            } else {
+                await connection.connect(url: manualURL, username: username, password: password, method: method)
+            }
 
             guard !Task.isCancelled else { return }
 
@@ -639,7 +692,7 @@ struct ConnectView: View {
     private func retryConnection() {
         connectionFailed = false
         connectionError = nil
-        startConnect()
+        startConnect(auto: isAutoReconnect)
     }
 
     private func cancelConnection() {
@@ -670,7 +723,7 @@ struct ConnectView: View {
         manualURL = saved.serverURL
         username = saved.username
         password = saved.password
-        startConnect()
+        startConnect(auto: false)
     }
 
     private func fillFromSaved(_ saved: SavedConnection) {
@@ -683,7 +736,19 @@ struct ConnectView: View {
     private func connectManual() {
         pendingSessionNavigationID = nil
         currentConnectionMethod = .manual
-        startConnect()
+        startConnect(auto: false)
+    }
+
+    @discardableResult
+    private func consumePendingDeepLinkIfNeeded() -> Bool {
+        guard let deepLink = pendingDeepLink else {
+            return false
+        }
+
+        pendingDeepLink = nil
+        currentConnectionMethod = .deepLink
+        applyDeepLink(deepLink)
+        return true
     }
 
     // MARK: - Deep Link
@@ -694,6 +759,6 @@ struct ConnectView: View {
         username = deepLink.username
         password = deepLink.password
         showManualEntry = true
-        startConnect()
+        startConnect(auto: false)
     }
 }

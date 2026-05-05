@@ -25,10 +25,6 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Incremented when the chat should programmatically snap to the bottom.
     var scrollAnchor: UInt = 0
 
-    /// Incremented when a streaming response finishes and the view may keep the
-    /// latest message pinned only if the user is already near the bottom.
-    var completedStreamAnchor: UInt = 0
-
     /// Incremented when message content changes and the scroll view may need to
     /// update layout without forcing a scroll jump on every streaming flush.
     var contentVersion: UInt = 0
@@ -714,7 +710,6 @@ final class ChatClient: SSEEventHandlerDelegate {
         )
 
         contentVersion &+= 1
-        scrollAnchor &+= 1
 
         Task {
             await sendPromptAsync(text: text)
@@ -1041,13 +1036,19 @@ final class ChatClient: SSEEventHandlerDelegate {
         flushTimer?.invalidate()
         flushTimer = nil
 
-        guard !streamingBuffer.isEmpty,
+        let bufferedText = streamingBuffer
+        guard !bufferedText.isEmpty,
               let pending = pendingAssistantMessage else {
             streamingBuffer = ""
             return
         }
 
-        pending.content += streamingBuffer
+        let signpostID = ChatStreamInstrumentation.beginStreamingFlush(characterCount: bufferedText.count)
+        defer {
+            ChatStreamInstrumentation.endStreamingFlush(signpostID)
+        }
+
+        pending.content += bufferedText
         streamingBuffer = ""
         contentVersion &+= 1
     }
@@ -1108,6 +1109,6 @@ final class ChatClient: SSEEventHandlerDelegate {
         sessionStatus = nil
 
         contentVersion &+= 1
-        completedStreamAnchor &+= 1
+        scrollAnchor &+= 1
     }
 }

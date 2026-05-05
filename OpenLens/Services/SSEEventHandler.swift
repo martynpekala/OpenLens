@@ -234,8 +234,7 @@ final class SSEEventHandler {
               let partDict = props["part"] as? [String: Any],
               let sessionID = partDict["sessionID"] as? String,
               sessionID == delegate.currentSessionID,
-              let messageID = partDict["messageID"] as? String,
-              let partType = partDict["type"] as? String else { return }
+              let messageID = partDict["messageID"] as? String else { return }
 
         // Look up the message: first in the pending message, then in committed messages.
         let msg: ChatMessage? = {
@@ -249,28 +248,31 @@ final class SSEEventHandler {
         guard let partData = try? JSONSerialization.data(withJSONObject: partDict),
               let part = try? JSONDecoder().decode(OCPart.self, from: partData) else { return }
 
-        // Mutate the message object directly.
-        if let partIndex = msg.parts.firstIndex(where: { $0.id == part.id }) {
-            msg.parts[partIndex] = part
-        } else {
-            msg.parts.append(part)
+        if part.type != .text || !msg.isStreaming {
+            if let partIndex = msg.parts.firstIndex(where: { $0.id == part.id }) {
+                msg.parts[partIndex] = part
+            } else {
+                msg.parts.append(part)
+            }
         }
 
-        switch partType {
-        case "text":
+        switch part.type {
+        case .text:
             if let text = part.text {
                 // part.updated carries the full authoritative text — use it directly
                 // and discard any buffered deltas to avoid double-appending content
                 // that is already included in this snapshot.
                 delegate.clearStreamingBuffer(messageID: messageID)
-                msg.content = text
+                if msg.content != text {
+                    msg.content = text
+                }
                 haptics.playFirstResponseIfNeeded()
             }
 
-        case "tool":
+        case .tool:
             handleToolPartUpdate(part, delegate: delegate)
 
-        case "reasoning":
+        case .reasoning:
             if let text = part.text {
                 delegate.currentActivity?.thinkingText = text
                 // Extract first line as subject for Live Activity
@@ -280,7 +282,7 @@ final class SSEEventHandler {
                 }
             }
 
-        case "step-finish":
+        case .stepFinish:
             if let stepIndex = delegate.currentActivity?.steps.lastIndex(where: { !$0.isCompleted }) {
                 delegate.currentActivity?.steps[stepIndex].isCompleted = true
             }

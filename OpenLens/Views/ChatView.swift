@@ -74,13 +74,9 @@ struct ChatView: View {
 
         // Initial load: ensure session is loaded when view appears
         .task {
-            connection.setChatReconnectEnabled(true)
             chatClient.setupSSEHandlers()
             await loadCommands(force: true)
             await chatClient.ensureSession()
-        }
-        .onDisappear {
-            connection.setChatReconnectEnabled(false)
         }
 
         // Foreground recovery: refresh messages and questions when app becomes active
@@ -687,11 +683,12 @@ private struct ChatMessagesListView: View {
 
     @State private var lastAutoScrollDate: Date = .distantPast
     @State private var bottomMarkerMinY: CGFloat = 0
-    @State private var shouldAutoScrollStreaming = true
+    @State private var followLatest = true
 
     private let bottomAnchorID = "bottom"
     private let scrollCoordinateSpace = "chat-scroll"
     private let streamingScrollInterval: TimeInterval = 0.18
+    private let followLatestThreshold: CGFloat = 96
     private let scrollToBottomVisibilityThreshold: CGFloat = 56
 
     var body: some View {
@@ -734,30 +731,33 @@ private struct ChatMessagesListView: View {
                             .padding(.horizontal, 16)
                     }
                     .coordinateSpace(name: scrollCoordinateSpace)
-                    .onPreferenceChange(ChatBottomMarkerMinYPreferenceKey.self) { bottomMarkerMinY = $0 }
+                    .onPreferenceChange(ChatBottomMarkerMinYPreferenceKey.self) { minY in
+                        bottomMarkerMinY = minY
+                        followLatest = ChatScrollPolicy.isNearBottom(
+                            bottomMarkerMinY: minY,
+                            viewportHeight: geometry.size.height,
+                            threshold: followLatestThreshold
+                        )
+                    }
                     .onChange(of: chatClient.contentVersion) {
-                        guard chatClient.isLoading else { return }
-                        guard shouldAutoScrollStreaming else { return }
-
                         let now = Date()
-                        guard now.timeIntervalSince(lastAutoScrollDate) >= streamingScrollInterval else { return }
+                        guard ChatScrollPolicy.shouldAutoFollow(
+                            isLoading: chatClient.isLoading,
+                            followLatest: followLatest,
+                            now: now,
+                            lastAutoScrollDate: lastAutoScrollDate,
+                            minimumInterval: streamingScrollInterval
+                        ) else { return }
 
-                        lastAutoScrollDate = now
-                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                        scrollToBottom(using: proxy, animated: false, now: now)
                     }
                     .onChange(of: chatClient.scrollAnchor) {
-                        // No animation — feels natural during streaming and avoids
-                        // queued-up easeOut animations on rapid 40ms flushes.
-                        lastAutoScrollDate = Date()
-                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                    }
-                    .onChange(of: chatClient.completedStreamAnchor) {
-                        guard shouldAutoScrollStreaming else { return }
-                        lastAutoScrollDate = Date()
-                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                    }
-                    .onChange(of: bottomMarkerMinY) { _, newValue in
-                        shouldAutoScrollStreaming = newValue <= geometry.size.height + scrollToBottomVisibilityThreshold
+                        scrollToBottom(
+                            using: proxy,
+                            animated: false,
+                            now: Date(),
+                            forceFollowLatest: true
+                        )
                     }
                     .scrollDismissesKeyboard(.interactively)
                     .onTapGesture {
@@ -766,10 +766,12 @@ private struct ChatMessagesListView: View {
 
                     if showsScrollToBottomButton(in: geometry.size.height) {
                         Button {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                            }
-                            shouldAutoScrollStreaming = true
+                            scrollToBottom(
+                                using: proxy,
+                                animated: true,
+                                now: Date(),
+                                forceFollowLatest: true
+                            )
                         } label: {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.system(size: 34))
@@ -788,9 +790,63 @@ private struct ChatMessagesListView: View {
         }
     }
 
+    private func scrollToBottom(
+        using proxy: ScrollViewProxy,
+        animated: Bool,
+        now: Date,
+        forceFollowLatest: Bool = false
+    ) {
+        if forceFollowLatest {
+            followLatest = true
+        }
+
+        lastAutoScrollDate = now
+        ChatStreamInstrumentation.recordScrollToBottom()
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+        }
+    }
+
     private func showsScrollToBottomButton(in viewportHeight: CGFloat) -> Bool {
         guard !chatClient.displayedMessages.isEmpty else { return false }
-        return bottomMarkerMinY > viewportHeight + scrollToBottomVisibilityThreshold
+        return ChatScrollPolicy.shouldShowScrollToLatest(
+            followLatest: followLatest,
+            bottomMarkerMinY: bottomMarkerMinY,
+            viewportHeight: viewportHeight,
+            visibilityThreshold: scrollToBottomVisibilityThreshold
+        )
+    }
+}
+
+struct ChatScrollPolicy {
+    static func isNearBottom(bottomMarkerMinY: CGFloat, viewportHeight: CGFloat, threshold: CGFloat) -> Bool {
+        bottomMarkerMinY <= viewportHeight + threshold
+    }
+
+    static func shouldAutoFollow(
+        isLoading: Bool,
+        followLatest: Bool,
+        now: Date,
+        lastAutoScrollDate: Date,
+        minimumInterval: TimeInterval
+    ) -> Bool {
+        guard isLoading, followLatest else { return false }
+        return now.timeIntervalSince(lastAutoScrollDate) >= minimumInterval
+    }
+
+    static func shouldShowScrollToLatest(
+        followLatest: Bool,
+        bottomMarkerMinY: CGFloat,
+        viewportHeight: CGFloat,
+        visibilityThreshold: CGFloat
+    ) -> Bool {
+        guard !followLatest else { return false }
+        return bottomMarkerMinY > viewportHeight + visibilityThreshold
     }
 }
 
