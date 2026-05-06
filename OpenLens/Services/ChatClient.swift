@@ -1109,6 +1109,5 @@ final class ChatClient: SSEEventHandlerDelegate {
         sessionStatus = nil
 
         contentVersion &+= 1
-        scrollAnchor &+= 1
     }
 }
