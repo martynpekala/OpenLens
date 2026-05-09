@@ -23,6 +23,7 @@ final class ChatMessage: Identifiable {
 
     struct PersistedToolStep: Identifiable {
         let id: String
+        let toolName: String
         let label: String
         let detail: String
         let output: String?
@@ -94,7 +95,7 @@ final class ChatMessage: Identifiable {
     }
 
     var hasRenderableTextPart: Bool {
-        parts.contains { $0.type == .text && $0.text?.nilIfBlank != nil }
+        parts.contains { $0.renderableText?.nilIfBlank != nil }
     }
 
     /// Whether the message has any active (running) tool calls.
@@ -127,7 +128,7 @@ final class ChatMessage: Identifiable {
         for part in parts {
             switch part.type {
             case .text:
-                let rawText = part.text?.nilIfBlank
+                let rawText = part.renderableText?.nilIfBlank
                 if let rawText {
                     segments.append(AssistantSegment(id: part.id, kind: .text(rawText)))
                 }
@@ -145,7 +146,16 @@ final class ChatMessage: Identifiable {
                 guard let step = makePersistedToolStep(from: part) else { continue }
                 segments.append(AssistantSegment(id: part.id, kind: .tool(step)))
 
-            default:
+            case .file,
+                 .stepStart,
+                 .stepFinish,
+                 .snapshot,
+                 .patch,
+                 .retry,
+                 .compaction,
+                 .agent,
+                 .subtask,
+                 .unknown:
                 continue
             }
         }
@@ -188,6 +198,7 @@ final class ChatMessage: Identifiable {
 
             return PersistedToolStep(
                 id: part.id,
+                toolName: toolName,
                 label: ToolLabelFormatter.label(toolName: toolName, state: state),
                 detail: detail ?? "",
                 output: primaryOutput ?? fallbackOutput,

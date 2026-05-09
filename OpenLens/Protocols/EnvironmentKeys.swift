@@ -75,6 +75,10 @@ private struct SessionInsightsServiceKey: EnvironmentKey {
     static let defaultValue: SessionInsightsService = SessionInsightsService()
 }
 
+private struct RecordedReplayStoreKey: EnvironmentKey {
+    static let defaultValue: RecordedReplayStore = RecordedReplayStore()
+}
+
 // MARK: - EnvironmentValues Extensions
 
 extension EnvironmentValues {
@@ -131,6 +135,11 @@ extension EnvironmentValues {
     var sessionInsightsService: SessionInsightsService {
         get { self[SessionInsightsServiceKey.self] }
         set { self[SessionInsightsServiceKey.self] = newValue }
+    }
+
+    var recordedReplayStore: RecordedReplayStore {
+        get { self[RecordedReplayStoreKey.self] }
+        set { self[RecordedReplayStoreKey.self] = newValue }
     }
 
 }

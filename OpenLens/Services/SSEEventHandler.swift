@@ -258,7 +258,7 @@ final class SSEEventHandler {
 
         switch part.type {
         case .text:
-            if let text = part.text {
+            if let text = part.renderableText {
                 // part.updated carries the full authoritative text — use it directly
                 // and discard any buffered deltas to avoid double-appending content
                 // that is already included in this snapshot.
@@ -287,7 +287,15 @@ final class SSEEventHandler {
                 delegate.currentActivity?.steps[stepIndex].isCompleted = true
             }
 
-        default:
+        case .file,
+             .stepStart,
+             .snapshot,
+             .patch,
+             .retry,
+             .compaction,
+             .agent,
+             .subtask,
+             .unknown:
             break
         }
     }

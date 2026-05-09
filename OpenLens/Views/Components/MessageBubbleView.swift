@@ -13,6 +13,10 @@ struct MessageBubbleView: View {
     private static let markdownHandoffDelay: Duration = .milliseconds(120)
     private static let deferredMarkdownThreshold = 600
 
+    private var showsTranscriptStyleAssistantContent: Bool {
+        message.role == .assistant
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if message.role == .user {
@@ -80,9 +84,11 @@ struct MessageBubbleView: View {
             }
 
             if let cost = message.cost, cost > 0 {
-                Text(String(format: "$%.4f", cost))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.appSecondary.opacity(0.5))
+                if !showsTranscriptStyleAssistantContent {
+                    Text(String(format: "$%.4f", cost))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.appSecondary.opacity(0.5))
+                }
             }
         }
     }
@@ -114,13 +120,15 @@ struct MessageBubbleView: View {
                     .foregroundStyle(Color.appPrimary)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.appSurface)
-        )
-        .surfaceShadow()
+        .padding(.horizontal, showsTranscriptStyleAssistantContent ? 0 : 16)
+        .padding(.vertical, showsTranscriptStyleAssistantContent ? 0 : 12)
+        .background {
+            if !showsTranscriptStyleAssistantContent {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.appSurface)
+            }
+        }
+        .modifier(AssistantTranscriptShadow(enabled: !showsTranscriptStyleAssistantContent))
         .animation(nil, value: text)
     }
 
@@ -181,56 +189,76 @@ struct MessageBubbleView: View {
     private func reasoningSegment(text: String, todoItems: [TodoListCardView.Item]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if todoItems.count >= 2 {
-                TodoListCardView(title: "Todos", items: todoItems)
+                TodoListCardView(title: "Todos", items: todoItems, compact: true)
             } else {
-                Label("Thinking", systemImage: "brain.head.profile")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.appSecondary.opacity(0.8))
-
                 Text(text)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Color.appSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.appSurface)
-                    )
             }
         }
-        .padding(.leading, 4)
+        .padding(.leading, 2)
     }
 
     private func toolSegment(_ step: ChatMessage.PersistedToolStep) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Image(systemName: step.isError ? "exclamationmark.circle" : step.toolCategory.iconName)
-                .font(.system(size: 10))
-                .foregroundStyle(step.isError ? .orange : Color.appSecondary.opacity(0.6))
+        VStack(alignment: .leading, spacing: 4) {
+            Text(toolTranscriptLine(step))
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(step.isError ? .orange : Color.appSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(step.label)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.appSecondary.opacity(0.85))
-                    .lineLimit(2)
-
-                if !step.detail.isEmpty {
-                    Text(step.detail)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color.appSecondary.opacity(0.65))
-                        .lineLimit(3)
-                }
-
-                if step.todoItems.count >= 2 {
-                    TodoListCardView(title: "Todos", items: step.todoItems)
-                } else if let output = step.output {
-                    Text(output)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color.appSecondary.opacity(0.6))
-                        .lineLimit(4)
-                }
+            if step.todoItems.count >= 2 {
+                TodoListCardView(title: "Todos", items: step.todoItems, compact: true)
+                    .padding(.leading, 2)
+            } else if let output = transcriptOutput(for: step) {
+                Text(output)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.appSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 2)
             }
         }
-        .padding(.leading, 4)
+        .padding(.leading, 2)
+    }
+
+    private func toolTranscriptLine(_ step: ChatMessage.PersistedToolStep) -> String {
+        let prefix = step.toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "question" ? "?" : "→"
+        return "\(prefix) \(step.label)"
+    }
+
+    private func transcriptOutput(for step: ChatMessage.PersistedToolStep) -> String? {
+        if let detail = step.detail.nilIfBlank,
+           shouldShowDetailInline(for: step, detail: detail) {
+            return detail
+        }
+
+        return step.output?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfBlank
+            .map { compactOutput($0) }
+    }
+
+    private func shouldShowDetailInline(for step: ChatMessage.PersistedToolStep, detail: String) -> Bool {
+        let toolName = step.toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["read", "write", "edit"].contains(toolName)
+    }
+
+    private func compactOutput(_ output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let collapsed = trimmed.replacingOccurrences(of: "\n\n+", with: "\n", options: .regularExpression)
+        guard collapsed.count > 140 else { return collapsed }
+        return String(collapsed.prefix(140)) + "..."
+    }
+}
+
+private struct AssistantTranscriptShadow: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.surfaceShadow()
+        } else {
+            content
+        }
     }
 }

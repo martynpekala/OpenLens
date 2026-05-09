@@ -39,25 +39,24 @@ struct AgentActivityCard: View {
 
     private var thinkingSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(AppText.activityThinking, systemImage: "brain.head.profile")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.secondary)
+            Text(AppText.activityThinking)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.appSecondary)
+                .textCase(.uppercase)
 
             Text(activity.thinkingText)
                 .font(.system(size: 13, design: .monospaced))
-                .foregroundStyle(Color(.systemGray))
-                .padding(12)
+                .foregroundStyle(Color.appSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.systemGray6))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
 
     private var stepsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(AppText.activitySteps(activity.steps.count), systemImage: "list.bullet")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.secondary)
+            Text(AppText.activitySteps(activity.steps.count))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.appSecondary)
+                .textCase(.uppercase)
 
             ForEach(activity.steps) { step in
                 stepRow(step)
@@ -66,29 +65,17 @@ struct AgentActivityCard: View {
     }
 
     private func stepRow(_ step: ActivityStep) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: step.isCompleted ? "checkmark.circle.fill" : step.toolCategory.iconName)
-                .font(.system(size: 12))
-                .foregroundStyle(step.isCompleted ? .green : .gray)
-                .frame(width: 20, alignment: .center)
+        VStack(alignment: .leading, spacing: 3) {
+            Text("→ \(step.label)")
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.appPrimary)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(step.label)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.primary)
-
-                if !step.detail.isEmpty && step.type == .toolCall {
-                    Text(step.detail)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                Text(step.timestamp, style: .time)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color(.systemGray3))
+            if !step.detail.isEmpty && step.type == .toolCall {
+                Text(step.detail)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.appSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 2)
     }
 }

@@ -37,34 +37,50 @@ struct TodoListCardView: View {
 
     let title: String
     let items: [Item]
+    var compact: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: "checklist")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.appSecondary.opacity(0.85))
+            if !compact {
+                Label(title, systemImage: "checklist")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.appSecondary.opacity(0.85))
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(items) { item in
                     HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: item.status.iconName)
-                            .font(.system(size: 12, weight: .medium))
+                        Text(statusPrefix(for: item.status))
+                            .font(.system(size: compact ? 12 : 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(item.status.tint)
-                            .frame(width: 14, alignment: .center)
+                            .frame(width: 22, alignment: .leading)
 
                         Text(item.title)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: compact ? 13 : 12, weight: .medium, design: compact ? .monospaced : .default))
                             .foregroundStyle(Color.appPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.appSurface)
-            )
+            .padding(.horizontal, compact ? 0 : 12)
+            .padding(.vertical, compact ? 0 : 10)
+            .background {
+                if !compact {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.appSurface)
+                }
+            }
+        }
+    }
+
+    private func statusPrefix(for status: Item.Status) -> String {
+        switch status {
+        case .pending:
+            "[ ]"
+        case .inProgress:
+            "[•]"
+        case .completed:
+            "[✓]"
         }
     }
 }

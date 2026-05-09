@@ -776,7 +776,7 @@ private struct ChatMessagesListView: View {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.system(size: 34))
                                 .symbolRenderingMode(.palette)
-                                .foregroundStyle(Color.white, Color.appAccent)
+                                .foregroundStyle(Color.appOnAccent, Color.appAccent)
                         }
                         .buttonStyle(.plain)
                         .padding(.trailing, 20)

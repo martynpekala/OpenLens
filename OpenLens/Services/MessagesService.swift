@@ -77,8 +77,7 @@ final class MessagesService {
     /// Convert a server message (with parts) to the local ChatMessage model.
     func convertToChatMessage(_ msg: OCMessageWithParts) -> ChatMessage {
         let textContent = msg.parts
-            .filter { $0.type == .text }
-            .compactMap(\.text)
+            .compactMap(\.renderableText)
             .joined()
 
         return ChatMessage(

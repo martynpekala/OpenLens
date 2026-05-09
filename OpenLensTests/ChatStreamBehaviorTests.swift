@@ -147,6 +147,52 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test(arguments: ["file", "patch", "retry", "compaction", "agent", "subtask"])
+    func partUpdatedPreservesKnownNonRenderableParts(_ rawType: String) {
+        let delegate = SSEDelegateSpy()
+        let handler = makeHandler(delegate: delegate)
+        let messageID = "assistant-message"
+
+        let pending = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "Visible",
+            isStreaming: true
+        )
+        delegate.pendingAssistantMessage = pending
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.part.updated",
+                properties: AnyCodable([
+                    "part": [
+                        "id": "part-1",
+                        "sessionID": "session-1",
+                        "messageID": messageID,
+                        "type": rawType,
+                        "snapshot": ["value": 1],
+                        "hash": "abc",
+                        "files": [["path": "File.swift"]],
+                        "attempt": 2,
+                        "error": "retry",
+                        "auto": true,
+                        "name": "agent-name",
+                        "prompt": "subtask prompt",
+                        "description": "subtask description",
+                        "source": "planner",
+                        "agent": ["id": "agent-1"]
+                    ]
+                ])
+            )
+        )
+
+        #expect(delegate.pendingAssistantMessage?.parts.count == 1)
+        #expect(delegate.pendingAssistantMessage?.parts.first?.type == OCPartType(rawValue: rawType))
+        #expect(delegate.pendingAssistantMessage?.content == "Visible")
+        #expect(delegate.clearedStreamingBuffers.isEmpty)
+    }
+
+    @MainActor
     private func waitForMainQueue(milliseconds: Int) async {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
@@ -154,4 +200,59 @@ struct ChatStreamBehaviorTests {
             }
         }
     }
+
+    @MainActor
+    private func makeHandler(delegate: SSEDelegateSpy) -> SSEEventHandler {
+        let tracker = LiveActivityTracker(liveActivity: TestLiveActivityProvider())
+        let handler = SSEEventHandler(haptics: HapticController(), liveActivityTracker: tracker)
+        handler.delegate = delegate
+        return handler
+    }
+}
+
+@MainActor
+private final class SSEDelegateSpy: SSEEventHandlerDelegate {
+    var currentSessionID: String? = "session-1"
+    var messages: [ChatMessage] = []
+    var pendingAssistantMessage: ChatMessage?
+    var currentActivity: AgentActivity?
+    var sessionStatus: OCSessionStatus?
+    var isLoading: Bool = false
+    var currentSession: OCSession?
+    var pendingPermission: OCPermissionRequest?
+    var showPermissionAlert: Bool = false
+    var pendingQuestion: OCQuestionRequest?
+    var showQuestionSheet: Bool = false
+    var clearedStreamingBuffers: [String] = []
+
+    func finishLoading() {}
+
+    func appendStreamingText(messageID: String, text: String) {}
+
+    func clearStreamingBuffer(messageID: String) {
+        clearedStreamingBuffers.append(messageID)
+    }
+
+    func questionDidPresent() {}
+}
+
+private final class TestLiveActivityProvider: LiveActivityProviding {
+    var isActive: Bool { false }
+
+    func startActivity(agentName: String, userTask: String, subject: String?) {}
+
+    func update(
+        subject: String?,
+        currentIntent: String,
+        currentIntentIcon: String?,
+        previousIntent: String?,
+        secondPreviousIntent: String?,
+        stepNumber: Int,
+        costTotal: String?,
+        pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
+    ) {}
+
+    func endActivity(completionSummary: String?) {}
+
+    func previewLiveActivity() {}
 }

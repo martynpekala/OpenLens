@@ -6,45 +6,98 @@ enum ToolLabelFormatter {
 
     /// Build a short label describing what the tool is doing (e.g. "Reading main.swift...").
     static func label(toolName: String, state: OCToolState) -> String {
-        if let input = state.input?.value as? [String: Any] {
-            if let path = input["path"] as? String {
-                let filename = (path as NSString).lastPathComponent
-                switch toolName.lowercased() {
-                case "read":  return "Reading \(filename)..."
-                case "write": return "Writing \(filename)..."
-                case "edit":  return "Editing \(filename)..."
-                default: break
-                }
+        let normalizedToolName = toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let input = state.input?.value as? [String: Any]
+
+        switch normalizedToolName {
+        case "read":
+            if let path = toolPath(input) {
+                return "Read \(compactPath(path))"
             }
-            if let command = input["command"] as? String {
-                let short = String(command.prefix(40))
-                return "Running: \(short)..."
+        case "write":
+            if let path = toolPath(input) {
+                return "Write \(compactPath(path))"
             }
-            if let query = input["query"] as? String {
-                return "Searching: \(query.prefix(30))..."
+        case "edit":
+            if let path = toolPath(input) {
+                return "Edit \(compactPath(path))"
             }
-            if let pattern = input["pattern"] as? String {
-                return "Finding: \(pattern.prefix(30))..."
+        case "glob":
+            if let pattern = input?["pattern"] as? String {
+                let scope = compactScope(input?["path"] as? String)
+                return scope == "." ? "Glob \"\(pattern)\"" : "Glob \"\(pattern)\" in \(scope)"
             }
+        case "grep":
+            if let pattern = input?["pattern"] as? String {
+                let scope = compactScope(input?["path"] as? String)
+                return scope == "." ? "Grep \"\(pattern)\"" : "Grep \"\(pattern)\" in \(scope)"
+            }
+        case "bash":
+            if let command = input?["command"] as? String {
+                return "Bash \(commandPreview(command))"
+            }
+        case "question":
+            if let title = state.title?.nilIfBlank {
+                return title
+            }
+            return "Question"
+        default:
+            break
         }
 
-        // Question tool
-        if toolName.lowercased() == "question" {
-            return "Asking a question..."
+        if let query = input?["query"] as? String {
+            return "Search \(String(query.prefix(40)))"
         }
 
-        if let title = state.title {
+        if let pattern = input?["pattern"] as? String {
+            return "Find \(String(pattern.prefix(40)))"
+        }
+
+        if let title = state.title?.nilIfBlank {
             return title
         }
-        return "\(toolName)..."
+        return normalizedToolName
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
     }
 
     /// Build a detail string (typically the full path, if available).
     static func detail(state: OCToolState) -> String {
         if let input = state.input?.value as? [String: Any],
-           let path = input["path"] as? String {
+           let path = toolPath(input) {
             return path
         }
         return ""
+    }
+
+    private static func toolPath(_ input: [String: Any]?) -> String? {
+        (input?["filePath"] as? String)?.nilIfBlank ??
+        (input?["path"] as? String)?.nilIfBlank
+    }
+
+    private static func compactPath(_ path: String) -> String {
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count > 3 else { return path }
+        return parts.suffix(3).joined(separator: "/")
+    }
+
+    private static func compactScope(_ path: String?) -> String {
+        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+            return "."
+        }
+
+        if path == "." {
+            return path
+        }
+
+        let compact = compactPath(path)
+        let last = (compact as NSString).lastPathComponent
+        return last.isEmpty ? compact : last
+    }
+
+    private static func commandPreview(_ command: String) -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 52 else { return trimmed }
+        return String(trimmed.prefix(52)) + "..."
     }
 }
