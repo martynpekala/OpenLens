@@ -59,6 +59,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         didSet { syncLiveActivityPendingUserResponse() }
     }
     var showQuestionSheet: Bool = false
+    var isRecordingStream: Bool = false
 
     // MARK: - Model Selection
 
@@ -297,11 +298,15 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// When true, `send()` replays a demo script instead of hitting the network.
     @ObservationIgnored let isDemoMode: Bool
 
+    @ObservationIgnored private let recordedReplay: RecordedChatReplay?
+    @ObservationIgnored private let recordedReplayPlaybackMode: RecordedReplayPlayer.PlaybackMode?
+
     /// Script used by preview/demo chat modes.
     @ObservationIgnored private let demoScript: DemoScript
 
     /// Replays demo scripts when `isDemoMode` is true.
     @ObservationIgnored private var demoPlayer: DemoPlayer?
+    @ObservationIgnored private var recordedReplayPlayer: RecordedReplayPlayer?
 
     // MARK: - Services (injected)
 
@@ -311,8 +316,14 @@ final class ChatClient: SSEEventHandlerDelegate {
     @ObservationIgnored private let questionService: QuestionService?
     @ObservationIgnored private let connection: ConnectionManager?
     @ObservationIgnored private let savedConnectionsStore: SavedConnectionsStore?
+    @ObservationIgnored private let recordedReplayStore: RecordedReplayStore?
 
-    var isConnected: Bool { connection?.isConnected ?? isDemoMode }
+    var isRecordedReplayMode: Bool { recordedReplay != nil }
+    var isOfflinePreviewMode: Bool { isDemoMode || isRecordedReplayMode }
+    var isConnected: Bool { connection?.isConnected ?? isOfflinePreviewMode }
+    var canCompose: Bool { !isRecordedReplayMode }
+    var showsComposer: Bool { !isRecordedReplayMode }
+    var supportsStreamRecording: Bool { !isOfflinePreviewMode && recordedReplayStore != nil }
 
     // MARK: - Collaborators
 
@@ -323,6 +334,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Active question timeout task (auto-rejects if user doesn't respond).
     @ObservationIgnored private var questionTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var responseStartDate: Date?
+    @ObservationIgnored private var streamRecorder: ChatStreamRecorder?
 
     /// Duration before a pending question is auto-rejected (5 minutes).
     private static let questionTimeoutSeconds: UInt64 = 300
@@ -389,9 +401,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         messagesService: MessagesService,
         providersService: ProvidersService,
         questionService: QuestionService,
-        savedConnectionsStore: SavedConnectionsStore
+        savedConnectionsStore: SavedConnectionsStore,
+        recordedReplayStore: RecordedReplayStore
     ) {
         self.isDemoMode = false
+        self.recordedReplay = nil
+        self.recordedReplayPlaybackMode = nil
         self.demoScript = .showcase
         self.connection = connection
         self.sessionsService = sessionsService
@@ -399,6 +414,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.providersService = providersService
         self.questionService = questionService
         self.savedConnectionsStore = savedConnectionsStore
+        self.recordedReplayStore = recordedReplayStore
 
         let haptics = HapticController()
         let tracker = LiveActivityTracker(
@@ -408,6 +424,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.haptics = haptics
         self.liveActivityTracker = tracker
         self.sseHandler = SSEEventHandler(haptics: haptics, liveActivityTracker: tracker)
+        self.recordedReplayPlayer = nil
 
         // Wire delegate after all properties are initialized
         self.sseHandler?.delegate = self
@@ -456,6 +473,8 @@ final class ChatClient: SSEEventHandlerDelegate {
     init(demoMode: Bool, script: DemoScript = .showcase) {
         precondition(demoMode, "Use the full init for non-demo mode")
         self.isDemoMode = true
+        self.recordedReplay = nil
+        self.recordedReplayPlaybackMode = nil
         self.demoScript = script
         self.connection = nil
         self.sessionsService = nil
@@ -463,14 +482,44 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.providersService = nil
         self.questionService = nil
         self.savedConnectionsStore = nil
+        self.recordedReplayStore = nil
         self.liveActivityTracker = nil
         self.sseHandler = nil
+        self.recordedReplayPlayer = nil
 
         self.haptics = HapticController()
         self.selectedProviderID = "anthropic"
         self.selectedModelID = "claude-sonnet-4-20250514"
 
         self.demoPlayer = DemoPlayer(chatClient: self)
+    }
+
+    init(recordedReplay: RecordedChatReplay, playbackMode: RecordedReplayPlayer.PlaybackMode = .realtime) {
+        self.isDemoMode = false
+        self.recordedReplay = recordedReplay
+        self.recordedReplayPlaybackMode = playbackMode
+        self.demoScript = .showcase
+        self.connection = nil
+        self.sessionsService = nil
+        self.messagesService = nil
+        self.providersService = nil
+        self.questionService = nil
+        self.savedConnectionsStore = nil
+        self.recordedReplayStore = nil
+
+        let haptics = HapticController()
+        let tracker = LiveActivityTracker(liveActivity: NoopLiveActivityProvider())
+        let handler = SSEEventHandler(haptics: haptics, liveActivityTracker: tracker)
+
+        self.haptics = haptics
+        self.liveActivityTracker = tracker
+        self.sseHandler = handler
+        self.recordedReplayPlayer = RecordedReplayPlayer(eventHandler: handler)
+        self.selectedProviderID = ""
+        self.selectedModelID = ""
+        self.demoPlayer = nil
+
+        self.sseHandler?.delegate = self
     }
 
     // MARK: - Session Management
@@ -500,6 +549,27 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
+        if let recordedReplay {
+            resetSessionState()
+
+            let createdAt = recordedReplay.createdAt.timeIntervalSince1970 * 1000
+            let updatedAt = recordedReplay.createdAt
+                .addingTimeInterval(recordedReplay.duration)
+                .timeIntervalSince1970 * 1000
+
+            currentSession = OCSession(
+                id: recordedReplay.sessionID,
+                title: recordedReplay.sessionTitle ?? "",
+                time: OCSessionTime(created: createdAt, updated: updatedAt)
+            )
+            errorMessage = nil
+            recordedReplayPlayer?.play(
+                recordedReplay,
+                mode: recordedReplayPlaybackMode ?? .realtime
+            )
+            return
+        }
+
         do {
             let session = try await sessionsService!.ensureSession()
             await loadSession(session)
@@ -522,6 +592,12 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
+        if isRecordedReplayMode {
+            resetSessionState()
+            currentSession = session
+            return
+        }
+
         // Drain any in-flight state from the previous session
         resetSessionState()
 
@@ -537,7 +613,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     func loadMessages() async {
-        guard !isDemoMode, let session = currentSession else { return }
+        guard !isOfflinePreviewMode, let session = currentSession else { return }
 
         do {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
@@ -551,7 +627,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     func reloadForProjectContextChange() async {
-        guard !isDemoMode else { return }
+        guard !isOfflinePreviewMode else { return }
 
         resetSessionState()
         currentSession = nil
@@ -593,7 +669,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     // MARK: - Provider / Model Loading
 
     func loadProviders() async {
-        guard !isDemoMode else { return }
+        guard !isOfflinePreviewMode else { return }
         isLoadingProviders = true
         defer { isLoadingProviders = false }
 
@@ -682,6 +758,11 @@ final class ChatClient: SSEEventHandlerDelegate {
         if isDemoMode {
             inputText = ""
             demoPlayer?.play(demoScript)
+            return
+        }
+
+        if isRecordedReplayMode {
+            errorMessage = AppText.recordedReplayReadOnly
             return
         }
 
@@ -850,12 +931,25 @@ final class ChatClient: SSEEventHandlerDelegate {
         demoPlayer?.play(demoScript)
     }
 
+    func stopPreviewPlayback() {
+        demoPlayer?.stop()
+        recordedReplayPlayer?.stop()
+    }
+
     // MARK: - Abort
 
     func abort() {
         if isDemoMode {
             demoPlayer?.stop()
             finishLoading()
+            return
+        }
+
+        if isRecordedReplayMode {
+            recordedReplayPlayer?.stop()
+            if isLoading || pendingAssistantMessage != nil {
+                finishLoading()
+            }
             return
         }
 
@@ -876,7 +970,85 @@ final class ChatClient: SSEEventHandlerDelegate {
         sseHandler?.connectionManager = connection
 
         sseClient.onEvent = { [weak self] event in
+            self?.recordIncomingEvent(event)
             self?.sseHandler?.handleEvent(event)
+        }
+    }
+
+    // MARK: - Stream Recording
+
+    func startStreamRecording() {
+        guard supportsStreamRecording else {
+            errorMessage = AppText.recordingStorageUnavailable
+            return
+        }
+
+        guard !isRecordingStream else {
+            errorMessage = AppText.recordingAlreadyInProgress
+            return
+        }
+
+        guard let session = currentSession else {
+            errorMessage = AppText.recordingNeedsSession
+            return
+        }
+
+        guard !isLoading else {
+            errorMessage = AppText.recordingWaitForIdle
+            return
+        }
+
+        errorMessage = nil
+        isRecordingStream = true
+        streamRecorder = ChatStreamRecorder(
+            sessionID: session.id,
+            sessionTitle: session.title,
+            projectName: connection?.projectName,
+            branch: connection?.branch
+        )
+    }
+
+    func stopStreamRecording() {
+        guard let recorder = streamRecorder else { return }
+
+        streamRecorder = nil
+        isRecordingStream = false
+        handleStreamRecorderCompletion(recorder.stop(), surfaceEmptyCapture: true)
+    }
+
+    private func recordIncomingEvent(_ event: OCEvent) {
+        guard var recorder = streamRecorder else { return }
+
+        if let completion = recorder.record(event) {
+            streamRecorder = nil
+            isRecordingStream = false
+            handleStreamRecorderCompletion(completion, surfaceEmptyCapture: false)
+        } else {
+            streamRecorder = recorder
+        }
+    }
+
+    private func handleStreamRecorderCompletion(
+        _ completion: ChatStreamRecorder.Completion,
+        surfaceEmptyCapture: Bool
+    ) {
+        switch completion {
+        case .saved(let replay):
+            guard let recordedReplayStore else {
+                errorMessage = AppText.recordingStorageUnavailable
+                return
+            }
+
+            do {
+                _ = try recordedReplayStore.saveReplay(replay)
+            } catch {
+                errorMessage = AppText.recordedCaptureSaveFailed(error.localizedDescription)
+            }
+
+        case .discardedEmpty:
+            if surfaceEmptyCapture {
+                errorMessage = AppText.recordingEmptyCapture
+            }
         }
     }
 
@@ -907,7 +1079,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     /// Recover any pending permission from the server for the current session.
     func recoverPendingPermission() async {
-        guard !isDemoMode, let sessionID = currentSession?.id else { return }
+        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return }
 
         do {
             let permission = try await questionService?.recoverPendingPermission(sessionID: sessionID)
@@ -928,7 +1100,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     /// Recover any pending questions from the server after reconnection.
     func recoverPendingQuestions() async {
-        guard !isDemoMode, let sessionID = currentSession?.id else { return }
+        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return }
 
         do {
             if let question = try await questionService?.recoverPendingQuestion(sessionID: sessionID) {
@@ -1059,6 +1231,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func resetSessionState() {
+        demoPlayer?.stop()
+        recordedReplayPlayer?.stop()
+        streamRecorder = nil
+        isRecordingStream = false
         stopFlushTimer()
         streamingBuffer = ""
         pendingAssistantMessage = nil
@@ -1110,4 +1286,25 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         contentVersion &+= 1
     }
+}
+
+private final class NoopLiveActivityProvider: LiveActivityProviding {
+    var isActive: Bool { false }
+
+    func startActivity(agentName: String, userTask: String, subject: String?) {}
+
+    func update(
+        subject: String?,
+        currentIntent: String,
+        currentIntentIcon: String?,
+        previousIntent: String?,
+        secondPreviousIntent: String?,
+        stepNumber: Int,
+        costTotal: String?,
+        pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
+    ) {}
+
+    func endActivity(completionSummary: String?) {}
+
+    func previewLiveActivity() {}
 }

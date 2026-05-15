@@ -55,12 +55,14 @@ struct ChatView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            chatComposerInset
-                .background(
-                    LinearGradient(
-                        gradient: Gradient(colors: [.clear, Color.appBackground.opacity(0.7)]), startPoint: .top, endPoint: .bottom
+            if chatClient.showsComposer {
+                chatComposerInset
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [.clear, Color.appBackground.opacity(0.7)]), startPoint: .top, endPoint: .bottom
+                        )
                     )
-                )
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -68,7 +70,16 @@ struct ChatView: View {
                 projectName: connection.projectName,
                 branch: connection.branch,
                 connectionState: connection.state,
-                sessionTitle: chatClient.currentSession?.title
+                sessionTitle: chatClient.currentSession?.title,
+                showsRecordingControls: chatClient.supportsStreamRecording,
+                isRecordingStream: chatClient.isRecordingStream,
+                onToggleRecording: {
+                    if chatClient.isRecordingStream {
+                        chatClient.stopStreamRecording()
+                    } else {
+                        chatClient.startStreamRecording()
+                    }
+                }
             )
         }
 
@@ -173,7 +184,7 @@ struct ChatView: View {
 
     private var chatComposerInset: some View {
         VStack(spacing: 8) {
-            if chatClient.currentSession != nil {
+            if chatClient.currentSession != nil && chatClient.showsComposer {
                 modelSelectionRow
             }
             inputBar
@@ -436,7 +447,8 @@ struct ChatView: View {
         !chatClient.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !chatClient.isLoading &&
             chatClient.currentSession != nil &&
-            chatClient.pendingQuestion == nil
+            chatClient.pendingQuestion == nil &&
+            chatClient.canCompose
     }
 
     private var slashQuery: String? {
@@ -823,7 +835,7 @@ private struct ChatMessagesListView: View {
     }
 }
 
-struct ChatScrollPolicy {
+enum ChatScrollPolicy {
     static func isNearBottom(bottomMarkerMinY: CGFloat, viewportHeight: CGFloat, threshold: CGFloat) -> Bool {
         bottomMarkerMinY <= viewportHeight + threshold
     }

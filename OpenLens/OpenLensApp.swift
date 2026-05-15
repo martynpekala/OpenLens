@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum ChatPreviewMode: String {
+private enum BuiltinChatPreview {
     case demo
     case debug
 
@@ -32,13 +32,37 @@ private enum ChatPreviewMode: String {
     }
 }
 
+private enum ChatPreviewSource {
+    case builtin(BuiltinChatPreview)
+    case recordedReplay(RecordedChatReplay, mode: RecordedReplayPlayer.PlaybackMode)
+
+    var projectName: String {
+        switch self {
+        case .builtin(let preview):
+            return preview.projectName
+        case .recordedReplay(let replay, _):
+            return replay.projectName ?? AppText.captureProjectFallback
+        }
+    }
+
+    var branch: String {
+        switch self {
+        case .builtin(let preview):
+            return preview.branch
+        case .recordedReplay(let replay, let mode):
+            return [replay.branch, mode.displayName]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank }
+                .joined(separator: " · ")
+        }
+    }
+}
 
 @main
 struct OpenLensApp: App {
     private let screenshotModeEnabled: Bool
     @State private var connection: ConnectionManager
     @State private var router = AppRouter()
-    
+
     private let liveActivity: LiveActivityManager
     private let sessionsService: SessionsService
     private let messagesService: MessagesService
@@ -49,11 +73,12 @@ struct OpenLensApp: App {
     private let workspaceService: WorkspaceService
     private let sessionInsightsService: SessionInsightsService
     private let savedConnectionsStore: SavedConnectionsStore
+    private let recordedReplayStore: RecordedReplayStore
 
     @State private var chatClient: ChatClient
 
     /// When non-nil, presents a preview ChatView over the connect screen.
-    @State private var activePreviewMode: ChatPreviewMode?
+    @State private var activePreviewSource: ChatPreviewSource?
     @State private var previewChatClient: ChatClient?
     @State private var previewConnection: ConnectionManager?
 
@@ -65,6 +90,14 @@ struct OpenLensApp: App {
 
     /// Alert shown when a deep link arrives while already connected.
     @State private var showDeepLinkSwitch: Bool = false
+
+    private var startDebugPreviewAction: (() -> Void)? {
+#if DEBUG
+            { startPreview(.builtin(.debug)) }
+#else
+        nil
+#endif
+    }
 
     init() {
         self.screenshotModeEnabled = ScreenshotFixtures.isEnabled
@@ -90,6 +123,7 @@ struct OpenLensApp: App {
         let inbox = InboxService(connection: connection)
         let workspace = WorkspaceService(connection: connection)
         let sessionInsights = SessionInsightsService()
+        let recordedReplayStore = RecordedReplayStore()
 
         self.savedConnectionsStore = savedConnections
         self.liveActivity = liveActivity
@@ -101,6 +135,7 @@ struct OpenLensApp: App {
         self.inboxService = inbox
         self.workspaceService = workspace
         self.sessionInsightsService = sessionInsights
+        self.recordedReplayStore = recordedReplayStore
 
         self._connection = State(initialValue: connection)
 
@@ -120,7 +155,8 @@ struct OpenLensApp: App {
                 messagesService: messages,
                 providersService: providers,
                 questionService: questions,
-                savedConnectionsStore: savedConnections
+                savedConnectionsStore: savedConnections,
+                recordedReplayStore: recordedReplayStore
             ))
         }
     }
@@ -138,13 +174,16 @@ struct OpenLensApp: App {
                         .transition(.opacity)
                 } else {
                     ConnectView(
-                        onStartDemo: { startPreview(.demo) },
-                        onStartDebug: { startPreview(.debug) },
+                        onStartDemo: { startPreview(.builtin(.demo)) },
+                        onStartDebug: startDebugPreviewAction,
+                        onStartRecordedReplay: { replay, mode in
+                            startPreview(.recordedReplay(replay, mode: mode))
+                        },
                         pendingDeepLink: $pendingDeepLink,
                         pendingSessionNavigationID: $pendingSessionNavigationID
                     )
-                        .environment(\.connection, connection)
-                        .transition(.opacity)
+                    .environment(\.connection, connection)
+                    .transition(.opacity)
                 }
             }
             .environment(\.liveActivity, liveActivity)
@@ -157,6 +196,7 @@ struct OpenLensApp: App {
             .environment(\.inboxService, inboxService)
             .environment(\.workspaceService, workspaceService)
             .environment(\.sessionInsightsService, sessionInsightsService)
+            .environment(\.recordedReplayStore, recordedReplayStore)
             .sheet(isPresented: previewPresentationBinding) {
                 if let previewClient = previewChatClient, let previewConn = previewConnection {
                     NavigationStack {
@@ -220,25 +260,34 @@ struct OpenLensApp: App {
     // MARK: - Preview Modes
 
     private var isPreviewMode: Bool {
-        activePreviewMode != nil
+        activePreviewSource != nil
     }
 
-    private func startPreview(_ mode: ChatPreviewMode) {
+    private func startPreview(_ source: ChatPreviewSource) {
+        previewChatClient?.stopPreviewPlayback()
+
         let previewConn = ConnectionManager()
         previewConn.configureDemoState(
-            projectName: mode.projectName,
-            branch: mode.branch
+            projectName: source.projectName,
+            branch: source.branch
         )
 
-        let previewClient = ChatClient(demoMode: true, script: mode.script)
+        let previewClient: ChatClient
+        switch source {
+        case .builtin(let preview):
+            previewClient = ChatClient(demoMode: true, script: preview.script)
+        case .recordedReplay(let replay, let mode):
+            previewClient = ChatClient(recordedReplay: replay, playbackMode: mode)
+        }
 
         self.previewConnection = previewConn
         self.previewChatClient = previewClient
-        self.activePreviewMode = mode
+        self.activePreviewSource = source
     }
 
     private func exitPreview() {
-        activePreviewMode = nil
+        previewChatClient?.stopPreviewPlayback()
+        activePreviewSource = nil
         previewChatClient = nil
         previewConnection = nil
     }
@@ -257,8 +306,9 @@ struct OpenLensApp: App {
     @MainActor
     private func openDeepLinkedSessionIfNeeded() async {
         guard !isPreviewMode,
-               connection.isConnected,
-               let sessionID = pendingSessionNavigationID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
+              connection.isConnected,
+              let sessionID = pendingSessionNavigationID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        else {
             return
         }
 

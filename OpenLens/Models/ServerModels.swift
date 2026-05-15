@@ -295,6 +295,11 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
         case info, parts
     }
 
+    init(info: OCMessage, parts: [OCPart]) {
+        self.info = info
+        self.parts = parts
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         info = try container.decode(OCMessage.self, forKey: .info)
@@ -345,6 +350,10 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     let type: OCPartType
 
     let text: String?
+    let synthetic: Bool?
+    let ignored: Bool?
+    let metadata: [String: AnyCodable]?
+    let time: AnyCodable?
 
     let callID: String?
     let tool: String?
@@ -353,34 +362,70 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     let mime: String?
     let filename: String?
     let url: String?
+    let source: AnyCodable?
+    let snapshot: AnyCodable?
+    let hash: String?
+    let files: [AnyCodable]?
+    let name: String?
 
     let reason: String?
     let cost: Double?
     let tokens: OCTokenUsage?
+    let prompt: String?
+    let partDescription: String?
+    let agent: AnyCodable?
+    let attempt: Int?
+    let retryError: String?
+    let auto: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case id, sessionID, messageID, type, text, callID, tool, state
-        case mime, filename, url, reason, cost, tokens
+        case id, sessionID, messageID, type, text, synthetic, ignored, metadata, time
+        case callID, tool, state
+        case mime, filename, url, source, snapshot, hash, files, name
+        case reason, cost, tokens, prompt, agent, attempt, auto
+        case partDescription = "description"
+        case retryError = "error"
     }
 
     init(id: String, sessionID: String, messageID: String, type: OCPartType,
-         text: String? = nil, callID: String? = nil, tool: String? = nil, state: OCToolState? = nil,
+         text: String? = nil, synthetic: Bool? = nil, ignored: Bool? = nil,
+         metadata: [String: AnyCodable]? = nil, time: AnyCodable? = nil,
+         callID: String? = nil, tool: String? = nil, state: OCToolState? = nil,
          mime: String? = nil, filename: String? = nil, url: String? = nil,
-         reason: String? = nil, cost: Double? = nil, tokens: OCTokenUsage? = nil) {
+         source: AnyCodable? = nil, snapshot: AnyCodable? = nil, hash: String? = nil,
+         files: [AnyCodable]? = nil, name: String? = nil,
+         reason: String? = nil, cost: Double? = nil, tokens: OCTokenUsage? = nil,
+         prompt: String? = nil, partDescription: String? = nil, agent: AnyCodable? = nil,
+         attempt: Int? = nil, retryError: String? = nil, auto: Bool? = nil) {
         self.id = id
         self.sessionID = sessionID
         self.messageID = messageID
         self.type = type
         self.text = text
+        self.synthetic = synthetic
+        self.ignored = ignored
+        self.metadata = metadata
+        self.time = time
         self.callID = callID
         self.tool = tool
         self.state = state
         self.mime = mime
         self.filename = filename
         self.url = url
+        self.source = source
+        self.snapshot = snapshot
+        self.hash = hash
+        self.files = files
+        self.name = name
         self.reason = reason
         self.cost = cost
         self.tokens = tokens
+        self.prompt = prompt
+        self.partDescription = partDescription
+        self.agent = agent
+        self.attempt = attempt
+        self.retryError = retryError
+        self.auto = auto
     }
 
     init(from decoder: Decoder) throws {
@@ -390,15 +435,39 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
         messageID = try container.decodeIfPresent(String.self, forKey: .messageID) ?? ""
         type = try container.decodeIfPresent(OCPartType.self, forKey: .type) ?? .unknown
         text = try container.decodeIfPresent(String.self, forKey: .text)
+        synthetic = try container.decodeIfPresent(Bool.self, forKey: .synthetic)
+        ignored = try container.decodeIfPresent(Bool.self, forKey: .ignored)
+        metadata = try? container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
+        time = try? container.decodeIfPresent(AnyCodable.self, forKey: .time)
         callID = try container.decodeIfPresent(String.self, forKey: .callID)
         tool = try container.decodeIfPresent(String.self, forKey: .tool)
         state = try? container.decodeIfPresent(OCToolState.self, forKey: .state)
         mime = try container.decodeIfPresent(String.self, forKey: .mime)
         filename = try container.decodeIfPresent(String.self, forKey: .filename)
         url = try container.decodeIfPresent(String.self, forKey: .url)
+        source = try? container.decodeIfPresent(AnyCodable.self, forKey: .source)
+        snapshot = try? container.decodeIfPresent(AnyCodable.self, forKey: .snapshot)
+        hash = try container.decodeIfPresent(String.self, forKey: .hash)
+        files = try? container.decodeIfPresent([AnyCodable].self, forKey: .files)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
         reason = try container.decodeIfPresent(String.self, forKey: .reason)
         cost = try container.decodeIfPresent(Double.self, forKey: .cost)
         tokens = try? container.decodeIfPresent(OCTokenUsage.self, forKey: .tokens)
+        prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
+        partDescription = try container.decodeIfPresent(String.self, forKey: .partDescription)
+        agent = try? container.decodeIfPresent(AnyCodable.self, forKey: .agent)
+        attempt = try container.decodeIfPresent(Int.self, forKey: .attempt)
+        retryError = try container.decodeIfPresent(String.self, forKey: .retryError)
+        auto = try container.decodeIfPresent(Bool.self, forKey: .auto)
+    }
+
+    var isRenderableText: Bool {
+        type == .text && synthetic != true && ignored != true
+    }
+
+    var renderableText: String? {
+        guard isRenderableText else { return nil }
+        return text
     }
 }
 
@@ -410,14 +479,15 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     let error: String?
     let metadata: [String: AnyCodable]?
     let time: OCToolTime?
+    let attachments: [AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
-        case status, input, output, title, error, metadata, time
+        case status, input, output, title, error, metadata, time, attachments
     }
 
     init(status: OCToolStatus, input: AnyCodable? = nil, output: String? = nil,
          title: String? = nil, error: String? = nil, metadata: [String: AnyCodable]? = nil,
-         time: OCToolTime? = nil) {
+         time: OCToolTime? = nil, attachments: [AnyCodable]? = nil) {
         self.status = status
         self.input = input
         self.output = output
@@ -425,6 +495,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
         self.error = error
         self.metadata = metadata
         self.time = time
+        self.attachments = attachments
     }
 
     init(from decoder: Decoder) throws {
@@ -450,6 +521,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
         }
         metadata = try? container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
         time = try? container.decodeIfPresent(OCToolTime.self, forKey: .time)
+        attachments = try? container.decodeIfPresent([AnyCodable].self, forKey: .attachments)
     }
 }
 
@@ -477,6 +549,63 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
  struct OCEvent: Codable, Sendable {
     let type: String
     let properties: AnyCodable?
+ }
+
+extension OCEvent {
+    var sessionID: String? {
+        guard let propertiesDictionary = propertiesDictionary else { return nil }
+
+        switch type {
+        case "session.status",
+             "message.part.delta",
+             "message.part.removed",
+             "message.removed",
+             "permission.asked",
+             "question.asked",
+             "question.replied",
+             "question.rejected":
+            return propertiesDictionary["sessionID"] as? String
+
+        case "message.updated":
+            return nestedDictionary(for: "info", in: propertiesDictionary)?["sessionID"] as? String
+
+        case "message.part.updated":
+            return nestedDictionary(for: "part", in: propertiesDictionary)?["sessionID"] as? String
+
+        case "session.updated":
+            return nestedDictionary(for: "info", in: propertiesDictionary)?["id"] as? String
+
+        default:
+            return nil
+        }
+    }
+
+    var sessionStatusType: OCSessionStatusType? {
+        guard type == "session.status",
+              let statusDictionary = nestedDictionary(for: "status", in: propertiesDictionary),
+              let rawType = statusDictionary["type"] as? String else {
+            return nil
+        }
+
+        return OCSessionStatusType(rawValue: rawType)
+    }
+
+    var isReplayRecordable: Bool {
+        switch type {
+        case "server.connected", "server.heartbeat":
+            return false
+        default:
+            return sessionID != nil
+        }
+    }
+
+    private var propertiesDictionary: [String: Any]? {
+        properties?.value as? [String: Any]
+    }
+
+    private func nestedDictionary(for key: String, in dictionary: [String: Any]?) -> [String: Any]? {
+        dictionary?[key] as? [String: Any]
+    }
 }
 
 // MARK: - Session Status

@@ -10,12 +10,19 @@ enum AppText {
     static let autoReconnectErrorTitle = "Could not reach the saved server"
     static let basicAuth = "Basic Auth"
     static let branch = "Branch"
+    static let browseCaptures = "Browse Captures"
+    static let browseCapturesSubtitle = "Replay saved assistant turns without a live server"
     static let cancel = "Cancel"
     static let connect = "Connect"
     static let connecting = "Connecting..."
     static let connectingSubtitle = "Establishing connection to the server"
     static let connectionSection = "Connection"
     static let copyCode = "Copy Code"
+    static let captureBrowserEmptySubtitle = "Start recording in a live chat, then return here to replay the saved turn."
+    static let captureBrowserEmptyTitle = "No Captures"
+    static let captureBrowserErrorTitle = "Couldn't Load Captures"
+    static let captureBrowserTitle = "Captures"
+    static let captureProjectFallback = "Recorded Capture"
     static let create = "Create"
     static let customAnswer = "Type your own answer"
     static let customPlaceholder = "Type your answer..."
@@ -55,6 +62,8 @@ enum AppText {
     static let openCodeServer = "OpenCode Server"
     static let optional = "Optional"
     static let pass = "Pass"
+    static let playFast = "Play Fast"
+    static let playRealtime = "Play Realtime"
     static let permissionFallback = "The agent is requesting permission to proceed."
     static let permissionRequired = "Permission Required"
     static let project = "Project"
@@ -65,6 +74,14 @@ enum AppText {
     static let qrInvalid = "Invalid QR code — use openlens-qr to generate"
     static let qrScan = "Scan QR Code"
     static let qrScanSubtitle = "Quick connect via openlens-qr CLI"
+    static let recordedReplayReadOnly = "Recorded replays are read-only previews."
+    static let recordingAlreadyInProgress = "A stream capture is already in progress."
+    static let recordingEmptyCapture = "No capture was saved because no assistant turn events were recorded."
+    static let recordingNeedsSession = "Open a live chat session before starting a capture."
+    static let recordingStart = "Start Recording"
+    static let recordingStop = "Stop Recording"
+    static let recordingStorageUnavailable = "Recorded capture storage is unavailable."
+    static let recordingWaitForIdle = "Wait for the current assistant turn to finish before starting a capture."
     static let reasoning = "Reasoning"
     static let reconnecting = "Reconnecting..."
     static let reconnectingSubtitle = "Reconnecting to your saved server"
@@ -188,6 +205,26 @@ enum AppText {
     static let onboardingStart = "Let's go"
 
     static let wizardConnectQRTipBody = "On your computer, run this command to start the server and include the secret from `OPENLENS_QR_PASSWORD` in the QR flow. The TUI opens only after you scan and press Enter:"
+
+    static func captureEventCount(_ count: Int) -> String {
+        "\(count) event\(count == 1 ? "" : "s")"
+    }
+
+    static func recordedCaptureDeleteFailed(_ description: String) -> String {
+        "Failed to delete capture: \(description)"
+    }
+
+    static func recordedCaptureLoadFailed(_ description: String) -> String {
+        "Failed to load captures: \(description)"
+    }
+
+    static func recordedCaptureOpenFailed(_ description: String) -> String {
+        "Failed to open capture: \(description)"
+    }
+
+    static func recordedCaptureSaveFailed(_ description: String) -> String {
+        "Failed to save capture: \(description)"
+    }
 
     static func activitySteps(_ count: Int) -> String {
         "Steps (\(count))"

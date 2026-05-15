@@ -5,6 +5,7 @@ struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
     var onStartDebug: (() -> Void)?
+    var onStartRecordedReplay: ((RecordedChatReplay, RecordedReplayPlayer.PlaybackMode) -> Void)?
 
     /// Deep link received from `openlens://connect` URL or QR scan.
     @Binding var pendingDeepLink: DeepLinkConnection?
@@ -25,7 +26,6 @@ struct ConnectView: View {
     @State private var currentConnectionMethod: ConnectionMethod = .manual
 
     @State private var showQRScanner: Bool = false
-    @State private var showSetupWizard: Bool = false
 
     @Environment(\.connection) private var connection
     @Environment(\.savedConnections) private var savedConnections
@@ -46,9 +46,11 @@ struct ConnectView: View {
                         savedConnectionsSection
                     }
 
-                    if onStartDebug != nil || onStartDemo != nil {
+#if DEBUG
+                    if onStartDebug != nil || onStartDemo != nil || onStartRecordedReplay != nil {
                         previewModesSection
                     }
+#endif
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 24)
@@ -67,26 +69,11 @@ struct ConnectView: View {
                 }
             }
         }
-//        .onAppear {
-//            if consumePendingDeepLinkIfNeeded() {
-//                return
-//            }
-//
-//            if let recent = savedConnections.mostRecent {
-//                manualURL = recent.serverURL
-//                username = recent.username
-//                password = recent.password
-//            }
-//
-//            if autoReconnect, savedConnections.mostRecent?.isConfigured == true,
-//               !connection.didManuallyDisconnect {
-//                startConnect(auto: true)
-//            }
-//        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active, autoReconnect, !connection.isConnected, !showConnectionSheet,
                !connection.didManuallyDisconnect,
-               savedConnections.mostRecent?.isConfigured == true {
+               savedConnections.mostRecent?.isConfigured == true
+            {
                 startConnect(auto: true)
             }
         }
@@ -111,24 +98,6 @@ struct ConnectView: View {
                 onDismiss: { showQRScanner = false }
             )
         }
-//        .sheet(isPresented: $showSetupWizard) {
-//            SetupWizardView(
-//                onScanQR: {
-//                    showSetupWizard = false
-//                    showQRScanner = true
-//                },
-//                onManualEntry: {
-//                    showSetupWizard = false
-//                    showManualEntry = true
-//                },
-//                onBonjourScan: {
-//                    showSetupWizard = false
-//                    discovery.startBrowsing()
-//                }
-//            )
-//            .presentationDetents([.large])
-//            .presentationBackground(Color.appBackground)
-//        }
         .onChange(of: pendingDeepLink) { _, deepLink in
             guard let deepLink else { return }
             pendingDeepLink = nil
@@ -467,9 +436,23 @@ struct ConnectView: View {
 
     // MARK: - Preview Buttons
 
+#if DEBUG
     @ViewBuilder
     private var previewModesSection: some View {
         VStack(spacing: 12) {
+            if let onStartRecordedReplay {
+                NavigationLink {
+                    RecordedReplayListView(onSelect: onStartRecordedReplay)
+                } label: {
+                    previewButtonLabel(
+                        title: AppText.browseCaptures,
+                        subtitle: AppText.browseCapturesSubtitle,
+                        systemImage: "movieclapper"
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
             if let onStartDebug {
                 previewButton(
                     title: AppText.tryDebugChat,
@@ -496,23 +479,36 @@ struct ConnectView: View {
         systemImage: String,
         action: @escaping () -> Void
     ) -> some View {
+        Button(action: action) {
+            previewButtonLabel(
+                title: title,
+                subtitle: subtitle,
+                systemImage: systemImage
+            )
+        }
+    }
+#endif
+
+    private func previewButtonLabel(
+        title: String,
+        subtitle: String,
+        systemImage: String
+    ) -> some View {
         VStack(spacing: 6) {
-            Button(action: action) {
-                HStack(spacing: 8) {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 11))
-                    Text(title)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .foregroundStyle(Color.appSecondary)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.appSurface)
-                )
-                .surfaceShadow()
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 11))
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
             }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .foregroundStyle(Color.appSecondary)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.appSurface)
+            )
+            .surfaceShadow()
 
             Text(subtitle)
                 .font(.system(size: 12))

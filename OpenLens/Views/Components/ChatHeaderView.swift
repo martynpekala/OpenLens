@@ -6,6 +6,9 @@ struct ChatHeaderToolbar: ToolbarContent {
     let branch: String?
     let connectionState: ConnectionManager.State
     let sessionTitle: String?
+    let showsRecordingControls: Bool
+    let isRecordingStream: Bool
+    let onToggleRecording: (() -> Void)?
 
     private var statusColor: Color {
         switch connectionState {
@@ -23,6 +26,18 @@ struct ChatHeaderToolbar: ToolbarContent {
         case .disconnected: AppText.statusOffline
         case .error: AppText.statusError
         }
+    }
+
+    private var recordingLabel: String {
+        isRecordingStream ? AppText.recordingStop : AppText.recordingStart
+    }
+
+    private var recordingIcon: String {
+        isRecordingStream ? "stop.circle.fill" : "record.circle"
+    }
+
+    private var recordingTint: Color {
+        isRecordingStream ? .red : Color.appSecondary
     }
 
     var body: some ToolbarContent {
@@ -81,6 +96,27 @@ struct ChatHeaderToolbar: ToolbarContent {
                 }
                 .safeAreaPadding(.vertical)
             
+        }
+
+        if showsRecordingControls, let onToggleRecording {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: onToggleRecording) {
+                    HStack(spacing: 6) {
+                        Image(systemName: recordingIcon)
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(recordingLabel)
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundStyle(recordingTint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.appSurface)
+                    .clipShape(Capsule())
+                    .surfaceShadow()
+                }
+                .accessibilityLabel(recordingLabel)
+                .accessibilityHint(statusText)
+            }
         }
     }
 }
