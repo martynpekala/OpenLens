@@ -46,11 +46,9 @@ struct ConnectView: View {
                         savedConnectionsSection
                     }
 
-#if DEBUG
-                    if onStartDebug != nil || onStartDemo != nil || onStartRecordedReplay != nil {
+                    if showsPreviewModesSection {
                         previewModesSection
                     }
-#endif
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 24)
@@ -71,6 +69,7 @@ struct ConnectView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active, autoReconnect, !connection.isConnected, !showConnectionSheet,
+               !showQRScanner,
                !connection.didManuallyDisconnect,
                savedConnections.mostRecent?.isConfigured == true
             {
@@ -436,10 +435,18 @@ struct ConnectView: View {
 
     // MARK: - Preview Buttons
 
+    private var showsPreviewModesSection: Bool {
 #if DEBUG
+        onStartDebug != nil || onStartDemo != nil || onStartRecordedReplay != nil
+#else
+        onStartDemo != nil
+#endif
+    }
+
     @ViewBuilder
     private var previewModesSection: some View {
         VStack(spacing: 12) {
+#if DEBUG
             if let onStartRecordedReplay {
                 NavigationLink {
                     RecordedReplayListView(onSelect: onStartRecordedReplay)
@@ -461,6 +468,7 @@ struct ConnectView: View {
                     action: onStartDebug
                 )
             }
+#endif
 
             if let onStartDemo {
                 previewButton(
@@ -487,7 +495,6 @@ struct ConnectView: View {
             )
         }
     }
-#endif
 
     private func previewButtonLabel(
         title: String,

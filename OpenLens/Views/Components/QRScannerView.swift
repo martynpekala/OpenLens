@@ -91,7 +91,7 @@ private struct CameraPreview: UIViewRepresentable {
     let onCodeFound: (String) -> Void
 
     func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
+        let view = PreviewContainerView(frame: .zero)
         view.backgroundColor = .black
 
         let session = AVCaptureSession()
@@ -114,8 +114,7 @@ private struct CameraPreview: UIViewRepresentable {
 
         let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspectFill
-        previewLayer.frame = view.bounds
-        view.layer.addSublayer(previewLayer)
+        view.setPreviewLayer(previewLayer)
 
         context.coordinator.previewLayer = previewLayer
 
@@ -127,7 +126,7 @@ private struct CameraPreview: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.previewLayer?.frame = uiView.bounds
+        (uiView as? PreviewContainerView)?.updatePreviewLayerFrame()
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
@@ -138,6 +137,26 @@ private struct CameraPreview: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onCodeFound: onCodeFound)
+    }
+
+    private final class PreviewContainerView: UIView {
+        private weak var previewLayer: AVCaptureVideoPreviewLayer?
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            updatePreviewLayerFrame()
+        }
+
+        func setPreviewLayer(_ layer: AVCaptureVideoPreviewLayer) {
+            previewLayer?.removeFromSuperlayer()
+            previewLayer = layer
+            self.layer.addSublayer(layer)
+            updatePreviewLayerFrame()
+        }
+
+        func updatePreviewLayerFrame() {
+            previewLayer?.frame = bounds
+        }
     }
 
     class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
