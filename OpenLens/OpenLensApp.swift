@@ -1,3 +1,4 @@
+import StoreKit
 import SwiftUI
 
 private enum BuiltinChatPreview {
@@ -57,8 +58,27 @@ private enum ChatPreviewSource {
     }
 }
 
+private enum ReviewPromptTrigger {
+    case completedOnboarding
+    case connectedUsage
+
+    static let fallbackConnectionThreshold = 3
+    static let maximumAttempts = 2
+
+    var delayNanoseconds: UInt64 {
+        switch self {
+        case .completedOnboarding:
+            return 1_500_000_000
+        case .connectedUsage:
+            return 750_000_000
+        }
+    }
+}
+
 @main
 struct OpenLensApp: App {
+    @Environment(\.requestReview) private var requestReview
+
     private let screenshotModeEnabled: Bool
     @State private var connection: ConnectionManager
     @State private var router = AppRouter()
@@ -83,6 +103,9 @@ struct OpenLensApp: App {
     @State private var previewConnection: ConnectionManager?
 
     @AppStorage("onboardingCompleted") private var onboardingCompleted: Bool = false
+    @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
+    @AppStorage("reviewPromptAttemptCount") private var reviewPromptAttemptCount: Int = 0
+    @AppStorage("reviewPromptSuccessfulConnections") private var reviewPromptSuccessfulConnections: Int = 0
 
     /// Deep link connection received via `openlens://connect` URL.
     @State private var pendingDeepLink: DeepLinkConnection?
@@ -90,10 +113,12 @@ struct OpenLensApp: App {
 
     /// Alert shown when a deep link arrives while already connected.
     @State private var showDeepLinkSwitch: Bool = false
+    @State private var reviewPromptTask: Task<Void, Never>?
 
     private var startDebugPreviewAction: (() -> Void)? {
 #if DEBUG
-            { startPreview(.builtin(.debug)) }
+        guard debugFeaturesEnabled else { return nil }
+        return { startPreview(.builtin(.debug)) }
 #else
         nil
 #endif
@@ -232,11 +257,17 @@ struct OpenLensApp: App {
             }
             .onChange(of: connection.state) { _, newState in
                 if newState == .connected {
+                    reviewPromptSuccessfulConnections += 1
+                    requestReviewIfNeeded(for: .connectedUsage)
                     router.selectedTab = .chat
                     Task {
                         await openDeepLinkedSessionIfNeeded()
                     }
                 }
+            }
+            .onChange(of: onboardingCompleted) { _, completed in
+                guard completed else { return }
+                requestReviewIfNeeded(for: .completedOnboarding)
             }
             .alert(
                 AppText.switchServerTitle,
@@ -319,6 +350,47 @@ struct OpenLensApp: App {
             pendingSessionNavigationID = nil
         } catch {
             pendingSessionNavigationID = nil
+        }
+    }
+
+    private func requestReviewIfNeeded(for trigger: ReviewPromptTrigger) {
+        guard onboardingCompleted,
+              !screenshotModeEnabled,
+              !isPreviewMode
+        else {
+            return
+        }
+
+        switch trigger {
+        case .completedOnboarding:
+            guard reviewPromptAttemptCount == 0 else { return }
+        case .connectedUsage:
+            guard reviewPromptSuccessfulConnections >= ReviewPromptTrigger.fallbackConnectionThreshold,
+                  reviewPromptAttemptCount < ReviewPromptTrigger.maximumAttempts
+            else {
+                return
+            }
+        }
+
+        scheduleReviewPrompt(for: trigger)
+    }
+
+    private func scheduleReviewPrompt(for trigger: ReviewPromptTrigger) {
+        reviewPromptAttemptCount += 1
+        reviewPromptTask?.cancel()
+        reviewPromptTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: trigger.delayNanoseconds)
+
+            guard !Task.isCancelled,
+                  onboardingCompleted,
+                  !screenshotModeEnabled,
+                  !isPreviewMode
+            else {
+                return
+            }
+
+            requestReview()
+            reviewPromptTask = nil
         }
     }
 }

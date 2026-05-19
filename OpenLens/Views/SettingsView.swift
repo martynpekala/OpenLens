@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var showForgetConfirmation = false
     @Environment(\.savedConnections) private var savedConnections
     @AppStorage("autoReconnect") private var autoReconnect: Bool = true
+    @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     private var activeConnection: SavedConnection? {
         savedConnections.activeConnection ?? (ScreenshotFixtures.isEnabled ? ScreenshotFixtures.savedConnection : nil)
@@ -27,6 +28,9 @@ struct SettingsView: View {
                 serverInfoCard
                 providerCard
                 connectionCard
+#if DEBUG
+                debugFeaturesCard
+#endif
                 actionsCard
             }
             .padding(.horizontal, 20)
@@ -310,6 +314,31 @@ struct SettingsView: View {
     }
 
     // MARK: - Actions Card
+
+#if DEBUG
+    private var debugFeaturesCard: some View {
+        VStack(spacing: 8) {
+            SectionLabel(text: AppText.developer)
+
+            SurfaceCard(padding: 0) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: $debugFeaturesEnabled) {
+                        Text(AppText.settingsDebugFeatures)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundStyle(Color.appPrimary)
+                    }
+                    .tint(Color.appAccent)
+
+                    Text(AppText.settingsDebugFeaturesSubtitle)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.appSecondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+            }
+        }
+    }
+#endif
 
     private var actionsCard: some View {
         VStack(spacing: 10) {

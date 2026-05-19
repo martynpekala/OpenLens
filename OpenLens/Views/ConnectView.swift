@@ -31,6 +31,7 @@ struct ConnectView: View {
     @Environment(\.savedConnections) private var savedConnections
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("autoReconnect") private var autoReconnect: Bool = true
+    @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     var body: some View {
         NavigationStack {
@@ -437,7 +438,7 @@ struct ConnectView: View {
 
     private var showsPreviewModesSection: Bool {
 #if DEBUG
-        onStartDebug != nil || onStartDemo != nil || onStartRecordedReplay != nil
+        onStartDemo != nil || (debugFeaturesEnabled && (onStartDebug != nil || onStartRecordedReplay != nil))
 #else
         onStartDemo != nil
 #endif
@@ -447,7 +448,7 @@ struct ConnectView: View {
     private var previewModesSection: some View {
         VStack(spacing: 12) {
 #if DEBUG
-            if let onStartRecordedReplay {
+            if debugFeaturesEnabled, let onStartRecordedReplay {
                 NavigationLink {
                     RecordedReplayListView(onSelect: onStartRecordedReplay)
                 } label: {
@@ -460,7 +461,7 @@ struct ConnectView: View {
                 .buttonStyle(.plain)
             }
 
-            if let onStartDebug {
+            if debugFeaturesEnabled, let onStartDebug {
                 previewButton(
                     title: AppText.tryDebugChat,
                     subtitle: AppText.tryDebugChatSubtitle,

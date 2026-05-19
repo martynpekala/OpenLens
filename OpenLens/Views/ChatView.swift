@@ -20,6 +20,7 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.connection) private var connection
     @Environment(\.workspaceService) private var workspaceService
+    @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     @State private var showModelPicker = false
     @State private var showContextStatus = false
@@ -71,7 +72,7 @@ struct ChatView: View {
                 branch: connection.branch,
                 connectionState: connection.state,
                 sessionTitle: chatClient.currentSession?.title,
-                showsRecordingControls: chatClient.supportsStreamRecording,
+                showsRecordingControls: chatClient.isRecordingStream || (debugFeaturesEnabled && chatClient.supportsStreamRecording),
                 isRecordingStream: chatClient.isRecordingStream,
                 onToggleRecording: {
                     if chatClient.isRecordingStream {
@@ -341,10 +342,7 @@ struct ChatView: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 30))
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(
-                            canSend ? Color.white : Color.appSecondary.opacity(0.55),
-                            canSend ? Color.appAccent : Color.appTertiary
-                        )
+                        .foregroundStyle(Color.appOnAccent, Color.appAccent)
                         .contentShape(Circle())
                 }
                 .disabled(!canSend)

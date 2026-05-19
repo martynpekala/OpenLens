@@ -323,7 +323,13 @@ final class ChatClient: SSEEventHandlerDelegate {
     var isConnected: Bool { connection?.isConnected ?? isOfflinePreviewMode }
     var canCompose: Bool { !isRecordedReplayMode }
     var showsComposer: Bool { !isRecordedReplayMode }
-    var supportsStreamRecording: Bool { !isOfflinePreviewMode && recordedReplayStore != nil }
+        var supportsStreamRecording: Bool {
+    #if DEBUG
+        FeatureFlags.debugFeaturesEnabled && !isOfflinePreviewMode && recordedReplayStore != nil
+    #else
+        false
+    #endif
+        }
 
     // MARK: - Collaborators
 
@@ -979,7 +985,9 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     func startStreamRecording() {
         guard supportsStreamRecording else {
-            errorMessage = AppText.recordingStorageUnavailable
+            errorMessage = FeatureFlags.debugFeaturesEnabled
+                ? AppText.recordingStorageUnavailable
+                : AppText.recordingDebugFeaturesDisabled
             return
         }
 
