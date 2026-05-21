@@ -26,6 +26,22 @@ private struct ActivityIndicatorDot: View {
 /// Session list view with create, delete, and select.
 /// Uses SessionsService directly with view-local state.
 struct SessionsListView: View {
+    private struct SessionProjectGroup: Identifiable {
+        let id: String
+        let title: String
+        let subtitle: String?
+        let sessions: [OCSession]
+
+        var visibleSessions: [OCSession] {
+            Array(sessions.prefix(Self.collapsedSessionLimit))
+        }
+
+        var hiddenSessionCount: Int {
+            max(sessions.count - Self.collapsedSessionLimit, 0)
+        }
+
+        static let collapsedSessionLimit = 4
+    }
 
     // MARK: - View State
 
@@ -44,6 +60,7 @@ struct SessionsListView: View {
     @State private var newSessionTitle = ""
     @State private var sessionToDelete: OCSession?
     @State private var showDeleteConfirmation = false
+    @State private var expandedProjectIDs = Set<String>()
 
     var onSelect: (OCSession) -> Void
 
@@ -59,6 +76,33 @@ struct SessionsListView: View {
     private var errorMessage: String? {
         if case .error(let msg) = viewState { return msg }
         return nil
+    }
+
+    private var groupedSessions: [SessionProjectGroup] {
+        var groupedByID: [String: [OCSession]] = [:]
+        var groupOrder: [String] = []
+        var titles: [String: String] = [:]
+        var subtitles: [String: String?] = [:]
+
+        for session in sessions {
+            let groupID = projectGroupID(for: session)
+            if groupedByID[groupID] == nil {
+                groupOrder.append(groupID)
+            }
+            groupedByID[groupID, default: []].append(session)
+            titles[groupID] = projectTitle(for: session)
+            subtitles[groupID] = projectSubtitle(for: session)
+        }
+
+        return groupOrder.compactMap { groupID in
+            guard let groupedSessions = groupedByID[groupID] else { return nil }
+            return SessionProjectGroup(
+                id: groupID,
+                title: titles[groupID] ?? AppText.projectFallback,
+                subtitle: subtitles[groupID] ?? nil,
+                sessions: groupedSessions
+            )
+        }
     }
 
     // MARK: - Body
@@ -109,7 +153,7 @@ struct SessionsListView: View {
                 deleteSession(session)
             }
             Button(AppText.cancel, role: .cancel) {}
-        } message: { session in
+        } message: { _ in
             Text(AppText.deleteSessionMessage)
         }
         .task {
@@ -121,8 +165,63 @@ struct SessionsListView: View {
 
     private var sessionList: some View {
         ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+            LazyVStack(spacing: 18) {
+                ForEach(groupedSessions) { group in
+                    projectSection(group)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 16)
+            .padding(.bottom, 16)
+        }
+        .refreshable {
+            await loadSessions()
+        }
+    }
+
+    private func projectSection(_ group: SessionProjectGroup) -> some View {
+        let isExpanded = expandedProjectIDs.contains(group.id)
+        let displayedSessions = isExpanded ? group.sessions : group.visibleSessions
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading) {
+                    HStack(alignment: .center) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundStyle(Color.appSecondary)
+
+                        Text(group.title)
+                            .font(.system(size: 18, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.appPrimary)
+                            .lineLimit(1)
+
+                        Text("\u{00B7}")
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundStyle(Color.appSecondary)
+
+                        Text(AppText.groupedProjectCount(group.sessions.count))
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundStyle(Color.appSecondary)
+                    }
+                }
+
+                Spacer()
+
+                if group.hiddenSessionCount > 0 {
+                    Button {
+                        toggleProjectExpansion(group.id)
+                    } label: {
+                        Text(isExpanded ? AppText.showFewerSessions : AppText.showMoreSessions(group.hiddenSessionCount))
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.appAccent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            VStack(spacing: 0) {
+                ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
                     Button {
                         onSelect(session)
                     } label: {
@@ -139,11 +238,6 @@ struct SessionsListView: View {
                     }
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
-        }
-        .refreshable {
-            await loadSessions()
         }
     }
 
@@ -153,7 +247,7 @@ struct SessionsListView: View {
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.title.isEmpty ? AppText.titleUntitled : session.title)
-                    .font(.system(size: 18, weight: .regular, design: .rounded))
+                    .font(.system(size: 16, weight: .regular, design: .rounded))
                     .foregroundStyle(Color.appPrimary)
                     .lineLimit(1)
 
@@ -164,10 +258,10 @@ struct SessionsListView: View {
                         Text(AppText.working)
                     }
                     .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(.green)
+                    .foregroundStyle(.green)
                 } else {
                     Text(formattedDate(session.updatedAt))
-                        .font(.system(size: 16, design: .rounded))
+                        .font(.system(size: 14, design: .rounded))
                         .foregroundStyle(Color.appSecondary)
                 }
             }
@@ -236,6 +330,7 @@ struct SessionsListView: View {
             guard !Task.isCancelled else { return }
             sessions = result
             sessionStatuses = statusMap
+            pruneExpandedProjects(using: result)
             viewState = .loaded
         } catch is CancellationError {
             debugPrint("loadSessions cancelled during view teardown")
@@ -254,6 +349,7 @@ struct SessionsListView: View {
             do {
                 let session = try await sessionsService.createSession(title: title.isEmpty ? nil : title)
                 sessions.insert(session, at: 0)
+                pruneExpandedProjects(using: sessions)
                 onSelect(session)
             } catch {
                 viewState = .error(error.localizedDescription)
@@ -266,6 +362,7 @@ struct SessionsListView: View {
             do {
                 try await sessionsService.deleteSession(session)
                 sessions.removeAll { $0.id == session.id }
+                pruneExpandedProjects(using: sessions)
             } catch {
                 viewState = .error(error.localizedDescription)
             }
@@ -284,5 +381,56 @@ struct SessionsListView: View {
         guard timestamp > 0 else { return "" }
         let date = Date(timeIntervalSince1970: timestamp)
         return Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    private func toggleProjectExpansion(_ groupID: String) {
+        if expandedProjectIDs.contains(groupID) {
+            expandedProjectIDs.remove(groupID)
+        } else {
+            expandedProjectIDs.insert(groupID)
+        }
+    }
+
+    private func pruneExpandedProjects(using sessions: [OCSession]) {
+        let validGroupIDs = Set(sessions.map(projectGroupID(for:)))
+        expandedProjectIDs = expandedProjectIDs.intersection(validGroupIDs)
+    }
+
+    private func projectGroupID(for session: OCSession) -> String {
+        if let directory = normalizedDirectory(for: session), !directory.isEmpty {
+            return "directory:\(directory)"
+        }
+
+        if let projectID = session.projectID?.trimmingCharacters(in: .whitespacesAndNewlines), !projectID.isEmpty {
+            return "projectID:\(projectID)"
+        }
+
+        return "unknown"
+    }
+
+    private func projectTitle(for session: OCSession) -> String {
+        if let directory = normalizedDirectory(for: session) {
+            let lastComponent = URL(fileURLWithPath: directory).lastPathComponent
+            if !lastComponent.isEmpty {
+                return lastComponent
+            }
+        }
+
+        if let projectID = session.projectID?.trimmingCharacters(in: .whitespacesAndNewlines), !projectID.isEmpty {
+            return projectID
+        }
+
+        return AppText.projectFallback
+    }
+
+    private func projectSubtitle(for session: OCSession) -> String? {
+        guard let directory = normalizedDirectory(for: session) else { return nil }
+        return directory
+    }
+
+    private func normalizedDirectory(for session: OCSession) -> String? {
+        let trimmedDirectory = session.directory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmedDirectory, !trimmedDirectory.isEmpty else { return nil }
+        return trimmedDirectory
     }
 }
