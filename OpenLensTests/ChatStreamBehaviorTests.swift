@@ -223,6 +223,7 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
     var showPermissionAlert: Bool = false
     var pendingQuestion: OCQuestionRequest?
     var showQuestionSheet: Bool = false
+    var todos: [OCTodo] = []
     var clearedStreamingBuffers: [String] = []
 
     func finishLoading() {}

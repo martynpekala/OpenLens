@@ -1,5 +1,9 @@
 import SwiftUI
 
+func shouldHideConnectedRootTabBar(selectedTab: AppTab, chatPath: [RouterDestination]) -> Bool {
+    selectedTab == .chat && !chatPath.isEmpty
+}
+
 struct ConnectedRootView: View {
     @Bindable var chatClient: ChatClient
 
@@ -38,6 +42,13 @@ struct ConnectedRootView: View {
             .environment(\.symbolVariants, selectedTab == tab ? .fill : .none)
     }
 
+    private var tabBarVisibility: Visibility {
+        shouldHideConnectedRootTabBar(
+            selectedTab: router.selectedTab,
+            chatPath: router.chatPath
+        ) ? .hidden : .visible
+    }
+
     private func tabNavigationView(for tab: AppTab) -> some View {
         NavigationStack(path: pathBinding(for: tab)) {
             tabRootView(for: tab)
@@ -45,7 +56,8 @@ struct ConnectedRootView: View {
                     destinationView(for: destination)
                 }
         }
-        .toolbar(tab == .chat && !router.chatPath.isEmpty ? .hidden : .visible, for: .tabBar)
+        // Keep this on the tab NavigationStack so TabView reliably hides the bar when Chat pushes a session.
+        .toolbar(tabBarVisibility, for: .tabBar)
     }
 
     private func pathBinding(for tab: AppTab) -> Binding<[RouterDestination]> {

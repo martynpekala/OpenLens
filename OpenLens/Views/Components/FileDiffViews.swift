@@ -90,16 +90,7 @@ struct FileDiffDetailView: View {
 
     init(file: ReviewFileChange) {
         self.file = file
-
-        if !file.patchHunks.isEmpty {
-            _displayMode = State(initialValue: .changed)
-        } else if file.beforeText == nil {
-            _displayMode = State(initialValue: .after)
-        } else if file.afterText == nil {
-            _displayMode = State(initialValue: .before)
-        } else {
-            _displayMode = State(initialValue: .changed)
-        }
+        _displayMode = State(initialValue: Self.preferredDisplayMode(for: file))
     }
 
     var body: some View {
@@ -130,6 +121,12 @@ struct FileDiffDetailView: View {
                     Button("Done") {
                         dismiss()
                     }
+                }
+            }
+            .onChange(of: file) { oldFile, newFile in
+                let modes = Self.availableModes(for: newFile)
+                if !modes.contains(displayMode) || (!oldFile.hasReadableDiff && newFile.hasReadableDiff) {
+                    displayMode = Self.preferredDisplayMode(for: newFile)
                 }
             }
         }
@@ -172,6 +169,10 @@ struct FileDiffDetailView: View {
     }
 
     private var availableModes: [DisplayMode] {
+        Self.availableModes(for: file)
+    }
+
+    static func availableModes(for file: ReviewFileChange) -> [DisplayMode] {
         DisplayMode.allCases.filter { mode in
             switch mode {
             case .changed:
@@ -181,6 +182,20 @@ struct FileDiffDetailView: View {
             case .after:
                 return file.afterText != nil
             }
+        }
+    }
+
+    static func preferredDisplayMode(for file: ReviewFileChange) -> DisplayMode {
+        if !file.patchHunks.isEmpty {
+            return .changed
+        } else if file.beforeText == nil, file.afterText != nil {
+            return .after
+        } else if file.afterText == nil, file.beforeText != nil {
+            return .before
+        } else if file.hasReadableDiff {
+            return .changed
+        } else {
+            return .after
         }
     }
 

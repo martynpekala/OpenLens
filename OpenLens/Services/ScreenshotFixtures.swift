@@ -2,11 +2,49 @@ import Foundation
 
 enum ScreenshotFixtures {
     static let launchArgument = "SCREENSHOT_MODE"
+    static let tabArgumentPrefix = "SCREENSHOT_TAB="
+    static let chatSessionArgument = "SCREENSHOT_CHAT_SESSION"
+    static let settingsSectionArgumentPrefix = "SCREENSHOT_SETTINGS_SECTION="
     static let environmentKey = "OPENLENS_SCREENSHOT_MODE"
+    static let tabEnvironmentKey = "OPENLENS_SCREENSHOT_TAB"
+    static let chatSessionEnvironmentKey = "OPENLENS_SCREENSHOT_CHAT_SESSION"
+    static let settingsSectionEnvironmentKey = "OPENLENS_SCREENSHOT_SETTINGS_SECTION"
 
     static var isEnabled: Bool {
         let processInfo = ProcessInfo.processInfo
         return processInfo.arguments.contains(launchArgument) || processInfo.environment[environmentKey] == "1"
+    }
+
+    static var launchTab: AppTab? {
+        let processInfo = ProcessInfo.processInfo
+
+        if let rawValue = processInfo.environment[tabEnvironmentKey] {
+            return AppTab(rawValue: rawValue.lowercased())
+        }
+
+        let rawValue = processInfo.arguments
+            .first { $0.hasPrefix(tabArgumentPrefix) }?
+            .dropFirst(tabArgumentPrefix.count)
+
+        guard let rawValue else { return nil }
+        return AppTab(rawValue: String(rawValue).lowercased())
+    }
+
+    static var opensDefaultChatSession: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains(chatSessionArgument) || processInfo.environment[chatSessionEnvironmentKey] == "1"
+    }
+
+    static var settingsSection: String? {
+        let processInfo = ProcessInfo.processInfo
+
+        if let rawValue = processInfo.environment[settingsSectionEnvironmentKey] {
+            return rawValue.lowercased()
+        }
+
+        return processInfo.arguments
+            .first { $0.hasPrefix(settingsSectionArgumentPrefix) }
+            .map { String($0.dropFirst(settingsSectionArgumentPrefix.count)).lowercased() }
     }
 
     static let projectID = "proj_openlens_ios"

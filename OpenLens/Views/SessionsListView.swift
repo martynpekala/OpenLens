@@ -43,6 +43,8 @@ struct SessionsListView: View {
         static let collapsedSessionLimit = 4
     }
 
+    private static let sessionExpansionAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.9)
+
     // MARK: - View State
 
     enum ViewState {
@@ -236,6 +238,13 @@ struct SessionsListView: View {
                             Label(AppText.delete, systemImage: "trash")
                         }
                     }
+                    .transition(.asymmetric(
+                        insertion: .opacity
+                            .combined(with: .move(edge: .top))
+                            .combined(with: .scale(scale: 0.98, anchor: .top)),
+                        removal: .opacity
+                            .combined(with: .scale(scale: 0.98, anchor: .top))
+                    ))
                 }
             }
         }
@@ -384,10 +393,12 @@ struct SessionsListView: View {
     }
 
     private func toggleProjectExpansion(_ groupID: String) {
-        if expandedProjectIDs.contains(groupID) {
-            expandedProjectIDs.remove(groupID)
-        } else {
-            expandedProjectIDs.insert(groupID)
+        withAnimation(Self.sessionExpansionAnimation) {
+            if expandedProjectIDs.contains(groupID) {
+                expandedProjectIDs.remove(groupID)
+            } else {
+                expandedProjectIDs.insert(groupID)
+            }
         }
     }
 

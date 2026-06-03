@@ -243,7 +243,7 @@ struct WorkspaceRootView: View {
                             .fill(Color.appSeparator)
                             .frame(width: 1, height: 28)
 
-                        headerMetaBlock(title: "Worktree", value: worktree)
+                        headerMetaBlock(title: "Working Directory", value: worktree)
                     }
 
                     Spacer(minLength: 0)
@@ -279,7 +279,7 @@ struct WorkspaceRootView: View {
                         .frame(width: 14, height: 14)
                 } else {
                     HStack(spacing: 6) {
-                        Text("Change worktree")
+                        Text("Recently opened projects")
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
 
                         Image(systemName: "arrow.left.arrow.right")
@@ -391,12 +391,22 @@ struct WorkspaceRootView: View {
 
                     HStack(spacing: 10) {
                         sourceControlContextPill(title: "Branch", value: currentBranch)
-                        sourceControlContextPill(title: "Worktree", value: sourceControlWorktreeLabel)
+                        sourceControlContextPill(title: "Working Directory", value: sourceControlWorktreeLabel)
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
                         if displayedProjects.count > 1 {
-                            projectPickerMenu
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Recently opened projects")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.appPrimary)
+
+                                Text("Switch to another project previously opened by this OpenCode server.")
+                                    .font(.system(size: 12, design: .rounded))
+                                    .foregroundStyle(Color.appSecondary)
+
+                                projectPickerMenu
+                            }
                         }
 
                         Button {
@@ -485,7 +495,7 @@ struct WorkspaceRootView: View {
                     SurfaceDivider()
                     infoRow(title: "Current path", value: snapshot.currentPath ?? ".")
                     SurfaceDivider()
-                    infoRow(title: "Worktree", value: snapshot.pathInfo?.worktree ?? "Unknown")
+                    infoRow(title: "Working Directory", value: snapshot.pathInfo?.worktree ?? "Unknown")
                     SurfaceDivider()
                     infoRow(title: "Config", value: snapshot.pathInfo?.config ?? "Unknown")
                 }
@@ -545,7 +555,7 @@ struct WorkspaceRootView: View {
             isExpanded: $showsFiles
         ) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Browse the current worktree and send paths back into chat as context.")
+                Text("Browse the current working directory and send paths back into chat as context.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.appSecondary)
 
@@ -740,7 +750,7 @@ struct WorkspaceRootView: View {
                                 .foregroundStyle(Color.appSecondary)
                         }
 
-                        Text("Open any file to inspect the full diff for the current worktree.")
+                        Text("Open any file to inspect the full diff for the current working directory.")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.appSecondary)
                     }
@@ -992,7 +1002,7 @@ struct WorkspaceRootView: View {
     private var workingTreeEmptyStateText: String {
         switch snapshot.workingTreeSource {
         case .gitStatus:
-            "No uncommitted changes in the active worktree."
+            "No uncommitted changes in the active working directory."
         case .sessionDiffFallback:
             "No session-tracked changes were available. Update OpenCode to expose repo-wide git status in Workspace."
         case .unavailable:
@@ -1043,7 +1053,7 @@ struct WorkspaceRootView: View {
 
     private var workspaceActionBlockedReason: String? {
         if switchingProjectID != nil {
-            return "Wait for the current worktree switch to finish before starting another workspace action."
+            return "Wait for the current working directory change to finish before starting another workspace action."
         }
 
         if chatClient.pendingQuestion != nil {
@@ -1143,7 +1153,7 @@ struct WorkspaceRootView: View {
         ]
 
         if let currentWorktreePath {
-            lines.append("Worktree: `\(currentWorktreePath)`.")
+            lines.append("Working directory: `\(currentWorktreePath)`.")
         }
 
         if currentBranch != "n/a" {
@@ -1161,7 +1171,7 @@ struct WorkspaceRootView: View {
         ]
 
         if let currentWorktreePath {
-            lines.append("Worktree: `\(currentWorktreePath)`.")
+            lines.append("Working directory: `\(currentWorktreePath)`.")
         }
 
         if currentBranch != "n/a" {
@@ -1175,11 +1185,11 @@ struct WorkspaceRootView: View {
 
     private func pullRequestPrompt() -> String {
         var lines = [
-            "Create a pull request for the active branch using the current worktree diff and recent session context."
+            "Create a pull request for the active branch using the current working directory diff and recent session context."
         ]
 
         if let currentWorktreePath {
-            lines.append("Worktree: `\(currentWorktreePath)`.")
+            lines.append("Working directory: `\(currentWorktreePath)`.")
         }
 
         if currentBranch != "n/a" {

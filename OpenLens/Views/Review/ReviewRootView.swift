@@ -5,12 +5,12 @@ private let reviewSessionScopeID = "__session__"
 private enum ReviewLayout {
     static let screenInset: CGFloat = 20
     static let screenVerticalPadding: CGFloat = 24
-    static let sectionGap: CGFloat = 28
-    static let groupGap: CGFloat = 16
+    static let sectionGap: CGFloat = 22
+    static let groupGap: CGFloat = 12
     static let compactGap: CGFloat = 8
-    static let chipGap: CGFloat = 12
-    static let rowPaddingHorizontal: CGFloat = 16
-    static let rowPaddingVertical: CGFloat = 14
+    static let chipGap: CGFloat = 10
+    static let rowPaddingHorizontal: CGFloat = 12
+    static let rowPaddingVertical: CGFloat = 12
 }
 
 struct ReviewRootView: View {
@@ -103,6 +103,8 @@ struct ReviewRootView: View {
                 inboxToolbarButton
             }
         }
+        .toolbarBackground(Color.appBackground, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         .confirmationDialog(
             "Revert changes",
             isPresented: Binding(
@@ -169,14 +171,16 @@ struct ReviewRootView: View {
             VStack(alignment: .leading, spacing: ReviewLayout.sectionGap) {
                 sessionPickerCard
 
-                if let reviewSnapshot, !reviewSnapshot.changeSets.isEmpty {
-                    scopePickerSection(reviewSnapshot.changeSets)
+                if !isReviewReloading {
+                    if let reviewSnapshot, !reviewSnapshot.changeSets.isEmpty {
+                        scopePickerSection(reviewSnapshot.changeSets)
+                    }
+
+                    filesSection
                 }
-                
-                filesSection                
             }
             .padding(.horizontal, ReviewLayout.screenInset)
-            .padding(.bottom, ReviewLayout.screenVerticalPadding)
+            .padding(.vertical, ReviewLayout.screenVerticalPadding)
         }
         .background(Color.appBackground)
     }
@@ -209,157 +213,201 @@ struct ReviewRootView: View {
     }
 
     private var sessionPickerCard: some View {
-        HStack(alignment: .firstTextBaseline, spacing: ReviewLayout.groupGap) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Reviewing session")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
-                    .textCase(.uppercase)
+        reviewPanel {
+            VStack(spacing: 12) {
+                HStack(alignment: .top, spacing: ReviewLayout.groupGap) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.appAccent)
+                            .frame(width: 46, height: 46)
 
-                Text(selectedReviewSession?.title.nilIfBlank ?? AppText.titleUntitled)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                    .lineLimit(4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(Color.appOnAccent)
+                    }
 
-                HStack(spacing: 12) {
-                    Text("+\(selectedScopeState.totals.additions)")
-                        .foregroundStyle(.green)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.appSurface, in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(Color.green.opacity(0.3), lineWidth: 1)
-                        )
-                    Text("-\(selectedScopeState.totals.deletions)")
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.appSurface, in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(Color.red.opacity(0.3), lineWidth: 1)
-                        )
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Reviewing session")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.appSecondary)
+                            .textCase(.uppercase)
+
+                        Text(selectedReviewSession?.title.nilIfBlank ?? AppText.titleUntitled)
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.appPrimary)
+                            .lineLimit(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    sessionMenu
                 }
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-            }
 
-            Spacer(minLength: 12)
-
-            Menu {
-                ForEach(availableSessions) { session in
-                    Button {
-                        selectedReviewSessionID = session.id
-                    } label: {
-                        if session.id == selectedReviewSessionID {
-                            Label(session.title.nilIfBlank ?? AppText.titleUntitled, systemImage: "checkmark")
-                        } else {
-                            Text(session.title.nilIfBlank ?? AppText.titleUntitled)
-                        }
+                if isReviewReloading {
+                    reviewLoadingStatus
+                } else {
+                    HStack(spacing: 10) {
+                        reviewStatPill(
+                            title: "Files",
+                            value: "\(selectedScopeState.files.count)",
+                            foreground: Color.appPrimary
+                        )
+                        reviewStatPill(
+                            title: "Added",
+                            value: "+\(selectedScopeState.totals.additions)",
+                            foreground: Color.appSuccess
+                        )
+                        reviewStatPill(
+                            title: "Deleted",
+                            value: "-\(selectedScopeState.totals.deletions)",
+                            foreground: Color.appDanger
+                        )
                     }
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Text("Change")
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.appSurface, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.appSeparator, lineWidth: 1)
-                )
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+    }
+
+    private var reviewLoadingStatus: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(Color.appSecondary)
+
+            Text("Loading selected session...")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.appSecondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.appTertiary)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.appTertiary.opacity(0.72))
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
+        }
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private var sessionMenu: some View {
+        Menu {
+            ForEach(availableSessions) { session in
+                Button {
+                    selectedReviewSessionID = session.id
+                } label: {
+                    if session.id == selectedReviewSessionID {
+                        Label(session.title.nilIfBlank ?? AppText.titleUntitled, systemImage: "checkmark")
+                    } else {
+                        Text(session.title.nilIfBlank ?? AppText.titleUntitled)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("Change")
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .font(.system(size: 13, weight: .semibold, design: .rounded))
+            .foregroundStyle(Color.appPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.appTertiary.opacity(0.72), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
+            )
+        }
     }
 
     private func scopePickerSection(_ changeSets: [ReviewChangeSet]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel(text: "Scope")
 
-            Text("Choose a single agent update or inspect the full working session.")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.appSecondary)
-            
+            reviewPanel {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Choose a single agent update or inspect the full working session.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.appSecondary)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: ReviewLayout.chipGap) {
-                    scopeChip(
-                        title: "Latest",
-                        subtitle: reviewSnapshot?.latestChangeSet.map { shortDate($0.createdAt) } ?? "Agent changes",
-                        isSelected: selectedScopeID == (reviewSnapshot?.latestChangeSet?.id ?? reviewSessionScopeID)
-                    ) {
-                        selectedScopeID = reviewSnapshot?.latestChangeSet?.id ?? reviewSessionScopeID
-                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: ReviewLayout.chipGap) {
+                            scopeChip(
+                                title: "Latest",
+                                subtitle: reviewSnapshot?.latestChangeSet.map { shortDate($0.createdAt) } ?? "Agent changes",
+                                systemImage: "sparkles",
+                                isSelected: selectedScopeID == (reviewSnapshot?.latestChangeSet?.id ?? reviewSessionScopeID)
+                            ) {
+                                selectedScopeID = reviewSnapshot?.latestChangeSet?.id ?? reviewSessionScopeID
+                            }
 
-                    scopeChip(
-                        title: "Session",
-                        subtitle: "All current changes",
-                        isSelected: selectedScopeID == reviewSessionScopeID
-                    ) {
-                        selectedScopeID = reviewSessionScopeID
-                    }
+                            scopeChip(
+                                title: "Session",
+                                subtitle: "All current changes",
+                                systemImage: "folder",
+                                isSelected: selectedScopeID == reviewSessionScopeID
+                            ) {
+                                selectedScopeID = reviewSessionScopeID
+                            }
 
-                    ForEach(changeSets) { changeSet in
-                        scopeChip(
-                            title: truncatedScopeTitle(changeSet.title),
-                            subtitle: shortDate(changeSet.createdAt),
-                            isSelected: selectedScopeID == changeSet.id
-                        ) {
-                            selectedScopeID = changeSet.id
+                            ForEach(changeSets) { changeSet in
+                                scopeChip(
+                                    title: truncatedScopeTitle(changeSet.title),
+                                    subtitle: shortDate(changeSet.createdAt),
+                                    systemImage: "clock.arrow.circlepath",
+                                    isSelected: selectedScopeID == changeSet.id
+                                ) {
+                                    selectedScopeID = changeSet.id
+                                }
+                            }
                         }
+                        .padding(.horizontal, 1)
+                        .padding(.vertical, 2)
                     }
+                    .padding(.horizontal, -1)
                 }
-                .padding(.horizontal, 1)
-                .padding(.vertical, 2)
             }
         }
     }
 
     private var filesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(selectedScopeID == reviewSessionScopeID ? "SESSION FILES" : "FILTERED FILES")
+                Text((selectedScopeID == reviewSessionScopeID ? "Session files" : "Filtered files").uppercased())
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.appSecondary)
                     .kerning(0.5)
+                    .padding(.horizontal, 4)
 
                 Spacer(minLength: 8)
 
                 Text(selectedScopeState.fileCountLabel)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.appSecondary)
+                    .padding(.trailing, 4)
             }
 
-            SurfaceCard(padding: 0) {
+            reviewPanel {
                 if selectedScopeState.files.isEmpty {
                     emptyStateRow
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(selectedScopeState.files.enumerated()), id: \.element.id) { index, file in
+                    VStack(spacing: 10) {
+                        ForEach(selectedScopeState.files, id: \.id) { file in
                             Button {
                                 selectedFile = file
                             } label: {
-                                fileRow(file)
-                                    .padding(.horizontal, ReviewLayout.rowPaddingHorizontal)
-                                    .padding(.vertical, ReviewLayout.rowPaddingVertical)
+                                reviewGlassRow {
+                                    fileRow(file)
+                                }
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-
-                            if index < selectedScopeState.files.count - 1 {
-                                SurfaceDivider()
-                            }
                         }
                     }
                 }
@@ -367,113 +415,193 @@ struct ReviewRootView: View {
 
             if let selectedChangeSet = selectedScopeState.changeSet {
                 revertChangeSetCard(selectedChangeSet)
-                    .padding(.top, 16)
+                    .padding(.top, 8)
             }
         }
     }
 
     private func revertChangeSetCard(_ changeSet: ReviewChangeSet) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.octagon.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.red)
+        reviewPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.appDanger.opacity(0.14))
+                            .frame(width: 34, height: 34)
 
-                Text("Danger Zone")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundStyle(.red)
-                    .textCase(.uppercase)
-                    .kerning(0.6)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.red.opacity(0.08))
+                        Image(systemName: "exclamationmark.octagon.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.appDanger)
+                    }
 
-            SurfaceDivider()
+                    Text("Danger Zone")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.appDanger)
+                        .textCase(.uppercase)
+                        .kerning(0.6)
 
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Revert this update")
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
+                    Spacer()
+                }
 
-                Text("Undo only the changes introduced by \"\(truncatedScopeTitle(changeSet.title))\" in this session.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.appPrimary)
+                reviewGlassRow {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Revert this update")
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.appPrimary)
 
-                Text("This action creates a rollback for the selected agent update. It does not delete the whole session, but it will remove the code changes from this update after confirmation.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.appSecondary)
+                        Text("Undo only the changes introduced by \"\(truncatedScopeTitle(changeSet.title))\" in this session.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.appPrimary)
 
-                HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Selected update")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                        Text("This action creates a rollback for the selected agent update. It does not delete the whole session, but it will remove the code changes from this update after confirmation.")
+                            .font(.system(size: 13))
                             .foregroundStyle(Color.appSecondary)
 
-                        Text(changeSet.title)
+                        HStack(alignment: .center, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Selected update")
+                                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.appSecondary)
+
+                                Text(changeSet.title)
+                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.appPrimary)
+                                    .lineLimit(2)
+                            }
+
+                            Spacer(minLength: 12)
+
+                            Button("Revert update", role: .destructive) {
+                                changeSetToRevert = changeSet
+                            }
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                            .lineLimit(2)
+                        }
                     }
-
-                    Spacer(minLength: 12)
-
-                    Button("Revert update", role: .destructive) {
-                        changeSetToRevert = changeSet
-                    }
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 16)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.appSurface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.red.opacity(0.35), lineWidth: 1)
-        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 36, style: .continuous)
+                .stroke(Color.appDanger.opacity(0.24), lineWidth: 1)
+        }
     }
 
     private var emptyStateRow: some View {
-        HStack {
-            Text("No file changes available for this selection.")
-                .font(.system(size: 14))
-                .foregroundStyle(Color.appSecondary)
-            Spacer()
+        reviewGlassRow {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.appSecondary.opacity(0.72))
+
+                Text("No file changes available for this selection.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.appSecondary)
+
+                Spacer()
+            }
         }
-        .padding(.horizontal, ReviewLayout.rowPaddingHorizontal)
-        .padding(.vertical, ReviewLayout.rowPaddingVertical)
     }
 
     private func fileRow(_ file: ReviewFileChange) -> some View {
         FileChangeRow(file: file)
     }
 
-    private func scopeChip(title: String, subtitle: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 11, design: .rounded))
-                    .lineLimit(1)
+    private func reviewPanel<Content: View>(
+        horizontalPadding: CGFloat = 8,
+        verticalPadding: CGFloat = 20,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
+            .background {
+                RoundedRectangle(cornerRadius: 36, style: .continuous)
+                    .fill(Color.appSurface)
             }
-            .foregroundStyle(isSelected ? Color.appSurface : Color.appPrimary)
+            .overlay {
+                RoundedRectangle(cornerRadius: 36, style: .continuous)
+                    .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
+            }
+            .surfaceShadow()
+    }
+
+    private func reviewGlassRow<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(.horizontal, ReviewLayout.rowPaddingHorizontal)
+            .padding(.vertical, ReviewLayout.rowPaddingVertical)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.appTertiary.opacity(0.72))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
+            }
+    }
+
+    private func reviewStatPill(title: String, value: String, foreground: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.appSecondary)
+
+            Text(value)
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundStyle(foreground)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.appTertiary.opacity(0.72))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
+        }
+    }
+
+    private func scopeChip(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+
+                    Text(subtitle)
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(isSelected ? Color.appOnAccent.opacity(0.76) : Color.appSecondary)
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(isSelected ? Color.appOnAccent : Color.appPrimary)
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(minWidth: 148, alignment: .leading)
+            .padding(.vertical, 13)
+            .frame(minWidth: 156, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isSelected ? Color.appPrimary : Color.appSurface)
+                    .fill(isSelected ? Color.appAccent : Color.appTertiary.opacity(0.72))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(isSelected ? Color.clear : Color.appSeparator, lineWidth: 1)
+                    .stroke(Color.appSeparator.opacity(isSelected ? 0.22 : 0.38), lineWidth: 1)
             )
             .surfaceShadow()
         }
@@ -511,6 +639,13 @@ struct ReviewRootView: View {
     private var selectedReviewSession: OCSession? {
         guard let selectedReviewSessionID else { return nil }
         return availableSessions.first(where: { $0.id == selectedReviewSessionID })
+    }
+
+    private var isReviewReloading: Bool {
+        if case .loading = viewState {
+            return reviewSnapshot != nil
+        }
+        return false
     }
 
     private var errorMessage: String? {
@@ -553,11 +688,11 @@ struct ReviewRootView: View {
                 sessions.contains(where: { $0.id == sessionID }) ? sessionID : nil
             }
 
-            if preferActiveSession, let activeSessionIsAvailable {
-                selectedReviewSessionID = activeSessionIsAvailable
-            } else if let selectedReviewSessionID,
+            if let selectedReviewSessionID,
                       sessions.contains(where: { $0.id == selectedReviewSessionID }) {
                 self.selectedReviewSessionID = selectedReviewSessionID
+            } else if preferActiveSession, let activeSessionIsAvailable {
+                selectedReviewSessionID = activeSessionIsAvailable
             } else if let activeSessionIsAvailable {
                 selectedReviewSessionID = activeSessionIsAvailable
             } else {
