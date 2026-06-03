@@ -31,6 +31,10 @@ final class LiveActivityManager: LiveActivityProviding {
         lastCostTotal = nil
         lastUpdateTime = .distantPast
 
+        guard AppPreferences.liveActivitiesEnabled else {
+            return
+        }
+
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             return
         }
@@ -165,6 +169,10 @@ final class LiveActivityManager: LiveActivityProviding {
 
         if currentActivity != nil {
             endActivity()
+        }
+
+        guard AppPreferences.liveActivitiesEnabled else {
+            return
         }
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {

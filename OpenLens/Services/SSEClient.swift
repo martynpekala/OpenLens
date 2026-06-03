@@ -1,6 +1,10 @@
 import Foundation
 import os
 
+func isTerminalSSEHTTPStatus(_ statusCode: Int) -> Bool {
+    statusCode == 401 || statusCode == 403
+}
+
 /// Server-Sent Events client for streaming OpenCode events.
 /// Connects to `GET /event` and parses the SSE stream.
 ///
@@ -36,6 +40,9 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// Called when connection state changes (main queue).
     var onStateChange: ((ConnectionState) -> Void)?
 
+    /// Called when the SSE endpoint returns a terminal HTTP status that should not auto-reconnect.
+    var onTerminalHTTPError: ((Int) -> Void)?
+
     // MARK: - Private state (protected by `queue`)
 
     private let queue = DispatchQueue(label: "com.opencode.SSEClient", qos: .userInitiated)
@@ -50,6 +57,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var reconnectWorkItem: DispatchWorkItem?
     private var pendingTextDelta: PendingTextDelta?
     private var pendingTextDeltaWorkItem: DispatchWorkItem?
+    private var lastResponseStatusCode: Int?
 
     // MARK: - Constants
 
@@ -148,10 +156,28 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         // Already on `queue` (delegateQueue).
-        if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-            reconnectDelay = Self.initialReconnectDelay
-            updateState(.connected)
+        if let http = response as? HTTPURLResponse {
+            lastResponseStatusCode = http.statusCode
+
+            if http.statusCode == 200 {
+                reconnectDelay = Self.initialReconnectDelay
+                updateState(.connected)
+                completionHandler(.allow)
+                return
+            }
+
+            if isTerminalSSEHTTPStatus(http.statusCode) {
+                shouldReconnect = false
+                let callback = onTerminalHTTPError
+                let statusCode = http.statusCode
+                DispatchQueue.main.async {
+                    callback?(statusCode)
+                }
+                completionHandler(.cancel)
+                return
+            }
         }
+
         completionHandler(.allow)
     }
 
@@ -166,8 +192,15 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         // Already on `queue`.
         flushPendingTextDelta()
+        let statusCode = lastResponseStatusCode
+        lastResponseStatusCode = nil
         cleanupConnection()
         updateState(.disconnected)
+
+        if let statusCode, isTerminalSSEHTTPStatus(statusCode) {
+            return
+        }
+
         scheduleReconnect()
     }
 

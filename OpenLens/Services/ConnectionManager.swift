@@ -159,6 +159,16 @@ final class ConnectionManager: ConnectionProviding {
                 }
             }
 
+            sse.onTerminalHTTPError = { [weak self] statusCode in
+                guard let self else { return }
+                self.stopHeartbeatWatchdog()
+                self.state = .error(
+                    "Authentication failed for the live event stream (HTTP \(statusCode)). Check the OpenCode username and password."
+                )
+                self.sseConnectionContinuation?.resume()
+                self.sseConnectionContinuation = nil
+            }
+
             sse.connect()
 
             // Wait for SSE to actually connect before returning to the caller.

@@ -68,14 +68,50 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     static func == (lhs: SavedConnection, rhs: SavedConnection) -> Bool { lhs.id == rhs.id }
 }
 
+struct SavedConnectionPublicSnapshot: Codable, Equatable {
+    var id: String
+    var serverURL: String
+    var username: String
+    var selectedProviderID: String?
+    var selectedModelID: String?
+    var selectedVariant: String?
+    var selectedProjectDirectory: String?
+    var lastConnectedAt: Date?
+
+    nonisolated init(connection: SavedConnection) {
+        id = connection.id
+        serverURL = connection.serverURL
+        username = connection.username
+        selectedProviderID = connection.selectedProviderID
+        selectedModelID = connection.selectedModelID
+        selectedVariant = connection.selectedVariant
+        selectedProjectDirectory = connection.selectedProjectDirectory
+        lastConnectedAt = connection.lastConnectedAt
+    }
+
+    nonisolated func savedConnectionWithoutPassword() -> SavedConnection {
+        SavedConnection(
+            id: id,
+            serverURL: serverURL,
+            username: username,
+            password: "",
+            selectedProviderID: selectedProviderID,
+            selectedModelID: selectedModelID,
+            selectedVariant: selectedVariant,
+            selectedProjectDirectory: selectedProjectDirectory,
+            lastConnectedAt: lastConnectedAt
+        )
+    }
+}
+
 // MARK: - SavedConnectionsStore
 
-/// Manages a list of saved server connections, all stored in Keychain.
+/// Manages recently used server connections, stored in Keychain.
 /// Injected via @Environment into views that need connection suggestions.
 @Observable
 final class SavedConnectionsStore {
 
-    /// All saved connections, sorted most-recently-used first.
+    /// Saved connections, kept most-recently-used first.
     private(set) var connections: [SavedConnection] = []
 
     /// The connection currently in use (set after successful connect).
@@ -83,15 +119,29 @@ final class SavedConnectionsStore {
 
     /// Keychain key for the entire connections list.
     private static let keychainKey = "saved_connections_v1"
+    private static let publicSnapshotDefaultsKey = "saved_connections_public_snapshots_v1"
 
     /// Flag to track whether migration from legacy UserDefaults has run.
     private static let migrationDoneKey = "saved_connections_migrated"
+    private static let maximumSavedConnections = 5
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "OpenLens", category: "SavedConnectionsStore")
+    private let shouldPersist: Bool
+    private let userDefaults: UserDefaults
 
     init() {
-        connections = Self.loadFromKeychain()
+        userDefaults = .standard
+        shouldPersist = true
+        connections = Self.loadPersistedConnections(userDefaults: userDefaults)
         migrateFromLegacyIfNeeded()
+        trimToSavedConnectionLimitIfNeeded()
+    }
+
+    init(initialConnections: [SavedConnection]) {
+        userDefaults = .standard
+        shouldPersist = false
+        connections = initialConnections
+        sortAndLimitConnections()
     }
 
     // MARK: - Public API
@@ -118,6 +168,7 @@ final class SavedConnectionsStore {
         }) {
             // Update existing
             connections[index].serverURL = serverURL
+            connections[index].username = username
             connections[index].password = password
             connections[index].lastConnectedAt = Date()
             let connection = connections[index]
@@ -214,7 +265,7 @@ final class SavedConnectionsStore {
         connections.first
     }
 
-    /// All saved connections matching a URL prefix (for suggestions/autocomplete).
+    /// Saved connections matching a URL prefix (for suggestions/autocomplete).
     func suggestions(for urlPrefix: String) -> [SavedConnection] {
         let prefix = urlPrefix.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prefix.isEmpty else { return connections }
@@ -228,25 +279,118 @@ final class SavedConnectionsStore {
 
     private func persist() {
         // Sort most-recently-used first
-        connections.sort { ($0.lastConnectedAt ?? .distantPast) > ($1.lastConnectedAt ?? .distantPast) }
+        sortAndLimitConnections()
+        guard shouldPersist else { return }
+
+        let snapshotsSaved = Self.savePublicSnapshots(
+            connections.map(SavedConnectionPublicSnapshot.init(connection:)),
+            userDefaults: userDefaults
+        )
+        if !snapshotsSaved {
+            logger.error("Failed to persist saved connection public snapshots to UserDefaults")
+        }
+
         let success = KeychainService.saveCodable(connections, key: Self.keychainKey)
         if !success {
             logger.error("Failed to persist saved connections to Keychain")
         }
     }
 
+    private static func loadPersistedConnections(userDefaults: UserDefaults) -> [SavedConnection] {
+        mergeKeychainConnections(
+            loadFromKeychain(),
+            withPublicSnapshots: loadPublicSnapshots(userDefaults: userDefaults)
+        )
+    }
+
     private static func loadFromKeychain() -> [SavedConnection] {
         KeychainService.loadCodable([SavedConnection].self, key: keychainKey) ?? []
+    }
+
+    static func mergeKeychainConnections(
+        _ keychainConnections: [SavedConnection],
+        withPublicSnapshots snapshots: [SavedConnectionPublicSnapshot]
+    ) -> [SavedConnection] {
+        var merged = keychainConnections
+
+        for snapshot in snapshots {
+            if let index = merged.firstIndex(where: { $0.id == snapshot.id }) {
+                merged[index].applyPublicSnapshot(snapshot)
+            } else if let index = merged.firstIndex(where: {
+                normalizeURL($0.serverURL) == normalizeURL(snapshot.serverURL) && $0.username == snapshot.username
+            }) {
+                merged[index].applyPublicSnapshot(snapshot)
+            } else {
+                merged.append(snapshot.savedConnectionWithoutPassword())
+            }
+        }
+
+        return sortedAndLimited(merged)
+    }
+
+    private static func loadPublicSnapshots(userDefaults: UserDefaults) -> [SavedConnectionPublicSnapshot] {
+        guard let data = userDefaults.data(forKey: publicSnapshotDefaultsKey) else { return [] }
+        do {
+            return try JSONDecoder().decode([SavedConnectionPublicSnapshot].self, from: data)
+        } catch {
+            Logger(
+                subsystem: Bundle.main.bundleIdentifier ?? "OpenLens",
+                category: "SavedConnectionsStore"
+            ).error("Failed to decode saved connection public snapshots: \(error, privacy: .public)")
+            return []
+        }
+    }
+
+    @discardableResult
+    private static func savePublicSnapshots(
+        _ snapshots: [SavedConnectionPublicSnapshot],
+        userDefaults: UserDefaults
+    ) -> Bool {
+        do {
+            let data = try JSONEncoder().encode(snapshots)
+            userDefaults.set(data, forKey: publicSnapshotDefaultsKey)
+            return true
+        } catch {
+            Logger(
+                subsystem: Bundle.main.bundleIdentifier ?? "OpenLens",
+                category: "SavedConnectionsStore"
+            ).error("Failed to encode saved connection public snapshots: \(error, privacy: .public)")
+            return false
+        }
+    }
+
+    private func trimToSavedConnectionLimitIfNeeded() {
+        let originalIDs = connections.map(\.id)
+        sortAndLimitConnections()
+
+        if connections.map(\.id) != originalIDs {
+            persist()
+        }
+    }
+
+    private func sortAndLimitConnections() {
+        connections = Self.sortedAndLimited(connections)
+
+        if let activeConnectionID, !connections.contains(where: { $0.id == activeConnectionID }) {
+            self.activeConnectionID = nil
+        }
+    }
+
+    private static func sortedAndLimited(_ connections: [SavedConnection]) -> [SavedConnection] {
+        let sorted = connections.sorted {
+            ($0.lastConnectedAt ?? .distantPast) > ($1.lastConnectedAt ?? .distantPast)
+        }
+        return Array(sorted.prefix(maximumSavedConnections))
     }
 
     // MARK: - Migration from Legacy UserDefaults + Keychain
 
     private func migrateFromLegacyIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: Self.migrationDoneKey) else { return }
-        defer { UserDefaults.standard.set(true, forKey: Self.migrationDoneKey) }
+        guard !userDefaults.bool(forKey: Self.migrationDoneKey) else { return }
+        defer { userDefaults.set(true, forKey: Self.migrationDoneKey) }
 
-        let legacyURL = UserDefaults.standard.string(forKey: "opencode_server_url") ?? ""
-        let legacyUsername = UserDefaults.standard.string(forKey: "opencode_server_username") ?? "opencode"
+        let legacyURL = userDefaults.string(forKey: "opencode_server_url") ?? ""
+        let legacyUsername = userDefaults.string(forKey: "opencode_server_username") ?? "opencode"
         let legacyPassword = KeychainService.load(key: "opencode_server_password") ?? ""
 
         guard !legacyURL.isEmpty else { return }
@@ -258,8 +402,8 @@ final class SavedConnectionsStore {
         }) else { return }
 
         // Migrate legacy model selection too
-        let legacyProvider = UserDefaults.standard.string(forKey: "selectedProviderID")
-        let legacyModel = UserDefaults.standard.string(forKey: "selectedModelID")
+        let legacyProvider = userDefaults.string(forKey: "selectedProviderID")
+        let legacyModel = userDefaults.string(forKey: "selectedModelID")
 
         let migrated = SavedConnection(
             id: UUID().uuidString,
@@ -275,10 +419,10 @@ final class SavedConnectionsStore {
         persist()
 
         // Clean up legacy storage
-        UserDefaults.standard.removeObject(forKey: "opencode_server_url")
-        UserDefaults.standard.removeObject(forKey: "opencode_server_username")
-        UserDefaults.standard.removeObject(forKey: "selectedProviderID")
-        UserDefaults.standard.removeObject(forKey: "selectedModelID")
+        userDefaults.removeObject(forKey: "opencode_server_url")
+        userDefaults.removeObject(forKey: "opencode_server_username")
+        userDefaults.removeObject(forKey: "selectedProviderID")
+        userDefaults.removeObject(forKey: "selectedModelID")
         KeychainService.delete(key: "opencode_server_password")
 
         logger.info("Migrated legacy connection config to SavedConnectionsStore")
@@ -287,10 +431,26 @@ final class SavedConnectionsStore {
     // MARK: - Helpers
 
     private func normalizeURL(_ url: String) -> String {
+        Self.normalizeURL(url)
+    }
+
+    private static func normalizeURL(_ url: String) -> String {
         url.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "http://", with: "")
             .replacingOccurrences(of: "https://", with: "")
+    }
+}
+
+private extension SavedConnection {
+    mutating func applyPublicSnapshot(_ snapshot: SavedConnectionPublicSnapshot) {
+        serverURL = snapshot.serverURL
+        username = snapshot.username
+        selectedProviderID = snapshot.selectedProviderID
+        selectedModelID = snapshot.selectedModelID
+        selectedVariant = snapshot.selectedVariant
+        selectedProjectDirectory = snapshot.selectedProjectDirectory
+        lastConnectedAt = snapshot.lastConnectedAt
     }
 }
 

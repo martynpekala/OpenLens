@@ -1,6 +1,34 @@
 import SwiftUI
+import UIKit
 
-/// Initial connection screen with mDNS discovery, saved connections, and manual entry.
+func shouldAttemptAutoReconnect(
+    isEnabled: Bool,
+    isConnected: Bool,
+    isConnectionSheetPresented: Bool,
+    isQRScannerPresented: Bool,
+    didManuallyDisconnect: Bool,
+    savedConnection: SavedConnection?
+) -> Bool {
+    guard isEnabled,
+          !isConnected,
+          !isConnectionSheetPresented,
+          !isQRScannerPresented,
+          !didManuallyDisconnect,
+          savedConnection?.isConfigured == true
+    else {
+        return false
+    }
+
+    return true
+}
+
+private enum ManualConnectionField: Hashable {
+    case serverURL
+    case username
+    case password
+}
+
+/// Initial connection screen with manual entry, QR scanning, mDNS discovery, and last-connection prefill.
 struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
@@ -15,7 +43,6 @@ struct ConnectView: View {
     @State private var manualURL: String = ""
     @State private var username: String = "opencode"
     @State private var password: String = ""
-    @State private var showManualEntry: Bool = true
 
     @State private var showOnboarding: Bool = false
     @State private var showConnectionSheet: Bool = false
@@ -26,6 +53,7 @@ struct ConnectView: View {
     @State private var currentConnectionMethod: ConnectionMethod = .manual
 
     @State private var showQRScanner: Bool = false
+    @FocusState private var focusedManualField: ManualConnectionField?
 
     @Environment(\.connection) private var connection
     @Environment(\.savedConnections) private var savedConnections
@@ -36,16 +64,13 @@ struct ConnectView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 24) {
-                    discoveredServersSection
-
-                    qrScanSection
-
+                VStack(spacing: 22) {
                     manualConnectionSection
 
-                    if !savedConnections.connections.isEmpty {
-                        savedConnectionsSection
-                    }
+                    connectionChoiceSeparator
+                    qrScanSection
+
+                    discoveredServersSection
 
                     if showsPreviewModesSection {
                         previewModesSection
@@ -55,6 +80,12 @@ struct ConnectView: View {
                 .padding(.vertical, 24)
             }
             .background(Color.appBackground)
+            .background {
+                KeyboardDismissTapInstaller {
+                    focusedManualField = nil
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -69,11 +100,14 @@ struct ConnectView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active, autoReconnect, !connection.isConnected, !showConnectionSheet,
-               !showQRScanner,
-               !connection.didManuallyDisconnect,
-               savedConnections.mostRecent?.isConfigured == true
-            {
+            if newPhase == .active, shouldAttemptAutoReconnect(
+                isEnabled: autoReconnect,
+                isConnected: connection.isConnected,
+                isConnectionSheetPresented: showConnectionSheet,
+                isQRScannerPresented: showQRScanner,
+                didManuallyDisconnect: connection.didManuallyDisconnect,
+                savedConnection: savedConnections.mostRecent
+            ) {
                 startConnect(auto: true)
             }
         }
@@ -98,6 +132,14 @@ struct ConnectView: View {
                 onDismiss: { showQRScanner = false }
             )
         }
+        .onAppear {
+            guard !consumePendingDeepLinkIfNeeded() else { return }
+            prefillFromMostRecentConnectionIfNeeded()
+            startNearbyDiscoveryIfNeeded()
+        }
+        .onDisappear {
+            discovery.stopBrowsing()
+        }
         .onChange(of: pendingDeepLink) { _, deepLink in
             guard let deepLink else { return }
             pendingDeepLink = nil
@@ -109,328 +151,357 @@ struct ConnectView: View {
     // MARK: - QR Scan Section
 
     private var qrScanSection: some View {
-        SurfaceCard(padding: 0) {
-            Button {
-                showQRScanner = true
-            } label: {
-                HStack(spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.appAccent)
-                            .frame(width: 36, height: 36)
-                        Image(systemName: "qrcode.viewfinder")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(Color.appOnAccent)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(AppText.qrScan)
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                        Text(AppText.qrScanSubtitle)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.appSecondary.opacity(0.4))
+        Button {
+            showQRScanner = true
+        } label: {
+            VStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color.appAccent)
+                        .frame(width: 56, height: 56)
+                    Image(systemName: "qrcode.viewfinder")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(Color.appOnAccent)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+
+                VStack(spacing: 3) {
+                    Text(AppText.qrScan)
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                    Text(AppText.qrScanSubtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                }
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 22)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.appSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.appSeparator.opacity(0.55), lineWidth: 0.5)
+            )
+            .surfaceShadow()
         }
+        .buttonStyle(.plain)
+        .frame(maxWidth: 300)
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Connection Choice Separator
+
+    private var connectionChoiceSeparator: some View {
+        HStack(spacing: 12) {
+            Color.appSeparator
+                .frame(height: 0.5)
+            Text("OR")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.appSecondary)
+                .padding(.horizontal, 2)
+            Color.appSeparator
+                .frame(height: 0.5)
+        }
+        .padding(.horizontal, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Or")
     }
 
     // MARK: - Discovered Servers Section
 
+    @ViewBuilder
     private var discoveredServersSection: some View {
-        VStack(spacing: 8) {
-            HStack {
-                SectionLabel(text: AppText.nearby)
-                Spacer()
-                if discovery.isSearching {
-                    ProgressView().scaleEffect(0.75)
-                } else {
-                    Button {
-                        discovery.startBrowsing()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                }
+        if discovery.discoveredServers.count == 1,
+           let server = discovery.discoveredServers.first
+        {
+            Button {
+                connectToDiscovered(server)
+            } label: {
+                nearbySuggestionRow(server)
             }
-
-            SurfaceCard(padding: 0) {
-                if !discovery.discoveredServers.isEmpty {
-                    VStack(spacing: 0) {
-                        ForEach(discovery.discoveredServers) { server in
-                            Button {
-                                connectToDiscovered(server)
-                            } label: {
-                                discoveredServerRow(server)
-                            }
-                            .buttonStyle(.plain)
-
-                            if server.id != discovery.discoveredServers.last?.id {
-                                SurfaceDivider()
-                            }
-                        }
-                    }
-                } else if !discovery.hasSearched && !discovery.isSearching {
-                    Button {
-                        discovery.startBrowsing()
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "wifi")
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.appPrimary)
-                            Text(AppText.scanPrompt)
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.appPrimary)
-                            Spacer()
-                        }
-                        .padding(16)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    HStack(spacing: 10) {
-                        Image(systemName: "wifi.slash")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.appSecondary.opacity(0.4))
-                        Text(discovery.isSearching
-                            ? AppText.searchingServers
-                            : discovery.lastErrorMessage ?? AppText.noServersFound)
-                            .font(.system(size: 14))
-                            .foregroundStyle(Color.appSecondary)
-                        Spacer()
-                    }
-                    .padding(16)
-                }
-            }
+            .buttonStyle(.plain)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+            .accessibilityLabel("Found nearby: \(server.url)")
+            .accessibilityHint("Connect to this server")
         }
     }
 
-    private func discoveredServerRow(_ server: BonjourDiscovery.DiscoveredServer) -> some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.appAccent)
-                    .frame(width: 36, height: 36)
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.appOnAccent)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(server.name)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                Text(server.url)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color.appSecondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Image(systemName: "arrow.right")
+    private func nearbySuggestionRow(_ server: BonjourDiscovery.DiscoveredServer) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "network")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.appSecondary.opacity(0.4))
+                .foregroundStyle(Color.appSecondary)
+
+            Text("Found nearby:")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.appSecondary)
+
+            Text(server.url)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Color.appPrimary.opacity(0.76))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.appSecondary.opacity(0.42))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
-
-    // MARK: - Saved Connections Section
-
-    private var savedConnectionsSection: some View {
-        VStack(spacing: 8) {
-            SectionLabel(text: AppText.saved)
-
-            SurfaceCard(padding: 0) {
-                VStack(spacing: 0) {
-                    ForEach(savedConnections.connections) { saved in
-                        Button {
-                            connectToSaved(saved)
-                        } label: {
-                            savedConnectionRow(saved)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button {
-                                fillFromSaved(saved)
-                            } label: {
-                                Label(AppText.editBeforeConnecting, systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                savedConnections.removeConnection(saved)
-                            } label: {
-                                Label(AppText.forgetConnection, systemImage: "trash")
-                            }
-                        }
-
-                        if saved.id != savedConnections.connections.last?.id {
-                            SurfaceDivider()
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func savedConnectionRow(_ saved: SavedConnection) -> some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.appTertiary)
-                    .frame(width: 36, height: 36)
-                Image(systemName: saved.password.isEmpty ? "server.rack" : "lock.fill")
-                    .font(.system(size: saved.password.isEmpty ? 14 : 13))
-                    .foregroundStyle(Color.appSecondary)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(saved.displayName)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                    .lineLimit(1)
-
-                HStack(spacing: 4) {
-                    Text(saved.username)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.appSecondary)
-                    if !saved.password.isEmpty {
-                        Text("·")
-                            .foregroundStyle(Color.appSecondary.opacity(0.4))
-                        Text("Protected")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                }
-            }
-
-            Spacer()
-
-            if let date = saved.lastConnectedAt {
-                Text(date, format: .relative(presentation: .named))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.appSecondary.opacity(0.5))
-                    .lineLimit(1)
-            }
-
-            Image(systemName: "arrow.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.appSecondary.opacity(0.4))
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: 300)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.appSurface.opacity(0.74))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.appSeparator.opacity(0.45), lineWidth: 0.5)
+        )
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Manual Connection Section
 
     private var manualConnectionSection: some View {
-        VStack(spacing: 8) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showManualEntry.toggle()
+        VStack(spacing: 12) {
+            VStack(spacing: 10) {
+                VStack(spacing: 6) {
+                    manualGlassField(systemImage: "link") {
+                        TextField(
+                            "",
+                            text: $manualURL,
+                            prompt: Text("192.168.1.50:4096")
+                                .foregroundStyle(Color.appSecondary.opacity(0.55))
+                        )
+                            .font(.system(size: 15, design: .monospaced))
+                            .foregroundStyle(Color.appPrimary)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .textContentType(.URL)
+                            .focused($focusedManualField, equals: .serverURL)
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    savedServerSuggestions
                 }
-            } label: {
-                HStack {
-                    SectionLabel(text: AppText.manualConnection)
+                .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingServerAddressSuggestions)
+                .animation(.spring(response: 0.22, dampingFraction: 0.9), value: serverAddressSuggestionIDs)
+
+                manualGlassField(systemImage: "person.fill") {
+                    TextField("opencode", text: $username)
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appPrimary)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .focused($focusedManualField, equals: .username)
+                }
+
+                manualGlassField(systemImage: "lock.fill") {
+                    SecureField(
+                        "",
+                        text: $password,
+                        prompt: Text(AppText.optional)
+                            .foregroundStyle(Color.appSecondary.opacity(0.55))
+                    )
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appPrimary)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .focused($focusedManualField, equals: .password)
+                }
+
+                HStack(spacing: 16) {
+                    Text(AppText.autoReconnect)
+                        .font(.system(size: 19, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+
                     Spacer()
-                    Image(systemName: showManualEntry ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.appSecondary.opacity(0.5))
-                }
-            }
-            .buttonStyle(.plain)
 
-            if showManualEntry {
-                SurfaceCard(padding: 0) {
-                    VStack(spacing: 0) {
-                        HStack(spacing: 12) {
-                            Text(AppText.url)
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.appSecondary)
-                                .frame(width: 52, alignment: .leading)
-                            TextField("192.168.1.50:4096", text: $manualURL)
-                                .font(.system(size: 15, design: .monospaced))
-                                .foregroundStyle(Color.appPrimary)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                                .textContentType(.URL)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-
-                        SurfaceDivider()
-
-                        HStack(spacing: 12) {
-                            Text(AppText.user)
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.appSecondary)
-                                .frame(width: 52, alignment: .leading)
-                            TextField("opencode", text: $username)
-                                .font(.system(size: 15))
-                                .foregroundStyle(Color.appPrimary)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-
-                        SurfaceDivider()
-
-                        HStack(spacing: 12) {
-                            Text(AppText.pass)
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.appSecondary)
-                                .frame(width: 52, alignment: .leading)
-                            SecureField(AppText.optional, text: $password)
-                                .font(.system(size: 15))
-                                .foregroundStyle(Color.appPrimary)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-
-                        SurfaceDivider()
-
-                        Toggle(isOn: $autoReconnect) {
-                            Text(AppText.autoReconnect)
-                                .font(.system(size: 15, design: .rounded))
-                                .foregroundStyle(Color.appPrimary)
-                        }
+                    Toggle(AppText.autoReconnect, isOn: $autoReconnect)
+                        .labelsHidden()
                         .tint(Color.appAccent)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
+                }
+                .padding(.top, 4)
 
-                        SurfaceDivider()
+                Button {
+                    connectManual()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text(AppText.connect)
+                    }
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .foregroundStyle(manualURL.isEmpty ? Color.appSecondary.opacity(0.52) : Color.appOnAccent)
+                    .background(
+                        Capsule()
+                            .fill(manualURL.isEmpty ? Color.appTertiary.opacity(0.48) : Color.appAccent)
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.appSeparator.opacity(manualURL.isEmpty ? 0.70 : 0.22), lineWidth: 1.1)
+                    }
+                }
+                .disabled(manualURL.isEmpty)
+            }
+        }
+        .padding(20)
+        .background {
+            RoundedRectangle(cornerRadius: 36, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.appSurface.opacity(0.20),
+                            Color.appTertiary.opacity(0.08),
+                            Color.appSurface.opacity(0.16)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(alignment: .topTrailing) {
+                    LinearGradient(
+                        colors: [
+                            Color.cyan.opacity(0.010),
+                            Color.blue.opacity(0.006),
+                            Color.clear
+                        ],
+                        startPoint: .topTrailing,
+                        endPoint: .bottomLeading
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
+                }
+                .overlay(alignment: .bottomLeading) {
+                    LinearGradient(
+                        colors: [
+                            Color.purple.opacity(0.007),
+                            Color.clear
+                        ],
+                        startPoint: .bottomLeading,
+                        endPoint: .center
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
+                }
+        }
+        .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 36, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 36, style: .continuous)
+                .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
+    }
 
-                        Button {
-                            connectManual()
-                        } label: {
-                            Text(AppText.connect)
-                                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 15)
-                                .foregroundStyle(manualURL.isEmpty ? Color.appSecondary.opacity(0.5) : Color.appOnAccent)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .fill(manualURL.isEmpty ? Color.appTertiary : Color.appAccent)
-                                )
-                        }
-                        .disabled(manualURL.isEmpty)
-                        .padding(16)
+    @ViewBuilder
+    private var savedServerSuggestions: some View {
+        if isShowingServerAddressSuggestions {
+            VStack(spacing: 0) {
+                ForEach(serverAddressSuggestions) { saved in
+                    Button {
+                        applySavedServerSuggestion(saved)
+                    } label: {
+                        savedServerSuggestionRow(saved)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Use saved server \(saved.displayName)")
+
+                    if saved.id != serverAddressSuggestions.last?.id {
+                        Divider()
+                            .overlay(Color.appSeparator.opacity(0.38))
+                            .padding(.leading, 34)
                     }
                 }
             }
+            .padding(.horizontal, 8)
+            .transition(
+                .asymmetric(
+                    insertion: .opacity
+                        .combined(with: .move(edge: .top))
+                        .combined(with: .scale(scale: 0.98, anchor: .top)),
+                    removal: .opacity
+                        .combined(with: .scale(scale: 0.98, anchor: .top))
+                )
+            )
+        }
+    }
+
+    private var isShowingServerAddressSuggestions: Bool {
+        focusedManualField == .serverURL && !serverAddressSuggestions.isEmpty
+    }
+
+    private var serverAddressSuggestionIDs: [String] {
+        serverAddressSuggestions.map(\.id)
+    }
+
+    private var serverAddressSuggestions: [SavedConnection] {
+        let query = manualURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentURL = normalizedServerSuggestionKey(query)
+
+        return savedConnections.suggestions(for: query)
+            .filter { normalizedServerSuggestionKey($0.serverURL) != currentURL || query.isEmpty }
+            .prefix(4)
+            .map { $0 }
+    }
+
+    private func savedServerSuggestionRow(_ saved: SavedConnection) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.appSecondary.opacity(0.72))
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(saved.displayName)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.appPrimary.opacity(0.82))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text(saved.username)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.appSecondary.opacity(0.72))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "arrow.up.left")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.appSecondary.opacity(0.42))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+    }
+
+    private func manualGlassField<Content: View>(
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Color.appSecondary)
+                .frame(width: 22)
+
+            content()
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 50)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.appSurface.opacity(0.24))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
         }
     }
 
@@ -665,6 +736,13 @@ struct ConnectView: View {
     // MARK: - Connection Actions
 
     private func startConnect(auto: Bool) {
+        if auto {
+            guard let saved = savedConnections.mostRecent, saved.isConfigured else { return }
+            manualURL = saved.serverURL
+            username = saved.username
+            password = saved.password
+        }
+
         connectionTask?.cancel()
         isAutoReconnect = auto
         connectionFailed = false
@@ -699,6 +777,11 @@ struct ConnectView: View {
         startConnect(auto: isAutoReconnect)
     }
 
+    private func startNearbyDiscoveryIfNeeded() {
+        guard !discovery.isSearching, discovery.discoveredServers.isEmpty else { return }
+        discovery.startBrowsing()
+    }
+
     private func cancelConnection() {
         connectionTask?.cancel()
         connectionTask = nil
@@ -721,20 +804,13 @@ struct ConnectView: View {
         connectManual()
     }
 
-    private func connectToSaved(_ saved: SavedConnection) {
-        pendingSessionNavigationID = nil
-        currentConnectionMethod = .saved
-        manualURL = saved.serverURL
-        username = saved.username
-        password = saved.password
-        startConnect(auto: false)
-    }
-
-    private func fillFromSaved(_ saved: SavedConnection) {
-        manualURL = saved.serverURL
-        username = saved.username
-        password = saved.password
-        showManualEntry = true
+    private func applySavedServerSuggestion(_ saved: SavedConnection) {
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
+            manualURL = saved.serverURL
+            username = saved.username
+            password = saved.password
+            focusedManualField = nil
+        }
     }
 
     private func connectManual() {
@@ -755,6 +831,15 @@ struct ConnectView: View {
         return true
     }
 
+    private func prefillFromMostRecentConnectionIfNeeded() {
+        guard manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let saved = savedConnections.mostRecent else { return }
+
+        manualURL = saved.serverURL
+        username = saved.username
+        password = saved.password
+    }
+
     // MARK: - Deep Link
 
     private func applyDeepLink(_ deepLink: DeepLinkConnection) {
@@ -762,7 +847,103 @@ struct ConnectView: View {
         manualURL = deepLink.serverURL
         username = deepLink.username
         password = deepLink.password
-        showManualEntry = true
         startConnect(auto: false)
+    }
+
+    private func normalizedServerSuggestionKey(_ value: String) -> String {
+        value
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "https://", with: "")
+    }
+}
+
+private struct KeyboardDismissTapInstaller: UIViewRepresentable {
+    var onTapOutsideInput: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onTapOutsideInput: onTapOutsideInput)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+
+        DispatchQueue.main.async {
+            context.coordinator.installIfNeeded(from: view)
+        }
+
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.onTapOutsideInput = onTapOutsideInput
+
+        DispatchQueue.main.async {
+            context.coordinator.installIfNeeded(from: view)
+        }
+    }
+
+    static func dismantleUIView(_ view: UIView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onTapOutsideInput: () -> Void
+
+        private weak var installedWindow: UIWindow?
+        private weak var tapGesture: UITapGestureRecognizer?
+
+        init(onTapOutsideInput: @escaping () -> Void) {
+            self.onTapOutsideInput = onTapOutsideInput
+        }
+
+        func installIfNeeded(from view: UIView) {
+            guard let window = view.window, installedWindow !== window else { return }
+
+            uninstall()
+
+            let gesture = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+            gesture.cancelsTouchesInView = false
+            gesture.delegate = self
+            window.addGestureRecognizer(gesture)
+
+            installedWindow = window
+            tapGesture = gesture
+        }
+
+        func uninstall() {
+            guard let tapGesture else { return }
+            installedWindow?.removeGestureRecognizer(tapGesture)
+            self.tapGesture = nil
+            installedWindow = nil
+        }
+
+        @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+            onTapOutsideInput()
+            recognizer.view?.endEditing(true)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let touchedView = touch.view else { return true }
+            return !touchedView.hasAncestor(ofType: UITextField.self)
+                && !touchedView.hasAncestor(ofType: UITextView.self)
+        }
+    }
+}
+
+private extension UIView {
+    func hasAncestor<T: UIView>(ofType type: T.Type) -> Bool {
+        var view: UIView? = self
+
+        while let currentView = view {
+            if currentView is T {
+                return true
+            }
+            view = currentView.superview
+        }
+
+        return false
     }
 }
