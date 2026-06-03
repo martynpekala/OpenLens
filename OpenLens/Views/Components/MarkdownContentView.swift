@@ -8,6 +8,7 @@ import SwiftUI
 struct MarkdownContentView: View {
     let text: String
     let foregroundColor: Color
+    let usesRetroTypography: Bool
 
     private let cachedBlocks: [Block]
 
@@ -41,9 +42,14 @@ struct MarkdownContentView: View {
         init(_ blocks: [Block]) { self.blocks = blocks }
     }
 
-    init(_ text: String, foregroundColor: Color = Color(.label)) {
+    init(
+        _ text: String,
+        foregroundColor: Color = Color(.label),
+        usesRetroTypography: Bool = false
+    ) {
         self.text = text
         self.foregroundColor = foregroundColor
+        self.usesRetroTypography = usesRetroTypography
 
         let key = Self.cacheKey(for: text)
 
@@ -133,7 +139,7 @@ struct MarkdownContentView: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 12, weight: .medium))
                         Text(AppText.markdownShowMore(remainingCount))
-                            .font(.system(size: 14, weight: .medium))
+                            .font(usesRetroTypography ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium))
                     }
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
@@ -352,7 +358,7 @@ struct MarkdownContentView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if let language {
                     Text(language)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(usesRetroTypography ? RetroChatStyle.smallFont : .system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 12)
                         .padding(.top, 8)
@@ -375,7 +381,7 @@ struct MarkdownContentView: View {
 
         case .heading(let level, let text):
             Text(text)
-                .font(.system(size: headingSize(level), weight: .bold))
+                .font(usesRetroTypography ? RetroChatStyle.headerFont : .system(size: headingSize(level), weight: .bold))
                 .foregroundStyle(foregroundColor)
 
         case .unorderedList(let items):
@@ -383,6 +389,7 @@ struct MarkdownContentView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .top, spacing: 6) {
                         Text("\u{2022}")
+                            .font(usesRetroTypography ? RetroChatStyle.bodyFont : .system(size: 17))
                             .foregroundStyle(.secondary)
                         inlineText(item.0, fallback: item.1)
                     }
@@ -394,6 +401,7 @@ struct MarkdownContentView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     HStack(alignment: .top, spacing: 6) {
                         Text("\(index + 1).")
+                            .font(usesRetroTypography ? RetroChatStyle.bodyFont : .system(size: 17))
                             .foregroundStyle(.secondary)
                             .frame(width: 20, alignment: .trailing)
                         inlineText(item.0, fallback: item.1)
@@ -419,11 +427,11 @@ struct MarkdownContentView: View {
         Group {
             if let attributed {
                 Text(attributed)
-                    .font(.system(size: 17))
+                    .font(usesRetroTypography ? RetroChatStyle.bodyFont : .system(size: 17))
                     .foregroundStyle(foregroundColor)
             } else {
                 Text(fallback)
-                    .font(.system(size: 17))
+                    .font(usesRetroTypography ? RetroChatStyle.bodyFont : .system(size: 17))
                     .foregroundStyle(foregroundColor)
             }
         }

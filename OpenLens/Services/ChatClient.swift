@@ -61,6 +61,9 @@ final class ChatClient: SSEEventHandlerDelegate {
     var showQuestionSheet: Bool = false
     var isRecordingStream: Bool = false
 
+    /// Active todo list from the server (updated via `todo.updated` SSE event).
+    var todos: [OCTodo] = []
+
     // MARK: - Model Selection
 
     var providers: [OCProvider] = [] {
@@ -610,12 +613,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         currentSession = session
 
         setupSSEHandlers()
-        await loadMessages()
-        await recoverPendingPermission()
-        await recoverPendingQuestions()
         if providers.isEmpty {
             await loadProviders()
         }
+        await loadMessages()
+        await recoverPendingPermission()
+        await recoverPendingQuestions()
     }
 
     func loadMessages() async {
@@ -624,11 +627,29 @@ final class ChatClient: SSEEventHandlerDelegate {
         do {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
             self.messages = loaded
+            syncSessionModelSelection(from: loaded)
             Logger.debug.info("messages count: \(loaded.count)")
             self.contentVersion &+= 1
             self.scrollAnchor &+= 1
         } catch {
             self.errorMessage = "Failed to load messages: \(error.localizedDescription)"
+        }
+
+        await loadTodos()
+    }
+
+    func loadTodos() async {
+        guard let session = currentSession,
+              let client = connection?.client else {
+            Logger.debug.info("[TODO] loadTodos skipped: no session or client")
+            return
+        }
+        do {
+            let loaded = try await client.listTodos(sessionID: session.id)
+            self.todos = loaded
+            Logger.debug.info("[TODO] loaded \(loaded.count) todos from API")
+        } catch {
+            Logger.debug.warning("[TODO] loadTodos failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -731,6 +752,34 @@ final class ChatClient: SSEEventHandlerDelegate {
             self.selectedVariant = nil
             persistCurrentSelection()
         }
+    }
+
+    static func recentSessionModelSelection(from messages: [ChatMessage]) -> (providerID: String, modelID: String)? {
+        for message in messages.reversed() {
+            guard let providerID = message.providerID?.nilIfBlank,
+                  let modelID = message.modelID?.nilIfBlank else {
+                continue
+            }
+
+            return (providerID, modelID)
+        }
+
+        return nil
+    }
+
+    private func syncSessionModelSelection(from messages: [ChatMessage]) {
+        guard let selection = Self.recentSessionModelSelection(from: messages) else { return }
+
+        if !availableModels.isEmpty,
+           !availableModels.contains(where: {
+               $0.providerID == selection.providerID && $0.modelID == selection.modelID
+           }) {
+            return
+        }
+
+        selectedProviderID = selection.providerID
+        selectedModelID = selection.modelID
+        selectedVariant = nil
     }
 
     func selectModel(_ model: SelectableModel) {

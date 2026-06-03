@@ -1,0 +1,9 @@
+Pokemon Classic font
+
+Font: Pokemon Classic.ttf
+Designer: TheLouster115
+PostScript name: Pokemon-Classic
+Source requested for OpenLens: https://fontmeme.com/fonts/pokemon-classic-font/
+
+The font file metadata identifies the license as Creative Commons Attribution Share Alike:
+https://creativecommons.org/licenses/by-sa/3.0/

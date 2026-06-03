@@ -41,6 +41,8 @@ enum ToolLabelFormatter {
                 return title
             }
             return "Question"
+        case "todowrite", "todo_write", "todo":
+            return "Update todos"
         default:
             break
         }

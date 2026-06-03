@@ -9,6 +9,9 @@ struct MessageBubbleView: View {
     let message: ChatMessage
     @State private var preparedMarkdownText: String?
     @State private var markdownHandoffTask: Task<Void, Never>?
+    @AppStorage("showThinking") private var showThinking: Bool = true
+    @Environment(\.openLensTheme) private var theme
+    @Environment(\.chatEasterEgg) private var chatEasterEgg
 
     private static let markdownHandoffDelay: Duration = .milliseconds(120)
     private static let deferredMarkdownThreshold = 600
@@ -18,13 +21,13 @@ struct MessageBubbleView: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .bottom, spacing: isRetroChat ? 6 : 8) {
             if message.role == .user {
-                Spacer(minLength: 64)
+                Spacer(minLength: isRetroChat ? 42 : 64)
                 userBubble
             } else {
                 assistantBubble
-                Spacer(minLength: 32)
+                Spacer(minLength: isRetroChat ? 24 : 32)
             }
         }
         .onAppear {
@@ -58,14 +61,26 @@ struct MessageBubbleView: View {
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
             Text(message.content)
-                .font(.system(size: 16))
-                .foregroundStyle(Color.appOnAccent)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 11)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(Color.appAccent)
-                )
+                .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
+                .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appOnAccent)
+                .padding(.horizontal, isRetroChat ? 14 : 16)
+                .padding(.vertical, isRetroChat ? 10 : 11)
+                .background {
+                    if isRetroChat {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(RetroChatStyle.playerFill)
+                            .shadow(color: RetroChatStyle.shadow, radius: 0, x: 3, y: 3)
+                    } else {
+                        bubbleFill(theme.colors.accent.color)
+                    }
+                }
+                .overlay {
+                    if isRetroChat {
+                        RetroChatDoubleBorder(cornerRadius: 7)
+                    } else {
+                        bubbleStroke(theme.components.controlBorder)
+                    }
+                }
         }
     }
 
@@ -91,6 +106,19 @@ struct MessageBubbleView: View {
                 }
             }
         }
+        .padding(isRetroChat ? 12 : 0)
+        .background {
+            if isRetroChat {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(RetroChatStyle.paper)
+                    .shadow(color: RetroChatStyle.shadow, radius: 0, x: 3, y: 3)
+            }
+        }
+        .overlay {
+            if isRetroChat {
+                RetroChatDoubleBorder(cornerRadius: 7)
+            }
+        }
     }
 
     // MARK: - Segments
@@ -103,8 +131,10 @@ struct MessageBubbleView: View {
                 text,
                 usesDeferredMarkdownHandoff: !message.hasRenderableTextPart
             )
-        case .reasoning(let text, let todoItems):
-            reasoningSegment(text: text, todoItems: todoItems)
+        case .reasoning(let text):
+            if showThinking {
+                reasoningSegment(text: text)
+            }
         case .tool(let step):
             toolSegment(step)
         }
@@ -113,19 +143,35 @@ struct MessageBubbleView: View {
     private func assistantTextBubble(_ text: String, usesDeferredMarkdownHandoff: Bool) -> some View {
         Group {
             if shouldRenderMarkdown(text, usesDeferredMarkdownHandoff: usesDeferredMarkdownHandoff) {
-                MarkdownContentView(text, foregroundColor: Color.appPrimary)
+                MarkdownContentView(
+                    text,
+                    foregroundColor: isRetroChat ? RetroChatStyle.ink : Color.appPrimary,
+                    usesRetroTypography: isRetroChat
+                )
             } else {
                 Text(text)
-                    .font(.system(size: 16))
-                    .foregroundStyle(Color.appPrimary)
+                    .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)
             }
         }
         .padding(.horizontal, showsTranscriptStyleAssistantContent ? 0 : 16)
         .padding(.vertical, showsTranscriptStyleAssistantContent ? 0 : 12)
         .background {
             if !showsTranscriptStyleAssistantContent {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.appSurface)
+                bubbleFill(theme.colors.surface.color)
+            }
+        }
+        .overlay {
+            if !showsTranscriptStyleAssistantContent {
+                bubbleStroke(theme.components.surfaceBorder)
+            }
+        }
+        .overlay {
+            if !showsTranscriptStyleAssistantContent {
+                bubbleInnerStroke(
+                    theme.components.surfaceInnerBorder,
+                    outerWidth: theme.components.surfaceBorder.width
+                )
             }
         }
         .modifier(AssistantTranscriptShadow(enabled: !showsTranscriptStyleAssistantContent))
@@ -176,6 +222,10 @@ struct MessageBubbleView: View {
         return message.content.nilIfBlank
     }
 
+    private var isRetroChat: Bool {
+        chatEasterEgg.visualMode.isRetro
+    }
+
     private func shouldDeferMarkdownHandoff(for text: String) -> Bool {
         guard text.count >= Self.deferredMarkdownThreshold else { return false }
         return text.contains("\n") ||
@@ -186,34 +236,43 @@ struct MessageBubbleView: View {
             text.contains("> ")
     }
 
-    private func reasoningSegment(text: String, todoItems: [TodoListCardView.Item]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if todoItems.count >= 2 {
-                TodoListCardView(title: "Todos", items: todoItems, compact: true)
-            } else {
-                Text(text)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color.appSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.leading, 2)
+    private func bubbleFill(_ fill: Color) -> some View {
+        RoundedRectangle(cornerRadius: theme.radius.card, style: .continuous)
+            .fill(fill)
+    }
+
+    private func bubbleStroke(_ stroke: OpenLensStrokeStyle) -> some View {
+        RoundedRectangle(cornerRadius: theme.radius.card, style: .continuous)
+            .stroke(stroke.color.color, lineWidth: stroke.width)
+    }
+
+    private func bubbleInnerStroke(_ stroke: OpenLensStrokeStyle, outerWidth: CGFloat) -> some View {
+        let inset = outerWidth + stroke.width / 2
+
+        return RoundedRectangle(cornerRadius: max(theme.radius.card - inset, 0), style: .continuous)
+            .inset(by: inset)
+            .stroke(stroke.color.color, lineWidth: stroke.width)
+    }
+
+    private func reasoningSegment(text: String) -> some View {
+        Text(text)
+            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, design: .monospaced))
+            .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, 2)
     }
 
     private func toolSegment(_ step: ChatMessage.PersistedToolStep) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(toolTranscriptLine(step))
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .foregroundStyle(step.isError ? .orange : Color.appSecondary)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(step.isError ? (isRetroChat ? RetroChatStyle.danger : .orange) : (isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary))
                 .fixedSize(horizontal: false, vertical: true)
 
-            if step.todoItems.count >= 2 {
-                TodoListCardView(title: "Todos", items: step.todoItems, compact: true)
-                    .padding(.leading, 2)
-            } else if let output = transcriptOutput(for: step) {
+            if let output = transcriptOutput(for: step) {
                 Text(output)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, design: .monospaced))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 2)
             }

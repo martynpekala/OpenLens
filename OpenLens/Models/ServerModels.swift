@@ -659,7 +659,7 @@ extension OCEvent {
 }
 
 /// Matches the provider list model shape:
-/// `{ id, name, release_date, attachment, reasoning, temperature, tool_call, cost?, limit, status?, options, ... }`
+/// `{ id, name, release_date, attachment, reasoning, temperature, tool_call, capabilities?, cost?, limit, status?, options, ... }`
 /// We decode defensively — most fields are optional.
  struct OCProviderModel: Codable, Identifiable, Sendable {
     let id: String
@@ -679,6 +679,7 @@ extension OCEvent {
         case releaseDate = "release_date"
         case attachment, reasoning, temperature
         case toolCall = "tool_call"
+        case capabilities
         case cost, limit, status, variants
     }
 
@@ -701,17 +702,55 @@ extension OCEvent {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let capabilities = try container.decodeIfPresent(OCProviderModelCapabilities.self, forKey: .capabilities)
         id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         releaseDate = try container.decodeIfPresent(String.self, forKey: .releaseDate)
-        attachment = try container.decodeIfPresent(Bool.self, forKey: .attachment)
-        reasoning = try container.decodeIfPresent(Bool.self, forKey: .reasoning)
-        temperature = try container.decodeIfPresent(Bool.self, forKey: .temperature)
-        toolCall = try container.decodeIfPresent(Bool.self, forKey: .toolCall)
+        attachment = try container.decodeIfPresent(Bool.self, forKey: .attachment) ?? capabilities?.attachment
+        reasoning = try container.decodeIfPresent(Bool.self, forKey: .reasoning) ?? capabilities?.reasoning
+        temperature = try container.decodeIfPresent(Bool.self, forKey: .temperature) ?? capabilities?.temperature
+        toolCall = try container.decodeIfPresent(Bool.self, forKey: .toolCall) ?? capabilities?.toolCall
         cost = try container.decodeIfPresent(OCModelCost.self, forKey: .cost)
         limit = try container.decodeIfPresent(OCModelLimit.self, forKey: .limit)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         variants = try container.decodeIfPresent([String: OCProviderVariant].self, forKey: .variants)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(releaseDate, forKey: .releaseDate)
+        try container.encodeIfPresent(attachment, forKey: .attachment)
+        try container.encodeIfPresent(reasoning, forKey: .reasoning)
+        try container.encodeIfPresent(temperature, forKey: .temperature)
+        try container.encodeIfPresent(toolCall, forKey: .toolCall)
+        try container.encodeIfPresent(cost, forKey: .cost)
+        try container.encodeIfPresent(limit, forKey: .limit)
+        try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(variants, forKey: .variants)
+    }
+}
+
+private struct OCProviderModelCapabilities: Decodable, Sendable {
+    let attachment: Bool?
+    let reasoning: Bool?
+    let temperature: Bool?
+    let toolCall: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case attachment, reasoning, temperature
+        case toolCall = "toolcall"
+        case toolCallSnake = "tool_call"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attachment = try container.decodeIfPresent(Bool.self, forKey: .attachment)
+        reasoning = try container.decodeIfPresent(Bool.self, forKey: .reasoning)
+        temperature = try container.decodeIfPresent(Bool.self, forKey: .temperature)
+        toolCall = try container.decodeIfPresent(Bool.self, forKey: .toolCall)
+            ?? container.decodeIfPresent(Bool.self, forKey: .toolCallSnake)
     }
 }
 
@@ -1141,6 +1180,7 @@ struct OCFileContent: Codable, Hashable, Sendable {
     let content: String?
     let diff: String?
     let patch: OCFilePatch?
+    let patchText: String?
     let encoding: String?
     let mimeType: String?
 
@@ -1148,6 +1188,62 @@ struct OCFileContent: Codable, Hashable, Sendable {
         guard type?.lowercased() == "text" else { return nil }
         guard encoding?.lowercased() != "base64" else { return nil }
         return content
+    }
+
+    var unifiedPatchText: String? {
+        diff?.nilIfBlank ?? patchText?.nilIfBlank
+    }
+
+    init(
+        type: String? = nil,
+        content: String? = nil,
+        diff: String? = nil,
+        patch: OCFilePatch? = nil,
+        patchText: String? = nil,
+        encoding: String? = nil,
+        mimeType: String? = nil
+    ) {
+        self.type = type
+        self.content = content
+        self.diff = diff
+        self.patch = patch
+        self.patchText = patchText
+        self.encoding = encoding
+        self.mimeType = mimeType
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        content = try container.decodeIfPresent(String.self, forKey: .content)
+        diff = try container.decodeIfPresent(String.self, forKey: .diff)
+        if let patchObject = try? container.decodeIfPresent(OCFilePatch.self, forKey: .patch) {
+            patch = patchObject
+            patchText = nil
+        } else {
+            patch = nil
+            patchText = try container.decodeIfPresent(String.self, forKey: .patch)
+        }
+        encoding = try container.decodeIfPresent(String.self, forKey: .encoding)
+        mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(type, forKey: .type)
+        try container.encodeIfPresent(content, forKey: .content)
+        try container.encodeIfPresent(diff, forKey: .diff)
+        if let patch {
+            try container.encode(patch, forKey: .patch)
+        } else {
+            try container.encodeIfPresent(patchText, forKey: .patch)
+        }
+        try container.encodeIfPresent(encoding, forKey: .encoding)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type, content, diff, patch, encoding, mimeType
     }
 }
 
@@ -1161,6 +1257,9 @@ struct OCFileContent: Codable, Hashable, Sendable {
     let deletions: Int?
     let before: String?
     let after: String?
+    let diff: String?
+    let patch: OCFilePatch?
+    let patchText: String?
 
     init(
         file: String? = nil,
@@ -1169,7 +1268,10 @@ struct OCFileContent: Codable, Hashable, Sendable {
         additions: Int? = nil,
         deletions: Int? = nil,
         before: String? = nil,
-        after: String? = nil
+        after: String? = nil,
+        diff: String? = nil,
+        patch: OCFilePatch? = nil,
+        patchText: String? = nil
     ) {
         self.file = file
         self.path = path
@@ -1178,6 +1280,9 @@ struct OCFileContent: Codable, Hashable, Sendable {
         self.deletions = deletions
         self.before = before
         self.after = after
+        self.diff = diff
+        self.patch = patch
+        self.patchText = patchText
     }
 
     init(from decoder: Decoder) throws {
@@ -1189,6 +1294,31 @@ struct OCFileContent: Codable, Hashable, Sendable {
         deletions = try container.decodeIfPresent(Int.self, forKey: .deletions)
         before = try container.decodeIfPresent(String.self, forKey: .before)
         after = try container.decodeIfPresent(String.self, forKey: .after)
+        diff = try container.decodeIfPresent(String.self, forKey: .diff)
+        if let patchObject = try? container.decodeIfPresent(OCFilePatch.self, forKey: .patch) {
+            patch = patchObject
+            patchText = nil
+        } else {
+            patch = nil
+            patchText = try container.decodeIfPresent(String.self, forKey: .patch)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(file, forKey: .file)
+        try container.encodeIfPresent(path, forKey: .path)
+        try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(additions, forKey: .additions)
+        try container.encodeIfPresent(deletions, forKey: .deletions)
+        try container.encodeIfPresent(before, forKey: .before)
+        try container.encodeIfPresent(after, forKey: .after)
+        try container.encodeIfPresent(diff, forKey: .diff)
+        if let patch {
+            try container.encode(patch, forKey: .patch)
+        } else {
+            try container.encodeIfPresent(patchText, forKey: .patch)
+        }
     }
 
     var resolvedPath: String? {
@@ -1196,8 +1326,17 @@ struct OCFileContent: Codable, Hashable, Sendable {
     }
 
     var resolvedStatus: String {
-        if let status = status?.nilIfBlank {
-            return status.uppercased()
+        if let status = status?.nilIfBlank?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            switch status {
+            case "a", "add", "added":
+                return "A"
+            case "d", "delete", "deleted", "removed":
+                return "D"
+            case "r", "rename", "renamed":
+                return "R"
+            default:
+                return "M"
+            }
         }
 
         switch (before?.nilIfBlank, after?.nilIfBlank) {
@@ -1218,7 +1357,36 @@ struct OCFileContent: Codable, Hashable, Sendable {
         deletions ?? derivedLineCounts.deletions
     }
 
+    var unifiedPatchText: String? {
+        diff?.nilIfBlank ?? patchText?.nilIfBlank
+    }
+
     private var derivedLineCounts: (additions: Int, deletions: Int) {
+        if let patch {
+            return patch.hunks.reduce(into: (additions: 0, deletions: 0)) { counts, hunk in
+                for line in hunk.lines {
+                    if line.hasPrefix("+") {
+                        counts.additions += 1
+                    } else if line.hasPrefix("-") {
+                        counts.deletions += 1
+                    }
+                }
+            }
+        }
+
+        let parsedHunks = ReviewFilePatchHunk.parseUnifiedDiff(unifiedPatchText)
+        if !parsedHunks.isEmpty {
+            return parsedHunks.reduce(into: (additions: 0, deletions: 0)) { counts, hunk in
+                for line in hunk.lines {
+                    if line.hasPrefix("+") {
+                        counts.additions += 1
+                    } else if line.hasPrefix("-") {
+                        counts.deletions += 1
+                    }
+                }
+            }
+        }
+
         let beforeLines = (before ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let afterLines = (after ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let difference = afterLines.difference(from: beforeLines, by: ==)
@@ -1239,7 +1407,7 @@ struct OCFileContent: Codable, Hashable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case file, path, status, additions, deletions, before, after
+        case file, path, status, additions, deletions, before, after, diff, patch
     }
 }
 
@@ -1318,7 +1486,14 @@ struct OCFileContent: Codable, Hashable, Sendable {
         name = decodedName
         description = try container.decodeIfPresent(String.self, forKey: .description)
         source = try container.decodeIfPresent(String.self, forKey: .source)
-        template = try container.decodeIfPresent(String.self, forKey: .template)
+        if let str = try? container.decodeIfPresent(String.self, forKey: .template) {
+            template = str
+        } else if let dict = try? container.decodeIfPresent([String: AnyCodable].self, forKey: .template),
+                  let content = dict["content"]?.value as? String {
+            template = content
+        } else {
+            template = nil
+        }
         hints = try container.decodeIfPresent([String].self, forKey: .hints)
     }
 }
@@ -1341,6 +1516,34 @@ struct OCFileContent: Codable, Hashable, Sendable {
  struct OCPromptPart: Codable {
     let type: String // "text"
     let text: String?
+}
+
+// MARK: - Todo
+
+struct OCTodo: Identifiable, Codable {
+    let id: String
+    let content: String
+    let status: String
+    let priority: String?
+
+    enum CodingKeys: String, CodingKey {
+        case content, status, priority
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.content = try container.decode(String.self, forKey: .content)
+        self.status = try container.decode(String.self, forKey: .status)
+        self.priority = try container.decodeIfPresent(String.self, forKey: .priority)
+        self.id = self.content
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(content, forKey: .content)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(priority, forKey: .priority)
+    }
 }
 
 // MARK: - AnyCodable (utility for dynamic JSON)

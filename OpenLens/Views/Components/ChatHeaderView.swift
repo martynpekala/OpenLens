@@ -8,13 +8,23 @@ struct ChatHeaderToolbar: ToolbarContent {
     let sessionTitle: String?
     let showsRecordingControls: Bool
     let isRecordingStream: Bool
+    let visualMode: ChatVisualMode
     let onToggleRecording: (() -> Void)?
 
     private var statusColor: Color {
+        if visualMode.isRetro {
+            switch connectionState {
+            case .connected: return RetroChatStyle.blueAccent
+            case .reconnecting, .connecting: return RetroChatStyle.magentaAccent
+            case .disconnected: return RetroChatStyle.mutedInk.opacity(0.7)
+            case .error: return RetroChatStyle.danger
+            }
+        }
+
         switch connectionState {
-        case .connected: .green
-        case .reconnecting, .connecting: .orange
-        case .disconnected, .error: Color.gray.opacity(0.5)
+        case .connected: return .green
+        case .reconnecting, .connecting: return .orange
+        case .disconnected, .error: return Color.gray.opacity(0.5)
         }
     }
 
@@ -37,62 +47,84 @@ struct ChatHeaderToolbar: ToolbarContent {
     }
 
     private var recordingTint: Color {
-        isRecordingStream ? .red : Color.appSecondary
+        if visualMode.isRetro {
+            return isRecordingStream ? RetroChatStyle.danger : RetroChatStyle.secondaryInk
+        }
+        return isRecordingStream ? .red : Color.appSecondary
+    }
+
+    private var isRetroChat: Bool {
+        visualMode.isRetro
     }
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .title) {
                 VStack(alignment: .center, spacing: 0) {
                     Text(sessionTitle ?? "OpenCode")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .font(isRetroChat ? RetroChatStyle.headerFont : .system(size: 16, weight: .semibold))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.ink : .primary)
                         .lineLimit(1)
                         .padding(.vertical, 4)
                         .padding(.horizontal)
-                        // .glassEffect(.regular, in: Capsule())
 
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(statusColor)
-                            .frame(width: 6, height: 6)
-                            .symbolEffect(.pulse, isActive: connectionState == .connected)
-                            .padding(.trailing, 4)
+                    ViewThatFits {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(statusColor)
+                                .frame(width: 6, height: 6)
+                                .symbolEffect(.pulse, isActive: connectionState == .connected)
+                                .padding(.trailing, 4)
 
-                        if let projectName {
-                            Text(projectName)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            
+                            if let projectName {
+                                Text(projectName)
+                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                                    .lineLimit(1)
+                            }
+
+                            if let branch {
+                                Text("\u{00B7}")
+                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                                Image(systemName: "arrow.triangle.branch")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                                Text(branch)
+                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                                    .lineLimit(1)
+                            }
                         }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal)
+                        .chatHeaderStatusChrome(visualMode)
+                        
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(statusColor)
+                                .frame(width: 6, height: 6)
+                                .symbolEffect(.pulse, isActive: connectionState == .connected)
+                                .padding(.trailing, 4)
 
-                        if let branch {
-                            Text("\u{00B7}")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.gray)
-                            Image(systemName: "arrow.triangle.branch")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.gray)
-                            Text(branch)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            
+                            
+
+                            if let branch {
+                                
+                                Image(systemName: "arrow.triangle.branch")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                                Text(branch)
+                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                                    .lineLimit(1)
+                            }
                         }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal)
+                        .chatHeaderStatusChrome(visualMode)
                     }
-                    .padding(.vertical, 4)
-                    .padding(.horizontal)
-                    .glassEffect(.regular, in: Capsule())
-                    
-                    // HStack(spacing: 4) {
-                    //     Circle()
-                    //         .fill(statusColor)
-                    //         .frame(width: 6, height: 6)
-                    //     Text(statusText)
-                    //         .font(.system(size: 13))
-                    //         .foregroundStyle(.gray)
-                    // }
-                    // .padding(.vertical, 4)
-                    // .padding(.horizontal)
-                    // .glassEffect(.regular, in: Capsule())
                 }
                 .safeAreaPadding(.vertical)
             
@@ -105,14 +137,12 @@ struct ChatHeaderToolbar: ToolbarContent {
                         Image(systemName: recordingIcon)
                             .font(.system(size: 13, weight: .semibold))
                         Text(recordingLabel)
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold, design: .rounded))
                     }
                     .foregroundStyle(recordingTint)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(Color.appSurface)
-                    .clipShape(Capsule())
-                    .surfaceShadow()
+                    .chatRecordingButtonChrome(visualMode)
                 }
                 .accessibilityLabel(recordingLabel)
                 .accessibilityHint(statusText)

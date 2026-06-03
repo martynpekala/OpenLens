@@ -108,18 +108,28 @@ enum TodoListParser {
     private static func parseLine(_ line: String) -> TodoListCardView.Item? {
         guard !line.isEmpty else { return nil }
 
+        var stripped = line
+
+        if stripped.hasPrefix("- ") || stripped.hasPrefix("* ") {
+            stripped = String(stripped.dropFirst(2))
+        } else if let match = stripped.firstMatch(of: /^\d+[.)]\s+/) {
+            stripped = String(stripped[match.range.upperBound...])
+        }
+
         let prefixMap: [(String, TodoListCardView.Item.Status)] = [
             ("[ ]", .pending),
             ("[]", .pending),
             ("[•]", .inProgress),
             ("[-]", .inProgress),
             ("[*]", .inProgress),
+            ("[~]", .inProgress),
             ("[x]", .completed),
-            ("[X]", .completed)
+            ("[X]", .completed),
+            ("[✓]", .completed),
         ]
 
-        for (prefix, status) in prefixMap where line.hasPrefix(prefix) {
-            let title = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        for (prefix, status) in prefixMap where stripped.hasPrefix(prefix) {
+            let title = stripped.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { return nil }
             return TodoListCardView.Item(id: line, title: title, status: status)
         }

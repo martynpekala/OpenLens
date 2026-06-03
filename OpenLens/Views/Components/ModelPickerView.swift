@@ -5,6 +5,7 @@ struct ModelPickerView: View {
     let selectedProviderID: String
     let selectedModelID: String
     let isLoading: Bool
+    let visualMode: ChatVisualMode
     var onSelect: (ChatClient.SelectableModel) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -17,11 +18,13 @@ struct ModelPickerView: View {
         selectedProviderID: String,
         selectedModelID: String,
         isLoading: Bool,
+        visualMode: ChatVisualMode = .standard,
         onSelect: @escaping (ChatClient.SelectableModel) -> Void
     ) {
         self.selectedProviderID = selectedProviderID
         self.selectedModelID = selectedModelID
         self.isLoading = isLoading
+        self.visualMode = visualMode
         self.onSelect = onSelect
 
         // O(n) grouping — computed once at init, not on every body evaluation.
@@ -42,44 +45,139 @@ struct ModelPickerView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if isLoading && groupedModels.isEmpty {
-                    ProgressView(AppText.loadingModels)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if groupedModels.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "cpu")
-                            .font(.system(size: 36, weight: .light))
-                            .foregroundStyle(.secondary)
-                        Text("No Models Available")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text("No connected providers with models were found.")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(32)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List {
-                        ForEach(groupedModels, id: \.provider) { group in
-                            Section(group.provider) {
-                                ForEach(group.models) { model in
-                                    modelRow(model)
-                                }
-                            }
-                        }
-                    }
-                    .listStyle(.insetGrouped)
-                }
+            modelPickerContent
+            .background {
+                sheetBackground
+                    .ignoresSafeArea()
             }
             .navigationTitle(AppText.model)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(AppText.done) { dismiss() }
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text(AppText.done)
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 16, weight: .semibold))
+                            .foregroundStyle(primaryTextColor)
+                    }
                 }
             }
+            .toolbarBackground(isRetroChat ? RetroChatStyle.paperWarm : Color.appBackground, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+        }
+        .tint(isRetroChat ? RetroChatStyle.ink : Color.appAccent)
+        .presentationBackground(isRetroChat ? RetroChatStyle.screenBottom : Color.appBackground)
+    }
+
+    private var isRetroChat: Bool {
+        visualMode.isRetro
+    }
+
+    private var primaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.ink : Color.appPrimary
+    }
+
+    private var secondaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary
+    }
+
+    @ViewBuilder
+    private var sheetBackground: some View {
+        if isRetroChat {
+            RetroChatScreenBackground()
+        } else {
+            Color.appBackground
+        }
+    }
+
+    @ViewBuilder
+    private var modelPickerContent: some View {
+        if isLoading && groupedModels.isEmpty {
+            loadingState
+        } else if groupedModels.isEmpty {
+            emptyState
+        } else if isRetroChat {
+            retroModelList
+        } else {
+            standardModelList
+        }
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .tint(primaryTextColor)
+            Text(AppText.loadingModels)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(secondaryTextColor)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "cpu")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(secondaryTextColor)
+            Text(AppText.emptyModelsTitle)
+                .font(isRetroChat ? RetroChatStyle.headerFont : .system(size: 17, weight: .semibold))
+                .foregroundStyle(primaryTextColor)
+            Text(AppText.emptyModelsSubtitle)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14))
+                .foregroundStyle(secondaryTextColor)
+                .multilineTextAlignment(.center)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ifRetroPanel(isRetroChat)
+        .padding(.horizontal, isRetroChat ? 20 : 0)
+    }
+
+    private var standardModelList: some View {
+        List {
+            ForEach(groupedModels, id: \.provider) { group in
+                Section(group.provider) {
+                    ForEach(group.models) { model in
+                        modelRow(model)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.appBackground)
+    }
+
+    private var retroModelList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                ForEach(groupedModels, id: \.provider) { group in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(group.provider)
+                            .font(RetroChatStyle.smallFont)
+                            .foregroundStyle(RetroChatStyle.secondaryInk)
+                            .lineLimit(1)
+                            .padding(.horizontal, 8)
+
+                        VStack(spacing: 0) {
+                            ForEach(Array(group.models.enumerated()), id: \.element.id) { index, model in
+                                modelRow(model)
+
+                                if index < group.models.count - 1 {
+                                    Rectangle()
+                                        .fill(RetroChatStyle.ink.opacity(0.35))
+                                        .frame(height: 1)
+                                        .padding(.leading, 12)
+                                }
+                            }
+                        }
+                        .modifier(RetroChatPanelChrome(fill: RetroChatStyle.paper, cornerRadius: 7, shadowOffset: 3))
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 18)
         }
     }
 
@@ -94,37 +192,18 @@ struct ModelPickerView: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.modelName)
-                        .font(.system(size: 16, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(.primary)
+                        .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(isRetroChat ? 1 : 2)
+                        .minimumScaleFactor(isRetroChat ? 0.75 : 1)
 
                     Text(model.modelID)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.tertiary)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, design: .monospaced))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary.opacity(0.72))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
 
-                    HStack(spacing: 6) {
-                        if model.reasoning {
-                            capabilityBadge("brain", label: AppText.reasoning, color: .purple)
-                        }
-                        if model.attachment {
-                            capabilityBadge("paperclip", label: AppText.files, color: .blue)
-                        }
-                        if model.toolCall {
-                            capabilityBadge("wrench", label: AppText.tools, color: .orange)
-                        }
-
-                        if let costStr = formatCost(model.cost) {
-                            Spacer().frame(width: 2)
-                            Text(costStr)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        if let limit = model.limit, let ctx = limit.context, ctx > 0 {
-                            Text("\(formatTokenCount(ctx)) ctx")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    modelMetadata(for: model)
                 }
 
                 Spacer()
@@ -132,10 +211,11 @@ struct ModelPickerView: View {
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 20))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.blueAccent : .blue)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.horizontal, isRetroChat ? 12 : 0)
+            .padding(.vertical, isRetroChat ? 10 : 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -143,18 +223,87 @@ struct ModelPickerView: View {
 
     // MARK: - Helpers
 
+    @ViewBuilder
+    private func modelMetadata(for model: ChatClient.SelectableModel) -> some View {
+        if isRetroChat {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    modelCapabilities(for: model)
+                }
+
+                HStack(spacing: 8) {
+                    if let costStr = formatCost(model.cost) {
+                        Text(costStr)
+                    }
+
+                    if let limit = model.limit, let ctx = limit.context, ctx > 0 {
+                        Text("\(formatTokenCount(ctx)) ctx")
+                    }
+                }
+                .font(RetroChatStyle.smallFont)
+                .foregroundStyle(RetroChatStyle.mutedInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            }
+        } else {
+            HStack(spacing: 6) {
+                modelCapabilities(for: model)
+
+                if let costStr = formatCost(model.cost) {
+                    Spacer().frame(width: 2)
+                    Text(costStr)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+                if let limit = model.limit, let ctx = limit.context, ctx > 0 {
+                    Text("\(formatTokenCount(ctx)) ctx")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modelCapabilities(for model: ChatClient.SelectableModel) -> some View {
+        if model.reasoning {
+            capabilityBadge("brain", label: AppText.reasoning, color: .purple)
+        }
+        if model.attachment {
+            capabilityBadge("paperclip", label: AppText.files, color: .blue)
+        }
+        if model.toolCall {
+            capabilityBadge("wrench", label: AppText.tools, color: .orange)
+        }
+    }
+
     private func capabilityBadge(_ icon: String, label: String, color: Color) -> some View {
         HStack(spacing: 3) {
             Image(systemName: icon)
                 .font(.system(size: 9, weight: .semibold))
             Text(label)
-                .font(.system(size: 10, weight: .medium))
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 10, weight: .medium))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
+        .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : color)
+        .padding(.horizontal, isRetroChat ? 5 : 6)
         .padding(.vertical, 2)
-        .background(color.opacity(0.12))
-        .clipShape(Capsule())
+        .background {
+            if isRetroChat {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(RetroChatStyle.paperWarm)
+            } else {
+                Capsule()
+                    .fill(color.opacity(0.12))
+            }
+        }
+        .overlay {
+            if isRetroChat {
+                RetroChatDoubleBorder(cornerRadius: 4, lineWidth: 1)
+            }
+        }
     }
 
     /// Format cost as $/M tokens (input). Returns nil if no cost data.

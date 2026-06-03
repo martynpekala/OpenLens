@@ -75,12 +75,24 @@ private enum ReviewPromptTrigger {
     }
 }
 
+func shouldHandleConnectionAsFreshConnect(
+    from oldState: ConnectionManager.State,
+    to newState: ConnectionManager.State
+) -> Bool {
+    guard newState == .connected else { return false }
+    if case .reconnecting = oldState {
+        return false
+    }
+    return true
+}
+
 @main
 struct OpenLensApp: App {
     @Environment(\.requestReview) private var requestReview
 
     private let screenshotModeEnabled: Bool
     @State private var connection: ConnectionManager
+    
     @State private var router = AppRouter()
 
     private let liveActivity: LiveActivityManager
@@ -94,6 +106,7 @@ struct OpenLensApp: App {
     private let sessionInsightsService: SessionInsightsService
     private let savedConnectionsStore: SavedConnectionsStore
     private let recordedReplayStore: RecordedReplayStore
+    private let chatEasterEgg: ChatEasterEggController
 
     @State private var chatClient: ChatClient
 
@@ -127,6 +140,14 @@ struct OpenLensApp: App {
     init() {
         self.screenshotModeEnabled = ScreenshotFixtures.isEnabled
 
+//        if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
+//            router.selectedTab = launchTab
+//        }
+//        if screenshotModeEnabled, ScreenshotFixtures.opensDefaultChatSession {
+//            router.selectedTab = .chat
+//            router.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
+//        }
+
         let savedConnections = SavedConnectionsStore()
         let connection = ConnectionManager()
         connection.savedConnectionsStore = savedConnections
@@ -149,6 +170,7 @@ struct OpenLensApp: App {
         let workspace = WorkspaceService(connection: connection)
         let sessionInsights = SessionInsightsService()
         let recordedReplayStore = RecordedReplayStore()
+        let chatEasterEgg = ChatEasterEggController()
 
         self.savedConnectionsStore = savedConnections
         self.liveActivity = liveActivity
@@ -161,6 +183,7 @@ struct OpenLensApp: App {
         self.workspaceService = workspace
         self.sessionInsightsService = sessionInsights
         self.recordedReplayStore = recordedReplayStore
+        self.chatEasterEgg = chatEasterEgg
 
         self._connection = State(initialValue: connection)
 
@@ -211,6 +234,7 @@ struct OpenLensApp: App {
                     .transition(.opacity)
                 }
             }
+            .openLensTheme(OpenLensAppearance.fallback.theme)
             .environment(\.liveActivity, liveActivity)
             .environment(\.savedConnections, savedConnectionsStore)
             .environment(\.sessionsService, sessionsService)
@@ -222,6 +246,7 @@ struct OpenLensApp: App {
             .environment(\.workspaceService, workspaceService)
             .environment(\.sessionInsightsService, sessionInsightsService)
             .environment(\.recordedReplayStore, recordedReplayStore)
+            .environment(\.chatEasterEgg, chatEasterEgg)
             .sheet(isPresented: previewPresentationBinding) {
                 if let previewClient = previewChatClient, let previewConn = previewConnection {
                     NavigationStack {
@@ -255,11 +280,14 @@ struct OpenLensApp: App {
                     pendingDeepLink = deepLink
                 }
             }
-            .onChange(of: connection.state) { _, newState in
-                if newState == .connected {
+            .onChange(of: connection.state) { oldState, newState in
+                if shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
                     reviewPromptSuccessfulConnections += 1
                     requestReviewIfNeeded(for: .connectedUsage)
                     router.selectedTab = .chat
+                }
+
+                if newState == .connected {
                     Task {
                         await openDeepLinkedSessionIfNeeded()
                     }

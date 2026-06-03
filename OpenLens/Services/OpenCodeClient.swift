@@ -85,6 +85,12 @@ actor OpenCodeClient {
         try await get("/session/\(sessionID)/message/\(messageID)")
     }
 
+    // MARK: - Todos
+
+    func listTodos(sessionID: String) async throws -> [OCTodo] {
+        try await get("/session/\(sessionID)/todo")
+    }
+
     /// Send a prompt asynchronously (fire and forget, monitor via SSE).
     func sendPromptAsync(
         sessionID: String,

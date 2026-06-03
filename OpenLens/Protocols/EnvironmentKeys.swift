@@ -79,6 +79,10 @@ private struct RecordedReplayStoreKey: EnvironmentKey {
     static let defaultValue: RecordedReplayStore = RecordedReplayStore()
 }
 
+private struct ChatEasterEggControllerKey: EnvironmentKey {
+    static let defaultValue: ChatEasterEggController = ChatEasterEggController()
+}
+
 // MARK: - EnvironmentValues Extensions
 
 extension EnvironmentValues {
@@ -140,6 +144,11 @@ extension EnvironmentValues {
     var recordedReplayStore: RecordedReplayStore {
         get { self[RecordedReplayStoreKey.self] }
         set { self[RecordedReplayStoreKey.self] = newValue }
+    }
+
+    var chatEasterEgg: ChatEasterEggController {
+        get { self[ChatEasterEggControllerKey.self] }
+        set { self[ChatEasterEggControllerKey.self] = newValue }
     }
 
 }

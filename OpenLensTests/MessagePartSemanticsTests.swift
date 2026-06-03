@@ -20,6 +20,37 @@ struct MessagePartSemanticsTests {
         #expect(chatMessage.content == "shown")
     }
 
+        @Test func messagesServicePreservesUserMessageModelReference() throws {
+                let service = MessagesService(connection: ConnectionManager())
+                let message = OCMessageWithParts(
+                        info: try JSONDecoder().decode(
+                                OCMessage.self,
+                                from: Data(
+                                        #"""
+                                        {
+                                            "id": "message",
+                                            "sessionID": "session",
+                                            "role": "user",
+                                            "time": {
+                                                "created": 0
+                                            },
+                                            "model": {
+                                                "providerID": "anthropic",
+                                                "modelID": "claude-sonnet-4-20250514"
+                                            }
+                                        }
+                                        """#.utf8
+                                )
+                        ),
+                        parts: []
+                )
+
+                let chatMessage = service.convertToChatMessage(message)
+
+                #expect(chatMessage.providerID == "anthropic")
+                #expect(chatMessage.modelID == "claude-sonnet-4-20250514")
+        }
+
     @Test func assistantSegmentsSkipSyntheticAndIgnoredText() {
         let message = ChatMessage(
             id: "message",

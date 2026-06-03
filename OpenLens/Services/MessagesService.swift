@@ -80,6 +80,9 @@ final class MessagesService {
             .compactMap(\.renderableText)
             .joined()
 
+        let resolvedModelID = msg.info.modelID?.nilIfBlank ?? msg.info.model?.modelID
+        let resolvedProviderID = msg.info.providerID?.nilIfBlank ?? msg.info.model?.providerID
+
         return ChatMessage(
             id: msg.info.id,
             role: msg.info.role,
@@ -88,8 +91,8 @@ final class MessagesService {
             isStreaming: false,
             cost: msg.info.cost,
             tokens: msg.info.tokens,
-            modelID: msg.info.modelID,
-            providerID: msg.info.providerID,
+            modelID: resolvedModelID,
+            providerID: resolvedProviderID,
             finish: msg.info.finish
         )
     }

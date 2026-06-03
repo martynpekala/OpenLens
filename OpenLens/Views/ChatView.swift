@@ -20,10 +20,12 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.connection) private var connection
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.chatEasterEgg) private var chatEasterEgg
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     @State private var showModelPicker = false
     @State private var showContextStatus = false
+    @State private var showTodoList = false
     @State private var availableSlashActions: [WorkspaceSlashActionItem] = []
     @State private var isLoadingCommands = false
 
@@ -36,33 +38,38 @@ struct ChatView: View {
             if let error = chatClient.errorMessage {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.danger : .orange)
                         .font(.system(size: 13))
                     Text(error)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.appSecondary)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
+                        .foregroundStyle(secondaryTextColor)
                     Spacer()
                     Button(AppText.dismiss) {
                         chatClient.errorMessage = nil
                     }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.appPrimary)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                    .foregroundStyle(primaryTextColor)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
+//                .background(isRetroChat ? RetroChatStyle.paperWarm : .clear)
                 .overlay(alignment: .top) {
-                    Color.appSeparator.frame(height: 0.5)
+                    (isRetroChat ? RetroChatStyle.ink : Color.appSeparator)
+                        .frame(height: isRetroChat ? 2 : 0.5)
                 }
             }
+        }
+        .background {
+            chatBackground
+                .ignoresSafeArea()
         }
         .safeAreaInset(edge: .bottom) {
             if chatClient.showsComposer {
                 chatComposerInset
-                    .background(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.clear, Color.appBackground.opacity(0.7)]), startPoint: .top, endPoint: .bottom
-                        )
-                    )
+                    .background {
+                        composerInsetBackground
+                            .ignoresSafeArea(edges: .bottom)
+                    }
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -74,6 +81,7 @@ struct ChatView: View {
                 sessionTitle: chatClient.currentSession?.title,
                 showsRecordingControls: chatClient.isRecordingStream || (debugFeaturesEnabled && chatClient.supportsStreamRecording),
                 isRecordingStream: chatClient.isRecordingStream,
+                visualMode: visualMode,
                 onToggleRecording: {
                     if chatClient.isRecordingStream {
                         chatClient.stopStreamRecording()
@@ -83,7 +91,12 @@ struct ChatView: View {
                 }
             )
         }
-
+        .onAppear {
+            updateShakeMonitoring(for: scenePhase)
+        }
+        .onDisappear {
+            chatEasterEgg.stopShakeMonitoring()
+        }
         // Initial load: ensure session is loaded when view appears
         .task {
             chatClient.setupSSEHandlers()
@@ -93,6 +106,8 @@ struct ChatView: View {
 
         // Foreground recovery: refresh messages and questions when app becomes active
         .onChange(of: scenePhase) { _, newPhase in
+            updateShakeMonitoring(for: newPhase)
+
             if newPhase == .active {
                 chatClient.setupSSEHandlers()
                 Task {
@@ -117,7 +132,8 @@ struct ChatView: View {
                 models: chatClient.availableModels,
                 selectedProviderID: chatClient.selectedProviderID,
                 selectedModelID: chatClient.selectedModelID,
-                isLoading: chatClient.isLoadingProviders
+                isLoading: chatClient.isLoadingProviders,
+                visualMode: visualMode
             ) { model in
                 chatClient.selectModel(model)
                 showModelPicker = false
@@ -126,7 +142,7 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showContextStatus) {
             if let contextUsage = chatClient.contextUsageSummary {
-                ChatContextStatusSheet(summary: contextUsage)
+                ChatContextStatusSheet(summary: contextUsage, visualMode: visualMode)
                     .presentationDetents([.fraction(0.34), .medium])
                     .presentationDragIndicator(.visible)
             }
@@ -183,6 +199,155 @@ struct ChatView: View {
         }
     }
 
+    private var visualMode: ChatVisualMode {
+        chatEasterEgg.visualMode
+    }
+
+    private var isRetroChat: Bool {
+        visualMode.isRetro
+    }
+
+    @ViewBuilder
+    private var chatBackground: some View {
+        if isRetroChat {
+            RetroChatScreenBackground()
+        } else {
+            Color.appBackground
+        }
+    }
+
+    @ViewBuilder
+    private var composerInsetBackground: some View {
+        if isRetroChat {
+            LinearGradient(
+                gradient: Gradient(
+                    colors: [
+                        .clear,
+                        RetroChatStyle.screenBottom.opacity(0.7),
+                    ],
+                ),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        } else {
+            LinearGradient(
+                gradient: Gradient(
+                    colors: [
+                        .clear,
+                        Color.appBackground.opacity(0.7),
+                    ]
+                ),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private var primaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.ink : Color.appPrimary
+    }
+
+    private var secondaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary
+    }
+
+    private func updateShakeMonitoring(for phase: ScenePhase) {
+        if phase == .active {
+            chatEasterEgg.startShakeMonitoring()
+        } else {
+            chatEasterEgg.stopShakeMonitoring()
+        }
+    }
+
+    private var todoChip: some View {
+        Button {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                showTodoList.toggle()
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: todoChipIcon)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(todoChipColor)
+                Text(todoChipLabel)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(secondaryTextColor)
+                Image(systemName: showTodoList ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(secondaryTextColor.opacity(0.7))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .chatModeChipChrome(visualMode)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showTodoList, arrowEdge: .bottom) {
+            todoExpandedList
+        }
+    }
+
+    private var todoChipLabel: String {
+        let completed = chatClient.todos.filter { $0.status == "completed" }.count
+        let total = chatClient.todos.count
+        return "\(completed)/\(total)"
+    }
+
+    private var todoChipIcon: String {
+        let allDone = chatClient.todos.allSatisfy { $0.status == "completed" }
+        if allDone { return "checkmark.circle.fill" }
+        let hasInProgress = chatClient.todos.contains { $0.status == "in_progress" }
+        return hasInProgress ? "circle.dashed" : "checklist"
+    }
+
+    private var todoChipColor: Color {
+        let allDone = chatClient.todos.allSatisfy { $0.status == "completed" }
+        if allDone { return isRetroChat ? RetroChatStyle.blueAccent : .green }
+        let hasInProgress = chatClient.todos.contains { $0.status == "in_progress" }
+        if hasInProgress { return isRetroChat ? RetroChatStyle.magentaAccent : .orange }
+        return secondaryTextColor
+    }
+
+    private var todoExpandedList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(chatClient.todos) { todo in
+                HStack(spacing: 6) {
+                    Image(systemName: todoIcon(for: todo.status))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(todoColor(for: todo.status))
+                    Text(todo.content)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(todo.status == "completed" || todo.status == "cancelled"
+                            ? secondaryTextColor.opacity(0.6)
+                            : primaryTextColor)
+                        .strikethrough(todo.status == "cancelled")
+                        .lineLimit(1)
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    private func todoIcon(for status: String) -> String {
+        switch status {
+        case "completed": "checkmark.circle.fill"
+        case "in_progress": "circle.dashed"
+        case "cancelled": "xmark.circle"
+        default: "circle"
+        }
+    }
+
+    private func todoColor(for status: String) -> Color {
+        switch status {
+        case "completed": isRetroChat ? RetroChatStyle.blueAccent : .green
+        case "in_progress": isRetroChat ? RetroChatStyle.magentaAccent : .orange
+        case "cancelled": secondaryTextColor
+        default: secondaryTextColor.opacity(0.7)
+        }
+    }
+
     private var chatComposerInset: some View {
         VStack(spacing: 8) {
             if chatClient.currentSession != nil && chatClient.showsComposer {
@@ -198,20 +363,38 @@ struct ChatView: View {
     // MARK: - Model Selector
 
     private var modelSelectionRow: some View {
-        HStack(spacing: 8) {
-            modelSelectorButton
+        HStack(alignment: .bottom, spacing: 8) {
+            ViewThatFits {
+                HStack {
+                    modelSelectorButton
 
-            if chatClient.showsThinkingEffortPicker {
-                thinkingEffortMenu
-            }
-            Spacer()
-            if let contextUsage = chatClient.contextUsageSummary {
-                Button {
-                    showContextStatus = true
-                } label: {
-                    ChatContextUsageRing(summary: contextUsage)
+                    if chatClient.showsThinkingEffortPicker {
+                        thinkingEffortMenu
+                    }
                 }
-                .buttonStyle(.plain)
+
+                VStack(alignment: .leading) {
+                    modelSelectorButton
+
+                    if chatClient.showsThinkingEffortPicker {
+                        thinkingEffortMenu
+                    }
+                }
+            }
+
+            Spacer()
+            VStack(alignment: .trailing, spacing: 8) {
+                if !chatClient.todos.isEmpty {
+                    todoChip
+                }
+                if let contextUsage = chatClient.contextUsageSummary {
+                    Button {
+                        showContextStatus = true
+                    } label: {
+                        ChatContextUsageRing(summary: contextUsage)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -223,22 +406,20 @@ struct ChatView: View {
         Button {
             showModelPicker = true
         } label: {
-            HStack(spacing: 5) {
+            HStack(alignment: .center, spacing: 5) {
                 Circle()
-                    .fill(Color.appSecondary.opacity(0.3))
+                    .fill(isRetroChat ? RetroChatStyle.magentaAccent : Color.appSecondary.opacity(0.3))
                     .frame(width: 6, height: 6)
                 Text(chatClient.selectedModelDisplayName)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(secondaryTextColor)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.appSecondary.opacity(0.6))
+                    .foregroundStyle(secondaryTextColor.opacity(0.75))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(Color.appTertiary)
-            .clipShape(Capsule())
-            .glassEffect()
+            .chatModeChipChrome(visualMode)
         }
     }
 
@@ -266,20 +447,20 @@ struct ChatView: View {
                 }
             }
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Image(systemName: "brain")
                     .font(.system(size: 11, weight: .medium))
                 Text(chatClient.selectedVariantDisplayName)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.appSecondary.opacity(0.6))
+                    .foregroundStyle(secondaryTextColor.opacity(0.75))
             }
-            .foregroundStyle(Color.appSecondary)
+            .foregroundStyle(secondaryTextColor)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(Color.appTertiary)
-            .clipShape(Capsule())
+            .chatModeChipChrome(visualMode, usesGlassInStandardMode: false)
         }
     }
 
@@ -297,8 +478,8 @@ struct ChatView: View {
                     TextField(AppText.messagePlaceholder, text: $chatClient.inputText, axis: .vertical)
                         .focused($isInputFocused)
                         .lineLimit(1 ... 5)
-                        .font(.system(size: 16))
-                        .foregroundStyle(Color.appPrimary)
+                        .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
+                        .foregroundStyle(primaryTextColor)
                         .disabled(chatClient.currentSession == nil)
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
 
@@ -308,12 +489,7 @@ struct ChatView: View {
                 .padding(.leading, 16)
                 .padding(.trailing, 4)
                 .padding(.vertical, 4)
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.appSeparator.opacity(0.8), lineWidth: 1)
-                }
-                .subtleShadow()
+                .chatComposerFieldChrome(visualMode)
             }
         }
         .padding(.horizontal, 16)
@@ -327,11 +503,11 @@ struct ChatView: View {
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(Color.red)
+                            .fill(isRetroChat ? RetroChatStyle.danger : Color.red)
                             .frame(width: 32, height: 32)
                         Image(systemName: "stop.fill")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.paper : .white)
                     }
                 }
             } else {
@@ -340,9 +516,12 @@ struct ChatView: View {
                     chatClient.send()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 30))
+                        .font(.system(size: isRetroChat ? 28 : 30, weight: isRetroChat ? .bold : .regular))
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(Color.appOnAccent, Color.appAccent)
+                        .foregroundStyle(
+                            isRetroChat ? RetroChatStyle.paper : Color.appOnAccent,
+                            isRetroChat ? RetroChatStyle.ink : Color.appAccent
+                        )
                         .contentShape(Circle())
                 }
                 .disabled(!canSend)
@@ -355,24 +534,24 @@ struct ChatView: View {
             if isLoadingCommands {
                 HStack(spacing: 10) {
                     ProgressView()
-                        .tint(Color.appAccent)
+                        .tint(isRetroChat ? RetroChatStyle.ink : Color.appAccent)
 
                     Text("Loading slash commands...")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.appSecondary)
+                        .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 14))
+                        .foregroundStyle(secondaryTextColor)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 16)
             } else if availableSlashActions.isEmpty {
                 Text("No slash actions available for this server.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 14))
+                    .foregroundStyle(secondaryTextColor)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
             } else if filteredSlashActions.isEmpty {
                 Text("No matching slash commands.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 14))
+                    .foregroundStyle(secondaryTextColor)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
             } else {
@@ -385,28 +564,27 @@ struct ChatView: View {
                                 HStack(alignment: .top, spacing: 12) {
                                     Image(systemName: symbol(for: action))
                                         .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(Color.appPrimary)
+                                        .foregroundStyle(primaryTextColor)
                                         .frame(width: 22)
                                         .padding(.top, 2)
 
                                     VStack(alignment: .leading, spacing: 3) {
                                         HStack(spacing: 8) {
                                             Text(commandDisplayTitle(action.title))
-                                                .font(.system(size: 17, weight: .semibold, design: .rounded))
-                                                .foregroundStyle(Color.appPrimary)
+                                                .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 17, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(primaryTextColor)
 
                                             Text(action.kind == .command ? "Command" : "Agent")
-                                                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                                .foregroundStyle(Color.appSecondary)
+                                                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 11, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(secondaryTextColor)
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 3)
-                                                .background(Color.appTertiary)
-                                                .clipShape(Capsule())
+                                                .chatModeChipChrome(visualMode, usesGlassInStandardMode: false)
                                         }
                                         if !action.description.isEmpty {
                                             Text(action.description)
-                                                .font(.system(size: 14))
-                                                .foregroundStyle(Color.appSecondary)
+                                                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14))
+                                                .foregroundStyle(secondaryTextColor)
                                                 .lineLimit(2)
                                         }
                                     }
@@ -415,7 +593,7 @@ struct ChatView: View {
 
                                     Text(action.prompt)
                                         .font(.system(size: 15, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(Color.appSecondary.opacity(0.8))
+                                        .foregroundStyle(secondaryTextColor.opacity(0.8))
                                 }
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 14)
@@ -425,6 +603,7 @@ struct ChatView: View {
 
                             if index < filteredSlashActions.count - 1 {
                                 Divider()
+                                    .overlay(isRetroChat ? RetroChatStyle.ink.opacity(0.6) : Color.clear)
                                     .padding(.leading, 50)
                             }
                         }
@@ -433,12 +612,7 @@ struct ChatView: View {
                 .frame(maxHeight: 252)
             }
         }
-        .background(Color.appSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.appSeparator.opacity(0.7), lineWidth: 1)
-        }
+        .chatPopoverChrome(visualMode)
     }
 
     private var canSend: Bool {
@@ -541,7 +715,13 @@ struct ChatView: View {
 private struct ChatContextUsageRing: View {
     let summary: ChatClient.ContextUsageSummary
 
+    @Environment(\.chatEasterEgg) private var chatEasterEgg
+
     private var tintColor: Color {
+        if chatEasterEgg.visualMode.isRetro {
+            return RetroChatStyle.magentaAccent
+        }
+
         guard let usagePercent = summary.usagePercent else { return Color.appSecondary }
 
         switch usagePercent {
@@ -561,19 +741,31 @@ private struct ChatContextUsageRing: View {
 
     var body: some View {
         ZStack {
+            if chatEasterEgg.visualMode.isRetro {
+                Circle()
+                    .fill(RetroChatStyle.paperWarm)
+                    .shadow(color: RetroChatStyle.shadow.opacity(0.75), radius: 0, x: 2, y: 2)
+            }
+
             Circle()
-                .stroke(Color.appSeparator.opacity(0.7), lineWidth: 3)
+                .stroke(chatEasterEgg.visualMode.isRetro ? RetroChatStyle.ink.opacity(0.5) : Color.appSeparator.opacity(0.7), lineWidth: 3)
 
             Circle()
                 .trim(from: 0, to: progressValue)
-                .stroke(tintColor, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .stroke(tintColor, style: StrokeStyle(lineWidth: 4, lineCap: chatEasterEgg.visualMode.isRetro ? .butt : .round))
                 .rotationEffect(.degrees(-90))
 
             Text("%")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.appPrimary)
+                .font(chatEasterEgg.visualMode.isRetro ? RetroChatStyle.smallFont : .system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(chatEasterEgg.visualMode.isRetro ? RetroChatStyle.ink : Color.appPrimary)
         }
         .frame(width: 20, height: 20)
+        .overlay {
+            if chatEasterEgg.visualMode.isRetro {
+                Circle()
+                    .stroke(RetroChatStyle.ink, lineWidth: 1.5)
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint(AppText.showContextStatus)
@@ -597,6 +789,7 @@ private struct ChatContextUsageRing: View {
 
 private struct ChatContextStatusSheet: View {
     let summary: ChatClient.ContextUsageSummary
+    let visualMode: ChatVisualMode
 
     private var usedRatio: Double {
         guard let usagePercent = summary.usagePercent else { return 0 }
@@ -604,72 +797,174 @@ private struct ChatContextStatusSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Status")
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appPrimary)
-                .padding(.vertical, 16)
+        ZStack {
+            sheetBackground
+                .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("Context")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.appSecondary)
+            VStack(spacing: 16) {
+                Text("Status")
+                    .font(isRetroChat ? RetroChatStyle.headerFont : .system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundStyle(primaryTextColor)
+                    .padding(.vertical, 16)
 
-                    if let usagePercent = summary.usagePercent {
-                        Text("\(usagePercent)% used")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                    } else {
-                        Text("\(format(summary.usedTokens)) used")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                    }
+                contextDetails
 
-                    Spacer(minLength: 8)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .presentationBackground(isRetroChat ? RetroChatStyle.screenBottom : Color.appBackground)
+    }
 
-                    if let limitTokens = summary.limitTokens {
-                        Text("(\(compactFormat(summary.usedTokens)) used / \(compactFormat(limitTokens)))")
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-                    } else {
-                        Text("(\(compactFormat(summary.usedTokens)) used)")
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                }
+    private var isRetroChat: Bool {
+        visualMode.isRetro
+    }
 
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.appSeparator.opacity(0.65))
-                            .frame(height: 8)
+    private var primaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.ink : Color.appPrimary
+    }
 
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.appPrimary.opacity(0.72))
-                            .frame(width: max(12, proxy.size.width * usedRatio), height: 8)
-                    }
-                }
-                .frame(height: 8)
+    private var secondaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary
+    }
 
-                if let modelLabel = summary.modelLabel {
-                    HStack(spacing: 8) {
-                        Image(systemName: "sparkles.rectangle.stack")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.appSecondary)
-                        Text(modelLabel)
-                            .font(.system(size: 13, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-                    }
+    private var contextProgressTint: Color {
+        guard isRetroChat else { return Color.appPrimary.opacity(0.72) }
+        guard let usagePercent = summary.usagePercent else { return RetroChatStyle.blueAccent }
+
+        switch usagePercent {
+        case ..<70:
+            return RetroChatStyle.blueAccent
+        case ..<85:
+            return RetroChatStyle.magentaAccent
+        default:
+            return RetroChatStyle.danger
+        }
+    }
+
+    @ViewBuilder
+    private var sheetBackground: some View {
+        if isRetroChat {
+            RetroChatScreenBackground()
+        } else {
+            Color.appBackground
+        }
+    }
+
+    @ViewBuilder
+    private var contextDetails: some View {
+        if isRetroChat {
+            contextDetailsContent
+                .padding(14)
+                .modifier(RetroChatPanelChrome(fill: RetroChatStyle.paper, cornerRadius: 7, shadowOffset: 3))
+        } else {
+            contextDetailsContent
+        }
+    }
+
+    private var contextDetailsContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            contextUsageHeader
+
+            contextProgressBar
+
+            if let modelLabel = summary.modelLabel {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles.rectangle.stack")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(secondaryTextColor)
+                    Text(modelLabel)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(2)
                 }
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.appBackground)
+    }
+
+    @ViewBuilder
+    private var contextUsageHeader: some View {
+        if isRetroChat {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Context")
+                        .font(RetroChatStyle.smallFont)
+                        .foregroundStyle(secondaryTextColor)
+
+                    Text(usageText)
+                        .font(RetroChatStyle.bodyFont)
+                        .foregroundStyle(primaryTextColor)
+
+                    Spacer(minLength: 8)
+                }
+
+                Text(tokenDetailText)
+                    .font(RetroChatStyle.smallFont)
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Context")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(secondaryTextColor)
+
+                Text(usageText)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(primaryTextColor)
+
+                Spacer(minLength: 8)
+
+                Text(tokenDetailText)
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        }
+    }
+
+    private var usageText: String {
+        if let usagePercent = summary.usagePercent {
+            return "\(usagePercent)% used"
+        }
+        return "\(format(summary.usedTokens)) used"
+    }
+
+    private var tokenDetailText: String {
+        if let limitTokens = summary.limitTokens {
+            return "(\(compactFormat(summary.usedTokens)) used / \(compactFormat(limitTokens)))"
+        }
+        return "(\(compactFormat(summary.usedTokens)) used)"
+    }
+
+    private var contextProgressBar: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: isRetroChat ? 2 : 4, style: .continuous)
+                    .fill(isRetroChat ? RetroChatStyle.paperWarm : Color.appSeparator.opacity(0.65))
+                    .frame(height: isRetroChat ? 10 : 8)
+                    .overlay {
+                        if isRetroChat {
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .stroke(RetroChatStyle.ink, lineWidth: 1.5)
+                        }
+                    }
+
+                if usedRatio > 0 {
+                    RoundedRectangle(cornerRadius: isRetroChat ? 1 : 4, style: .continuous)
+                        .fill(contextProgressTint)
+                        .frame(
+                            width: max(isRetroChat ? 8 : 12, proxy.size.width * usedRatio),
+                            height: isRetroChat ? 10 : 8
+                        )
+                }
+            }
+        }
+        .frame(height: isRetroChat ? 10 : 8)
     }
 
     private func format(_ value: Int) -> String {
@@ -691,6 +986,8 @@ private struct ChatContextStatusSheet: View {
 private struct ChatMessagesListView: View {
     @Bindable var chatClient: ChatClient
 
+    @Environment(\.chatEasterEgg) private var chatEasterEgg
+
     @State private var lastAutoScrollDate: Date = .distantPast
     @State private var bottomMarkerMinY: CGFloat = 0
     @State private var followLatest = true
@@ -706,18 +1003,19 @@ private struct ChatMessagesListView: View {
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
-                        Color.clear.frame(height: 72)
+                        Color.clear.frame(height: isRetroChat ? 150 : 72)
 
-                        LazyVStack(alignment: .leading, spacing: 16) {
+                        LazyVStack(alignment: .leading, spacing: isRetroChat ? 13 : 16) {
                             if chatClient.hasEarlierMessages {
                                 Button {
                                     chatClient.loadEarlierMessages()
                                 } label: {
                                     Text("Load earlier messages")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(.secondary)
+                                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium))
+                                        .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 8)
+                                        .ifRetroPanel(isRetroChat)
                                 }
                             }
 
@@ -725,7 +1023,7 @@ private struct ChatMessagesListView: View {
                                 MessageBubbleView(message: message)
                             }
                         }
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, isRetroChat ? 12 : 16)
 
                         Color.clear
                             .frame(height: 17)
@@ -783,10 +1081,7 @@ private struct ChatMessagesListView: View {
                                 forceFollowLatest: true
                             )
                         } label: {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 34))
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(Color.appOnAccent, Color.appAccent)
+                            scrollToBottomLabel
                         }
                         .buttonStyle(.plain)
                         .padding(.trailing, 20)
@@ -797,6 +1092,30 @@ private struct ChatMessagesListView: View {
                 }
                 .animation(.easeOut(duration: 0.18), value: showsScrollToBottomButton(in: geometry.size.height))
             }
+        }
+    }
+
+    private var isRetroChat: Bool {
+        chatEasterEgg.visualMode.isRetro
+    }
+
+    @ViewBuilder
+    private var scrollToBottomLabel: some View {
+        if isRetroChat {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(RetroChatStyle.paperWarm)
+                RetroChatDoubleBorder(cornerRadius: 6)
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 18, weight: .black, design: .monospaced))
+                    .foregroundStyle(RetroChatStyle.ink)
+            }
+            .frame(width: 42, height: 42)
+        } else {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 34))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(Color.appOnAccent, Color.appAccent)
         }
     }
 

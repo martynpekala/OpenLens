@@ -3,6 +3,30 @@ import Testing
 
 struct ChatClientPreviewModeTests {
 
+    @Test func recentSessionModelSelectionUsesLatestMessageWithResolvedModel() {
+        let messages = [
+            ChatMessage(
+                id: "assistant-1",
+                role: .assistant,
+                content: "Earlier",
+                modelID: "gpt-4.1",
+                providerID: "openai"
+            ),
+            ChatMessage(
+                id: "user-1",
+                role: .user,
+                content: "Later",
+                modelID: "claude-sonnet-4-20250514",
+                providerID: "anthropic"
+            )
+        ]
+
+        let selection = ChatClient.recentSessionModelSelection(from: messages)
+
+        #expect(selection?.providerID == "anthropic")
+        #expect(selection?.modelID == "claude-sonnet-4-20250514")
+    }
+
     @MainActor
     @Test func createsDebugPreviewSessionFromSelectedScript() async {
         let client = ChatClient(demoMode: true, script: .debugBaseline)

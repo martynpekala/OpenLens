@@ -13,7 +13,7 @@ final class ChatMessage: Identifiable {
     struct AssistantSegment: Identifiable {
         enum Kind {
             case text(String)
-            case reasoning(String, [TodoListCardView.Item])
+            case reasoning(String)
             case tool(PersistedToolStep)
         }
 
@@ -27,7 +27,6 @@ final class ChatMessage: Identifiable {
         let label: String
         let detail: String
         let output: String?
-        let todoItems: [TodoListCardView.Item]
         let isError: Bool
         let toolCategory: ToolCategory
     }
@@ -138,7 +137,7 @@ final class ChatMessage: Identifiable {
                 segments.append(
                     AssistantSegment(
                         id: part.id,
-                        kind: .reasoning(text, TodoListParser.parse(from: text))
+                        kind: .reasoning(text)
                     )
                 )
 
@@ -170,7 +169,7 @@ final class ChatMessage: Identifiable {
             return [
                 AssistantSegment(
                     id: "streaming-thinking-\(id)",
-                    kind: .reasoning("Thinking...", [])
+                    kind: .reasoning("Thinking...")
                 )
             ]
         }
@@ -196,13 +195,15 @@ final class ChatMessage: Identifiable {
             let primaryOutput = state.output?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
             let fallbackOutput = state.error?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
 
+            let normalizedName = toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let isTodoTool = normalizedName.contains("todo")
+
             return PersistedToolStep(
                 id: part.id,
                 toolName: toolName,
                 label: ToolLabelFormatter.label(toolName: toolName, state: state),
                 detail: detail ?? "",
-                output: primaryOutput ?? fallbackOutput,
-                todoItems: TodoListParser.parse(from: primaryOutput ?? fallbackOutput ?? ""),
+                output: isTodoTool ? nil : (primaryOutput ?? fallbackOutput),
                 isError: state.status == .error,
                 toolCategory: ToolCategory.from(toolName: toolName)
             )

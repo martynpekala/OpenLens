@@ -18,6 +18,7 @@ protocol SSEEventHandlerDelegate: AnyObject {
     var showPermissionAlert: Bool { get set }
     var pendingQuestion: OCQuestionRequest? { get set }
     var showQuestionSheet: Bool { get set }
+    var todos: [OCTodo] { get set }
 
     func finishLoading()
 
@@ -97,7 +98,12 @@ final class SSEEventHandler {
             // These confirm the question was answered/dismissed; clear UI if still showing
             handleQuestionDismissed(event)
 
+        case "todo.updated":
+            Logger.debug.info("[TODO] received todo.updated event")
+            handleTodoUpdated(event)
+
         default:
+            Logger.debug.debug("[SSE] unhandled event: \(event.type, privacy: .public)")
             break
         }
     }
@@ -429,6 +435,51 @@ final class SSEEventHandler {
         if delegate.pendingQuestion?.id == requestID {
             delegate.pendingQuestion = nil
             delegate.showQuestionSheet = false
+        }
+    }
+
+    private func handleTodoUpdated(_ event: OCEvent) {
+        guard let delegate else {
+            Logger.debug.warning("[TODO] no delegate")
+            return
+        }
+
+        guard let props = event.properties?.value as? [String: Any] else {
+            Logger.debug.warning("[TODO] no properties")
+            return
+        }
+
+        Logger.debug.info("[TODO] event keys: \(Array(props.keys).joined(separator: ", "), privacy: .public)")
+
+        guard let sessionID = props["sessionID"] as? String else {
+            Logger.debug.warning("[TODO] no sessionID in props")
+            return
+        }
+
+        guard sessionID == delegate.currentSessionID else {
+            Logger.debug.info("[TODO] sessionID mismatch: got \(sessionID, privacy: .public), expected \(delegate.currentSessionID ?? "nil", privacy: .public)")
+            return
+        }
+
+        guard let todosRaw = props["todos"] else {
+            Logger.debug.warning("[TODO] no 'todos' key in props. Available keys: \(Array(props.keys).joined(separator: ", "), privacy: .public)")
+            return
+        }
+
+        Logger.debug.info("[TODO] todosRaw type: \(String(describing: type(of: todosRaw)), privacy: .public)")
+
+        do {
+            let data = try JSONSerialization.data(withJSONObject: todosRaw)
+            let todos = try JSONDecoder().decode([OCTodo].self, from: data)
+            delegate.todos = todos
+            Logger.debug.info("[TODO] decoded \(todos.count) todos")
+        } catch {
+            Logger.debug.error("[TODO] decode failed: \(error.localizedDescription, privacy: .public)")
+            // Try logging raw JSON for inspection
+            if let data = try? JSONSerialization.data(withJSONObject: todosRaw, options: .prettyPrinted),
+               let str = String(data: data, encoding: .utf8) {
+                Logger.debug.info("[TODO] raw JSON: \(str.prefix(500), privacy: .public)")
+            }
         }
     }
 

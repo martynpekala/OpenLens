@@ -21,6 +21,10 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OpenLens uses the local network to discover OpenCode servers via Bonjour.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Pokemon Classic.ttf</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

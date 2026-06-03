@@ -20,6 +20,62 @@ struct ServerModelsDecodingTests {
         #expect(OCPartType(rawValue: "missing-case") == nil)
     }
 
+    @Test func decodesProviderModelCapabilitiesFromNestedOpenCodePayload() throws {
+        let data = Data(
+            #"""
+            {
+              "id": "claude-sonnet-4.6",
+              "name": "Claude Sonnet 4.6",
+              "capabilities": {
+                "temperature": true,
+                "reasoning": true,
+                "attachment": true,
+                "toolcall": true
+              },
+              "variants": {
+                "high": {
+                  "reasoningEffort": "high"
+                }
+              }
+            }
+            """#.utf8
+        )
+
+        let model = try JSONDecoder().decode(OCProviderModel.self, from: data)
+
+        #expect(model.id == "claude-sonnet-4.6")
+        #expect(model.temperature == true)
+        #expect(model.reasoning == true)
+        #expect(model.attachment == true)
+        #expect(model.toolCall == true)
+        #expect(model.variants?["high"]?.reasoningEffort == "high")
+    }
+
+    @Test func providerModelTopLevelCapabilitiesOverrideNestedFallbacks() throws {
+        let data = Data(
+            #"""
+            {
+              "id": "gpt-4.1",
+              "name": "GPT-4.1",
+              "attachment": false,
+              "reasoning": false,
+              "tool_call": false,
+              "capabilities": {
+                "attachment": true,
+                "reasoning": true,
+                "toolcall": true
+              }
+            }
+            """#.utf8
+        )
+
+        let model = try JSONDecoder().decode(OCProviderModel.self, from: data)
+
+        #expect(model.attachment == false)
+        #expect(model.reasoning == false)
+        #expect(model.toolCall == false)
+    }
+
     @Test func decodesCurrentPermissionPayload() throws {
         let data = Data(
             #"""
