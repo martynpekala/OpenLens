@@ -2,6 +2,14 @@ import SwiftUI
 import UIKit
 import os
 
+enum ChatResponseState: Equatable {
+    case idle
+    case generating
+    case stopping
+    case stopped
+    case failed
+}
+
 /// Thin coordinator for the chat interface.
 /// Delegates all IO to domain services (MessagesService, ProvidersService,
 /// QuestionService, SessionsService). Keeps UI state and orchestration only.
@@ -20,6 +28,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
     var inputText: String = ""
     var isLoading: Bool = false
+    var responseState: ChatResponseState = .idle
     var errorMessage: String?
 
     /// Incremented when the chat should programmatically snap to the bottom.
@@ -326,13 +335,14 @@ final class ChatClient: SSEEventHandlerDelegate {
     var isConnected: Bool { connection?.isConnected ?? isOfflinePreviewMode }
     var canCompose: Bool { !isRecordedReplayMode }
     var showsComposer: Bool { !isRecordedReplayMode }
-        var supportsStreamRecording: Bool {
+    var isStoppingResponse: Bool { responseState == .stopping }
+    var supportsStreamRecording: Bool {
     #if DEBUG
         FeatureFlags.debugFeaturesEnabled && !isOfflinePreviewMode && recordedReplayStore != nil
     #else
         false
     #endif
-        }
+    }
 
     // MARK: - Collaborators
 
@@ -344,9 +354,14 @@ final class ChatClient: SSEEventHandlerDelegate {
     @ObservationIgnored private var questionTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var responseStartDate: Date?
     @ObservationIgnored private var streamRecorder: ChatStreamRecorder?
+    @ObservationIgnored private var abortTask: Task<Void, Never>?
+    @ObservationIgnored private var stoppedStateClearTask: Task<Void, Never>?
+    @ObservationIgnored private var ignoredAssistantMessageIDs: Set<String> = []
+    @ObservationIgnored private var locallyStoppedSessionID: String?
 
     /// Duration before a pending question is auto-rejected (5 minutes).
     private static let questionTimeoutSeconds: UInt64 = 300
+    static let stoppedResponseDisplayDuration: Duration = .milliseconds(1500)
 
     // MARK: - Streaming Text Buffer
     //
@@ -399,6 +414,33 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     func questionDidPresent() {
         startQuestionTimeout()
+    }
+
+    func shouldIgnoreAssistantEvent(sessionID: String, messageID: String) -> Bool {
+        if ignoredAssistantMessageIDs.contains(messageID) {
+            return true
+        }
+
+        guard locallyStoppedSessionID == sessionID else { return false }
+
+        switch responseState {
+        case .stopping, .stopped:
+            ignoredAssistantMessageIDs.insert(messageID)
+            return true
+        case .idle, .generating, .failed:
+            return false
+        }
+    }
+
+    func shouldIgnoreBusyStatus(sessionID: String) -> Bool {
+        guard locallyStoppedSessionID == sessionID else { return false }
+
+        switch responseState {
+        case .stopping, .stopped:
+            return true
+        case .idle, .generating, .failed:
+            return false
+        }
     }
 
     // MARK: - Init
@@ -626,9 +668,10 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         do {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
-            self.messages = loaded
-            syncSessionModelSelection(from: loaded)
-            Logger.debug.info("messages count: \(loaded.count)")
+            let visibleMessages = mergeLoadedMessagesWithLocallyStoppedMessages(loaded)
+            self.messages = visibleMessages
+            syncSessionModelSelection(from: visibleMessages)
+            Logger.debug.info("messages count: \(visibleMessages.count)")
             self.contentVersion &+= 1
             self.scrollAnchor &+= 1
         } catch {
@@ -636,6 +679,20 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         await loadTodos()
+    }
+
+    private func mergeLoadedMessagesWithLocallyStoppedMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
+        guard !ignoredAssistantMessageIDs.isEmpty else { return loaded }
+
+        let localStoppedMessages = messages.filter { ignoredAssistantMessageIDs.contains($0.id) }
+        guard !localStoppedMessages.isEmpty else {
+            return loaded.filter { !ignoredAssistantMessageIDs.contains($0.id) }
+        }
+
+        var result = loaded.filter { !ignoredAssistantMessageIDs.contains($0.id) }
+        let existingIDs = Set(result.map(\.id))
+        result.append(contentsOf: localStoppedMessages.filter { !existingIDs.contains($0.id) })
+        return result
     }
 
     func loadTodos() async {
@@ -802,15 +859,77 @@ final class ChatClient: SSEEventHandlerDelegate {
         availableSlashAgentMap = Dictionary(uniqueKeysWithValues: agents.map { ($0.lowercased(), $0) })
     }
 
+    private func beginResponse() {
+        abortTask?.cancel()
+        abortTask = nil
+        cancelStoppedStateClear()
+        ignoredAssistantMessageIDs.removeAll()
+        locallyStoppedSessionID = nil
+        responseState = .generating
+        errorMessage = nil
+        isLoading = true
+        haptics.prepareForResponse()
+    }
+
+    private func markResponseFailed(_ message: String) {
+        cancelStoppedStateClear()
+        isLoading = false
+        responseState = .failed
+        errorMessage = message
+        currentActivity = nil
+        responseStartDate = nil
+        sessionStatus = nil
+        liveActivityTracker?.end()
+    }
+
+    func dismissError() {
+        errorMessage = nil
+        if responseState == .failed {
+            responseState = .idle
+        }
+    }
+
+    private func markResponseIdleAfterFinish() {
+        switch responseState {
+        case .stopping:
+            locallyStoppedSessionID = nil
+            showStoppedResponseState()
+        case .generating, .idle:
+            cancelStoppedStateClear()
+            responseState = .idle
+            locallyStoppedSessionID = nil
+        case .stopped, .failed:
+            locallyStoppedSessionID = nil
+        }
+    }
+
+    private func showStoppedResponseState() {
+        cancelStoppedStateClear()
+        responseState = .stopped
+        stoppedStateClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.stoppedResponseDisplayDuration)
+            guard !Task.isCancelled else { return }
+            guard let self, self.responseState == .stopped else { return }
+
+            self.responseState = .idle
+            self.locallyStoppedSessionID = nil
+            self.stoppedStateClearTask = nil
+        }
+    }
+
+    private func cancelStoppedStateClear() {
+        stoppedStateClearTask?.cancel()
+        stoppedStateClearTask = nil
+    }
+
     // MARK: - Send Message
 
     func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading, currentSession != nil else { return }
 
-        haptics.prepareForResponse()
-
         if isDemoMode {
+            beginResponse()
             inputText = ""
             demoPlayer?.play(demoScript)
             return
@@ -831,10 +950,11 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
+        beginResponse()
+
         let userMessage = ChatMessage(role: .user, content: text)
         messages.append(userMessage)
         inputText = ""
-        isLoading = true
 
         currentActivity = AgentActivity()
         currentActivity?.currentLabel = "Thinking..."
@@ -853,10 +973,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func sendCommand(text: String, command: String, arguments: String) {
+        beginResponse()
+
         let userMessage = ChatMessage(role: .user, content: text)
         messages.append(userMessage)
         inputText = ""
-        isLoading = true
 
         currentActivity = AgentActivity()
         currentActivity?.currentLabel = "Running /\(command)..."
@@ -876,10 +997,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func sendAgentPrompt(text: String, agent: String, prompt: String) {
+        beginResponse()
+
         let userMessage = ChatMessage(role: .user, content: text)
         messages.append(userMessage)
         inputText = ""
-        isLoading = true
 
         currentActivity = AgentActivity()
         currentActivity?.currentLabel = "Running /\(agent)..."
@@ -900,8 +1022,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     private func sendPromptAsync(text: String, agent: String? = nil) async {
         guard let session = currentSession else {
-            isLoading = false
-            errorMessage = "Not connected."
+            markResponseFailed("Not connected.")
             return
         }
 
@@ -914,22 +1035,18 @@ final class ChatClient: SSEEventHandlerDelegate {
                 variant: selectedVariant
             )
         } catch {
-            isLoading = false
+            guard responseState == .generating else { return }
             if let agent, !agent.isEmpty {
-                errorMessage = "Failed to run /\(agent): \(error.localizedDescription)"
+                markResponseFailed("Failed to run /\(agent): \(error.localizedDescription)")
             } else {
-                errorMessage = "Failed to send: \(error.localizedDescription)"
+                markResponseFailed("Failed to send: \(error.localizedDescription)")
             }
-            currentActivity = nil
-            responseStartDate = nil
-            liveActivityTracker?.end()
         }
     }
 
     private func sendCommandAsync(command: String, arguments: String) async {
         guard let session = currentSession else {
-            isLoading = false
-            errorMessage = "Not connected."
+            markResponseFailed("Not connected.")
             return
         }
 
@@ -942,11 +1059,8 @@ final class ChatClient: SSEEventHandlerDelegate {
                 variant: selectedVariant
             )
         } catch {
-            isLoading = false
-            errorMessage = "Failed to run /\(command): \(error.localizedDescription)"
-            currentActivity = nil
-            responseStartDate = nil
-            liveActivityTracker?.end()
+            guard responseState == .generating else { return }
+            markResponseFailed("Failed to run /\(command): \(error.localizedDescription)")
         }
     }
 
@@ -994,25 +1108,96 @@ final class ChatClient: SSEEventHandlerDelegate {
     // MARK: - Abort
 
     func abort() {
+        guard responseState != .stopping else { return }
+
         if isDemoMode {
             demoPlayer?.stop()
-            finishLoading()
+            beginStoppingResponse(sessionID: currentSession?.id)
+            completeStoppedResponse()
             return
         }
 
         if isRecordedReplayMode {
             recordedReplayPlayer?.stop()
             if isLoading || pendingAssistantMessage != nil {
-                finishLoading()
+                beginStoppingResponse(sessionID: currentSession?.id)
+                completeStoppedResponse()
             }
             return
         }
 
         guard let session = currentSession else { return }
 
-        Task {
-            try? await messagesService?.abort(sessionID: session.id)
+        beginStoppingResponse(sessionID: session.id)
+        finalizeLocalStoppedTurn()
+
+        abortTask = Task { [weak self] in
+            do {
+                try await self?.messagesService?.abort(sessionID: session.id)
+                self?.completeStoppedResponse()
+            } catch {
+                self?.failStoppedResponse(error)
+            }
         }
+    }
+
+    private func beginStoppingResponse(sessionID: String?) {
+        responseState = .stopping
+        locallyStoppedSessionID = sessionID
+
+        if let pendingAssistantMessage {
+            ignoredAssistantMessageIDs.insert(pendingAssistantMessage.id)
+        }
+    }
+
+    private func finalizeLocalStoppedTurn() {
+        stopFlushTimer()
+
+        if !streamingBuffer.isEmpty, let pending = pendingAssistantMessage {
+            pending.content += streamingBuffer
+        }
+        streamingBuffer = ""
+
+        if let pending = pendingAssistantMessage {
+            pending.isStreaming = false
+            pendingAssistantMessage = nil
+
+            let hasVisibleContent = pending.content.nilIfBlank != nil || !pending.parts.isEmpty
+            if hasVisibleContent, !messages.contains(where: { $0.id == pending.id }) {
+                messages.append(pending)
+            }
+        }
+
+        currentActivity = nil
+        sessionStatus = nil
+        responseStartDate = nil
+        pendingPermission = nil
+        showPermissionAlert = false
+        pendingQuestion = nil
+        showQuestionSheet = false
+        cancelQuestionTimeout()
+        liveActivityTracker?.end()
+        contentVersion &+= 1
+    }
+
+    private func completeStoppedResponse() {
+        guard responseState == .stopping else { return }
+
+        abortTask = nil
+        finalizeLocalStoppedTurn()
+        isLoading = false
+        showStoppedResponseState()
+    }
+
+    private func failStoppedResponse(_ error: Error) {
+        guard responseState == .stopping else { return }
+
+        abortTask = nil
+        cancelStoppedStateClear()
+        finalizeLocalStoppedTurn()
+        isLoading = false
+        responseState = .failed
+        errorMessage = "Failed to stop: \(error.localizedDescription)"
     }
 
     // MARK: - SSE Setup
@@ -1239,12 +1424,14 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Append text for a streaming message. Accumulated in a buffer that
     /// flushes to the pending message every ~40ms, keeping UI updates smooth.
     func appendStreamingText(messageID: String, text: String) {
+        guard !ignoredAssistantMessageIDs.contains(messageID) else { return }
         guard let pending = pendingAssistantMessage, pending.id == messageID else { return }
         streamingBuffer += text
         ensureFlushTimer()
     }
 
     func clearStreamingBuffer(messageID: String) {
+        guard !ignoredAssistantMessageIDs.contains(messageID) else { return }
         guard let pending = pendingAssistantMessage, pending.id == messageID else { return }
         stopFlushTimer()
         streamingBuffer = ""
@@ -1288,10 +1475,17 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func resetSessionState() {
+        abortTask?.cancel()
+        abortTask = nil
+        cancelStoppedStateClear()
+        ignoredAssistantMessageIDs.removeAll()
+        locallyStoppedSessionID = nil
         demoPlayer?.stop()
         recordedReplayPlayer?.stop()
         streamRecorder = nil
         isRecordingStream = false
+        isLoading = false
+        responseState = .idle
         stopFlushTimer()
         streamingBuffer = ""
         pendingAssistantMessage = nil
@@ -1313,6 +1507,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     func finishLoading() {
         isLoading = false
+        abortTask = nil
 
         // Drain any remaining buffered text before committing.
         stopFlushTimer()
@@ -1340,6 +1535,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
         currentActivity = nil
         sessionStatus = nil
+        markResponseIdleAfterFinish()
 
         contentVersion &+= 1
     }

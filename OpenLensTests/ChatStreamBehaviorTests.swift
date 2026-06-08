@@ -46,6 +46,213 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func abortStopsLocalStreamingAndDropsLateBufferedText() async {
+        let client = ChatClient(demoMode: true)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.isLoading = true
+        client.responseState = .generating
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+
+        client.appendStreamingText(messageID: messageID, text: "partial")
+        client.abort()
+
+        #expect(!client.isLoading)
+        #expect(client.responseState == .stopped)
+        #expect(client.pendingAssistantMessage == nil)
+        #expect(client.messages.last?.id == messageID)
+        #expect(client.messages.last?.content == "partial")
+        #expect(client.messages.last?.isStreaming == false)
+
+        client.appendStreamingText(messageID: messageID, text: " stale")
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(client.messages.last?.content == "partial")
+    }
+
+    @MainActor
+    @Test func stoppedTurnIgnoresLateAssistantSSEAfterReconnect() {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let stoppedMessageID = "assistant-stopped"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.isLoading = true
+        client.responseState = .generating
+        client.pendingAssistantMessage = ChatMessage(
+            id: stoppedMessageID,
+            role: .assistant,
+            content: "partial",
+            isStreaming: true
+        )
+
+        client.abort()
+
+        handler.handleEvent(
+            OCEvent(
+                type: "session.status",
+                properties: AnyCodable([
+                    "sessionID": sessionID,
+                    "status": ["type": "busy"]
+                ])
+            )
+        )
+        handler.handleEvent(
+            OCEvent(
+                type: "message.updated",
+                properties: AnyCodable([
+                    "info": [
+                        "id": "assistant-late",
+                        "sessionID": sessionID,
+                        "role": "assistant"
+                    ]
+                ])
+            )
+        )
+        handler.handleEvent(
+            OCEvent(
+                type: "message.part.delta",
+                properties: AnyCodable([
+                    "sessionID": sessionID,
+                    "messageID": "assistant-late",
+                    "field": "text",
+                    "delta": " stale"
+                ])
+            )
+        )
+
+        #expect(!client.isLoading)
+        #expect(client.responseState == .stopped)
+        #expect(client.pendingAssistantMessage == nil)
+        #expect(!client.messages.contains(where: { $0.id == "assistant-late" }))
+        #expect(client.messages.last?.id == stoppedMessageID)
+        #expect(client.messages.last?.content == "partial")
+    }
+
+    @MainActor
+    @Test func stoppedResponseStateClearsAfterDelayAndAllowsLaterAssistantSSE() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let stoppedMessageID = "assistant-stopped"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.isLoading = true
+        client.responseState = .generating
+        client.pendingAssistantMessage = ChatMessage(
+            id: stoppedMessageID,
+            role: .assistant,
+            content: "partial",
+            isStreaming: true
+        )
+
+        client.abort()
+
+        #expect(client.responseState == .stopped)
+
+        await waitForMainQueue(milliseconds: 1_700)
+
+        #expect(client.responseState == .idle)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.part.delta",
+                properties: AnyCodable([
+                    "sessionID": sessionID,
+                    "messageID": stoppedMessageID,
+                    "field": "text",
+                    "delta": " stale"
+                ])
+            )
+        )
+
+        #expect(client.messages.last?.content == "partial")
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.updated",
+                properties: AnyCodable([
+                    "info": [
+                        "id": "assistant-next",
+                        "sessionID": sessionID,
+                        "role": "assistant"
+                    ]
+                ])
+            )
+        )
+
+        #expect(client.pendingAssistantMessage?.id == "assistant-next")
+        #expect(client.messages.last?.id == stoppedMessageID)
+        #expect(client.messages.last?.content == "partial")
+    }
+
+    @MainActor
+    @Test func serverIdleAfterStopAllowsNextAssistantTurnBeforeBadgeExpires() {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.isLoading = true
+        client.responseState = .generating
+        client.pendingAssistantMessage = ChatMessage(
+            id: "assistant-stopped",
+            role: .assistant,
+            content: "partial",
+            isStreaming: true
+        )
+
+        client.abort()
+
+        handler.handleEvent(
+            OCEvent(
+                type: "session.status",
+                properties: AnyCodable([
+                    "sessionID": sessionID,
+                    "status": ["type": "idle"]
+                ])
+            )
+        )
+
+        #expect(client.responseState == .stopped)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.updated",
+                properties: AnyCodable([
+                    "info": [
+                        "id": "assistant-next",
+                        "sessionID": sessionID,
+                        "role": "assistant"
+                    ]
+                ])
+            )
+        )
+
+        #expect(client.pendingAssistantMessage?.id == "assistant-next")
+    }
+
+    @MainActor
     @Test func finishLoadingCommitsPendingAssistantMessageWithoutDuplicates() {
         let client = ChatClient(demoMode: true)
         let assistantID = "assistant-message"
@@ -75,6 +282,18 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func finishLoadingReturnsGeneratingResponseToIdle() {
+        let client = ChatClient(demoMode: true)
+        client.responseState = .generating
+        client.isLoading = true
+
+        client.finishLoading()
+
+        #expect(!client.isLoading)
+        #expect(client.responseState == .idle)
+    }
+
+    @MainActor
     @Test func finishLoadingDoesNotForceScrollJump() {
         let client = ChatClient(demoMode: true)
         let initialScrollAnchor = client.scrollAnchor
@@ -95,20 +314,25 @@ struct ChatStreamBehaviorTests {
 
     @MainActor
     @Test func chatScrollPolicyTracksNearBottomAndButtonVisibility() {
-        #expect(ChatScrollPolicy.isNearBottom(bottomMarkerMinY: 640, viewportHeight: 600, threshold: 48))
-        #expect(!ChatScrollPolicy.isNearBottom(bottomMarkerMinY: 700, viewportHeight: 600, threshold: 48))
+        #expect(ChatScrollPolicy.bottomDistance(contentHeight: 700, visibleMaxY: 640) == 60)
+        #expect(ChatScrollPolicy.bottomDistance(contentHeight: 500, visibleMaxY: 640) == 0)
+        #expect(ChatScrollPolicy.isNearBottom(bottomDistance: 40, threshold: 48))
+        #expect(!ChatScrollPolicy.isNearBottom(bottomDistance: 70, threshold: 48))
+
+        #expect(ChatScrollPolicy.state(
+            contentHeight: 700,
+            visibleMaxY: 640,
+            followLatestThreshold: 96,
+            visibilityThreshold: 56
+        ) == ChatScrollState(isNearBottom: true, isPastVisibilityThreshold: true))
 
         #expect(ChatScrollPolicy.shouldShowScrollToLatest(
             followLatest: false,
-            bottomMarkerMinY: 680,
-            viewportHeight: 600,
-            visibilityThreshold: 56
+            isPastVisibilityThreshold: true
         ))
         #expect(!ChatScrollPolicy.shouldShowScrollToLatest(
             followLatest: true,
-            bottomMarkerMinY: 680,
-            viewportHeight: 600,
-            visibilityThreshold: 56
+            isPastVisibilityThreshold: true
         ))
     }
 
@@ -144,6 +368,12 @@ struct ChatStreamBehaviorTests {
             lastAutoScrollDate: now.addingTimeInterval(-0.05),
             minimumInterval: 0.18
         ))
+    }
+
+    @MainActor
+    @Test func chatScrollPolicyDisablesManualScrollAnimationDuringStreaming() {
+        #expect(!ChatScrollPolicy.shouldAnimateManualScroll(isLoading: true))
+        #expect(ChatScrollPolicy.shouldAnimateManualScroll(isLoading: false))
     }
 
     @MainActor
@@ -202,7 +432,7 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
-    private func makeHandler(delegate: SSEDelegateSpy) -> SSEEventHandler {
+    private func makeHandler(delegate: any SSEEventHandlerDelegate) -> SSEEventHandler {
         let tracker = LiveActivityTracker(liveActivity: TestLiveActivityProvider())
         let handler = SSEEventHandler(haptics: HapticController(), liveActivityTracker: tracker)
         handler.delegate = delegate
@@ -227,6 +457,14 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
     var clearedStreamingBuffers: [String] = []
 
     func finishLoading() {}
+
+    func shouldIgnoreAssistantEvent(sessionID: String, messageID: String) -> Bool {
+        false
+    }
+
+    func shouldIgnoreBusyStatus(sessionID: String) -> Bool {
+        false
+    }
 
     func appendStreamingText(messageID: String, text: String) {}
 

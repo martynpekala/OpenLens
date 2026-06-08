@@ -96,6 +96,7 @@ final class DemoPlayer {
                 )
                 client.pendingAssistantMessage = msg
                 client.isLoading = true
+                client.responseState = .generating
                 client.currentActivity = AgentActivity()
                 client.currentActivity?.currentLabel = "Thinking..."
                 client.scrollAnchor &+= 1

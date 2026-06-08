@@ -28,6 +28,8 @@ struct ChatView: View {
     @State private var showTodoList = false
     @State private var availableSlashActions: [WorkspaceSlashActionItem] = []
     @State private var isLoadingCommands = false
+    @State private var displayedResponseState: ChatResponseState = .idle
+    @State private var isComposerExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,7 +47,7 @@ struct ChatView: View {
                         .foregroundStyle(secondaryTextColor)
                     Spacer()
                     Button(AppText.dismiss) {
-                        chatClient.errorMessage = nil
+                        chatClient.dismissError()
                     }
                     .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
                     .foregroundStyle(primaryTextColor)
@@ -62,6 +64,10 @@ struct ChatView: View {
         .background {
             chatBackground
                 .ignoresSafeArea()
+        }
+        .overlay(alignment: .top) {
+            responseStatusOverlay
+                .padding(.top, 8)
         }
         .safeAreaInset(edge: .bottom) {
             if chatClient.showsComposer {
@@ -93,6 +99,7 @@ struct ChatView: View {
         }
         .onAppear {
             updateShakeMonitoring(for: scenePhase)
+            displayedResponseState = chatClient.responseState
         }
         .onDisappear {
             chatEasterEgg.stopShakeMonitoring()
@@ -197,6 +204,12 @@ struct ChatView: View {
                 await loadCommands(force: true)
             }
         }
+        .onChange(of: chatClient.responseState) { _, newState in
+            updateDisplayedResponseState(newState)
+        }
+        .onChange(of: isInputFocused) { _, focused in
+            setComposerExpanded(focused)
+        }
     }
 
     private var visualMode: ChatVisualMode {
@@ -223,7 +236,7 @@ struct ChatView: View {
                 gradient: Gradient(
                     colors: [
                         .clear,
-                        RetroChatStyle.screenBottom.opacity(0.7),
+                        RetroChatStyle.screenBottom.opacity(0.7)
                     ],
                 ),
                 startPoint: .top,
@@ -234,7 +247,7 @@ struct ChatView: View {
                 gradient: Gradient(
                     colors: [
                         .clear,
-                        Color.appBackground.opacity(0.7),
+                        Color.appBackground.opacity(0.7)
                     ]
                 ),
                 startPoint: .top,
@@ -249,6 +262,41 @@ struct ChatView: View {
 
     private var secondaryTextColor: Color {
         isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary
+    }
+
+    @ViewBuilder
+    private var responseStatusOverlay: some View {
+        if let label = responseStatusLabel(for: displayedResponseState) {
+            ResponseStatusSiriIndicator(
+                state: displayedResponseState,
+                label: label,
+                icon: responseStatusIcon(for: displayedResponseState),
+                color: responseStatusColor(for: displayedResponseState),
+                isRetroChat: isRetroChat
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .allowsHitTesting(false)
+            .transition(
+                .asymmetric(
+                    insertion: .move(edge: .top)
+                        .combined(with: .opacity)
+                        .combined(with: .scale(scale: 0.92)),
+                    removal: .opacity
+                        .combined(with: .scale(scale: 0.86))
+                )
+            )
+        }
+    }
+
+    private func updateDisplayedResponseState(_ state: ChatResponseState) {
+        let animation: Animation = state == .idle
+            ? .easeInOut(duration: 0.24)
+            : .spring(response: 0.32, dampingFraction: 0.78)
+
+        withAnimation(animation) {
+            displayedResponseState = state
+        }
     }
 
     private func updateShakeMonitoring(for phase: ScenePhase) {
@@ -355,9 +403,9 @@ struct ChatView: View {
             }
             inputBar
         }
-        .padding(.bottom, isInputFocused ? 12 : 0)
-        .padding(.horizontal, isInputFocused ? 0 : 16)
-        .animation(.easeOut(duration: 0.4), value: isInputFocused)
+        .padding(.horizontal, isComposerExpanded ? 0 : 16)
+        .padding(.bottom, isComposerExpanded ? 12 : 0)
+        .animation(.easeOut(duration: 0.4), value: isComposerExpanded)
     }
 
     // MARK: - Model Selector
@@ -447,7 +495,7 @@ struct ChatView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Image(systemName: "brain")
                     .font(.system(size: 11, weight: .medium))
                 Text(chatClient.selectedVariantDisplayName)
@@ -477,6 +525,9 @@ struct ChatView: View {
                 HStack(alignment: .center, spacing: 8) {
                     TextField(AppText.messagePlaceholder, text: $chatClient.inputText, axis: .vertical)
                         .focused($isInputFocused)
+                        .onTapGesture {
+                            setComposerExpanded(true)
+                        }
                         .lineLimit(1 ... 5)
                         .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                         .foregroundStyle(primaryTextColor)
@@ -496,36 +547,127 @@ struct ChatView: View {
     }
 
     private var composerActionButton: some View {
-        Group {
-            if chatClient.isLoading {
-                Button {
-                    chatClient.abort()
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(isRetroChat ? RetroChatStyle.danger : Color.red)
-                            .frame(width: 32, height: 32)
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(isRetroChat ? RetroChatStyle.paper : .white)
-                    }
+        Button {
+            performComposerAction()
+        } label: {
+            composerActionButtonLabel
+                .animation(.spring(duration: 0.25), value: chatClient.isLoading)
+        }
+        .disabled(isComposerActionDisabled)
+        .accessibilityLabel(composerActionAccessibilityLabel)
+    }
+
+    @ViewBuilder
+    private var composerActionButtonLabel: some View {
+        if chatClient.isLoading {
+            ZStack {
+                Circle()
+                    .fill(isRetroChat ? RetroChatStyle.danger : Color.red)
+
+                if chatClient.isStoppingResponse {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(isRetroChat ? RetroChatStyle.paper : .white)
+                } else {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.paper : .white)
                 }
-            } else {
-                Button {
-                    isInputFocused = false
-                    chatClient.send()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: isRetroChat ? 28 : 30, weight: isRetroChat ? .bold : .regular))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(
-                            isRetroChat ? RetroChatStyle.paper : Color.appOnAccent,
-                            isRetroChat ? RetroChatStyle.ink : Color.appAccent
-                        )
-                        .contentShape(Circle())
-                }
-                .disabled(!canSend)
             }
+            .frame(width: 32, height: 32)
+            .contentShape(Circle())
+            .transition(.scale(scale: 0.7).combined(with: .opacity))
+        } else {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: isRetroChat ? 28 : 30, weight: isRetroChat ? .bold : .regular))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(
+                    isRetroChat ? RetroChatStyle.paper : Color.appOnAccent,
+                    isRetroChat ? RetroChatStyle.ink : Color.appAccent
+                )
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
+                .transition(.scale(scale: 0.7).combined(with: .opacity))
+        }
+    }
+
+    private var isComposerActionDisabled: Bool {
+        chatClient.isLoading ? chatClient.isStoppingResponse : !canSend
+    }
+
+    private var composerActionAccessibilityLabel: String {
+        if chatClient.isStoppingResponse {
+            return AppText.responseStopping
+        }
+
+        return chatClient.isLoading ? "Stop" : "Send"
+    }
+
+    private func performComposerAction() {
+        collapseComposerFocus()
+
+        if chatClient.isLoading {
+            chatClient.abort()
+        } else {
+            chatClient.send()
+        }
+    }
+
+    private func collapseComposerFocus() {
+        withAnimation(.easeOut(duration: 0.4)) {
+            isComposerExpanded = false
+            isInputFocused = false
+        }
+    }
+
+    private func setComposerExpanded(_ isExpanded: Bool) {
+        withAnimation(.easeOut(duration: 0.4)) {
+            isComposerExpanded = isExpanded
+        }
+    }
+
+    private func responseStatusLabel(for state: ChatResponseState) -> String? {
+        switch state {
+        case .idle:
+            nil
+        case .generating:
+            AppText.responseGenerating
+        case .stopping:
+            AppText.responseStopping
+        case .stopped:
+            AppText.responseStopped
+        case .failed:
+            AppText.responseFailed
+        }
+    }
+
+    private func responseStatusIcon(for state: ChatResponseState) -> String {
+        switch state {
+        case .idle:
+            "circle"
+        case .generating:
+            "sparkles"
+        case .stopping:
+            "stopwatch"
+        case .stopped:
+            "stop.circle"
+        case .failed:
+            "exclamationmark.triangle"
+        }
+    }
+
+    private func responseStatusColor(for state: ChatResponseState) -> Color {
+        switch state {
+        case .idle:
+            secondaryTextColor
+        case .generating:
+            isRetroChat ? RetroChatStyle.blueAccent : Color.appAccent
+        case .stopping:
+            isRetroChat ? RetroChatStyle.danger : Color.orange
+        case .stopped:
+            secondaryTextColor
+        case .failed:
+            isRetroChat ? RetroChatStyle.danger : Color.red
         }
     }
 
@@ -709,6 +851,139 @@ struct ChatView: View {
             return AppText.permissionFallback
         }
         return parts.joined(separator: "\n")
+    }
+}
+
+private struct ResponseStatusSiriIndicator: View {
+    let state: ChatResponseState
+    let label: String
+    let icon: String
+    let color: Color
+    let isRetroChat: Bool
+
+    private var isAnimatedState: Bool {
+        state == .generating || state == .stopping
+    }
+
+    private var showsTextLabel: Bool {
+        state == .stopped || state == .failed
+    }
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            ZStack {
+                capsuleBackground
+
+                if isAnimatedState {
+                    animatedBars(time: timeline.date.timeIntervalSinceReferenceDate)
+                } else if showsTextLabel {
+                    Text(label)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(color)
+                        .contentTransition(.opacity)
+                } else {
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(color)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+            .frame(width: showsTextLabel ? 74 : 62, height: 34)
+            .clipShape(Capsule(style: .continuous))
+            .shadow(color: .black.opacity(isRetroChat ? 0 : 0.1), radius: 12, y: 5)
+            .animation(.easeInOut(duration: 0.18), value: state)
+        }
+    }
+
+    @ViewBuilder
+    private var capsuleBackground: some View {
+        let palette = indicatorPalette
+
+        ZStack {
+            Capsule(style: .continuous)
+                .fill(isRetroChat ? RetroChatStyle.paperWarm : Color.appSurface.opacity(0.82))
+
+            if !isRetroChat {
+                LinearGradient(
+                    colors: palette.map { $0.opacity(0.2) },
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .blur(radius: 6)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+            }
+
+            Capsule(style: .continuous)
+                .strokeBorder(
+                    isRetroChat ? RetroChatStyle.ink : Color.white.opacity(0.46),
+                    lineWidth: isRetroChat ? 2 : 0.7
+                )
+        }
+    }
+
+    private func animatedBars(time: TimeInterval) -> some View {
+        HStack(spacing: 4) {
+            ForEach(0 ..< 5, id: \.self) { index in
+                Capsule(style: .continuous)
+                    .fill(barGradient(index: index))
+                    .frame(width: 4, height: barHeight(index: index, time: time))
+                    .shadow(color: indicatorPalette[index % indicatorPalette.count].opacity(isRetroChat ? 0 : 0.45), radius: 3)
+            }
+        }
+        .frame(height: 24, alignment: .center)
+    }
+
+    private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
+        let speed = state == .stopping ? 6.2 : 4.7
+        let phase = Double(index) * 0.74
+        let wave = (sin(time * speed + phase) + 1) / 2
+        let accent = (sin(time * (speed * 0.58) - phase) + 1) / 2
+        return CGFloat(7 + (wave * 10) + (accent * 4))
+    }
+
+    private func barGradient(index: Int) -> LinearGradient {
+        let palette = indicatorPalette
+        return LinearGradient(
+            colors: [
+                palette[index % palette.count],
+                palette[(index + 1) % palette.count]
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var indicatorPalette: [Color] {
+        if isRetroChat {
+            return [
+                RetroChatStyle.blueAccent,
+                RetroChatStyle.magentaAccent,
+                RetroChatStyle.danger,
+                RetroChatStyle.blueAccent
+            ]
+        }
+
+        switch state {
+        case .stopping:
+            return [
+                Color(red: 1.0, green: 0.54, blue: 0.16),
+                Color(red: 1.0, green: 0.24, blue: 0.36),
+                Color(red: 0.94, green: 0.24, blue: 0.78),
+                Color(red: 1.0, green: 0.72, blue: 0.2)
+            ]
+        case .failed:
+            return [.red, .orange]
+        case .stopped:
+            return [Color.appSecondary, Color.appPrimary]
+        case .idle, .generating:
+            return [
+                Color(red: 0.16, green: 0.73, blue: 1.0),
+                Color(red: 0.42, green: 0.38, blue: 1.0),
+                Color(red: 0.96, green: 0.24, blue: 0.78),
+                Color(red: 0.2, green: 0.86, blue: 0.56)
+            ]
+        }
     }
 }
 
@@ -989,110 +1264,102 @@ private struct ChatMessagesListView: View {
     @Environment(\.chatEasterEgg) private var chatEasterEgg
 
     @State private var lastAutoScrollDate: Date = .distantPast
-    @State private var bottomMarkerMinY: CGFloat = 0
+    @State private var isPastScrollToLatestThreshold = false
     @State private var followLatest = true
 
     private let bottomAnchorID = "bottom"
-    private let scrollCoordinateSpace = "chat-scroll"
     private let streamingScrollInterval: TimeInterval = 0.18
     private let followLatestThreshold: CGFloat = 96
     private let scrollToBottomVisibilityThreshold: CGFloat = 56
 
     var body: some View {
-        GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollView {
-                        Color.clear.frame(height: isRetroChat ? 150 : 72)
+        ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    Color.clear.frame(height: isRetroChat ? 150 : 72)
 
-                        LazyVStack(alignment: .leading, spacing: isRetroChat ? 13 : 16) {
-                            if chatClient.hasEarlierMessages {
-                                Button {
-                                    chatClient.loadEarlierMessages()
-                                } label: {
-                                    Text("Load earlier messages")
-                                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium))
-                                        .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 8)
-                                        .ifRetroPanel(isRetroChat)
-                                }
-                            }
-
-                            ForEach(chatClient.displayedMessages) { message in
-                                MessageBubbleView(message: message)
+                    LazyVStack(alignment: .leading, spacing: isRetroChat ? 13 : 16) {
+                        if chatClient.hasEarlierMessages {
+                            Button {
+                                chatClient.loadEarlierMessages()
+                            } label: {
+                                Text("Load earlier messages")
+                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .ifRetroPanel(isRetroChat)
                             }
                         }
-                        .padding(.horizontal, isRetroChat ? 12 : 16)
 
-                        Color.clear
-                            .frame(height: 17)
-                            .background {
-                                GeometryReader { proxy in
-                                    Color.clear.preference(
-                                        key: ChatBottomMarkerMinYPreferenceKey.self,
-                                        value: proxy.frame(in: .named(scrollCoordinateSpace)).minY
-                                    )
-                                }
-                            }
-                            .id(bottomAnchorID)
-                            .padding(.horizontal, 16)
+                        ForEach(chatClient.displayedMessages) { message in
+                            MessageBubbleView(message: message)
+                        }
                     }
-                    .coordinateSpace(name: scrollCoordinateSpace)
-                    .onPreferenceChange(ChatBottomMarkerMinYPreferenceKey.self) { minY in
-                        bottomMarkerMinY = minY
-                        followLatest = ChatScrollPolicy.isNearBottom(
-                            bottomMarkerMinY: minY,
-                            viewportHeight: geometry.size.height,
-                            threshold: followLatestThreshold
-                        )
-                    }
-                    .onChange(of: chatClient.contentVersion) {
-                        let now = Date()
-                        guard ChatScrollPolicy.shouldAutoFollow(
-                            isLoading: chatClient.isLoading,
-                            followLatest: followLatest,
-                            now: now,
-                            lastAutoScrollDate: lastAutoScrollDate,
-                            minimumInterval: streamingScrollInterval
-                        ) else { return }
+                    .padding(.horizontal, isRetroChat ? 12 : 16)
 
-                        scrollToBottom(using: proxy, animated: false, now: now)
-                    }
-                    .onChange(of: chatClient.scrollAnchor) {
+                    Color.clear
+                        .frame(height: 17)
+                        .id(bottomAnchorID)
+                        .padding(.horizontal, 16)
+                }
+                .onScrollGeometryChange(for: ChatScrollState.self) { geometry in
+                    ChatScrollPolicy.state(
+                        contentHeight: geometry.contentSize.height,
+                        visibleMaxY: geometry.visibleRect.maxY,
+                        followLatestThreshold: followLatestThreshold,
+                        visibilityThreshold: scrollToBottomVisibilityThreshold
+                    )
+                } action: { _, state in
+                    followLatest = state.isNearBottom
+                    isPastScrollToLatestThreshold = state.isPastVisibilityThreshold
+                }
+                .onChange(of: chatClient.contentVersion) {
+                    let now = Date()
+                    guard ChatScrollPolicy.shouldAutoFollow(
+                        isLoading: chatClient.isLoading,
+                        followLatest: followLatest,
+                        now: now,
+                        lastAutoScrollDate: lastAutoScrollDate,
+                        minimumInterval: streamingScrollInterval
+                    ) else { return }
+
+                    scrollToBottom(using: proxy, animated: false, now: now)
+                }
+                .onChange(of: chatClient.scrollAnchor) {
+                    scrollToBottom(
+                        using: proxy,
+                        animated: false,
+                        now: Date(),
+                        forceFollowLatest: true
+                    )
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .onTapGesture {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+
+                if showsScrollToBottomButton {
+                    Button {
                         scrollToBottom(
                             using: proxy,
-                            animated: false,
+                            animated: ChatScrollPolicy.shouldAnimateManualScroll(isLoading: chatClient.isLoading),
                             now: Date(),
                             forceFollowLatest: true
                         )
+                    } label: {
+                        scrollToBottomLabel
                     }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onTapGesture {
-                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-
-                    if showsScrollToBottomButton(in: geometry.size.height) {
-                        Button {
-                            scrollToBottom(
-                                using: proxy,
-                                animated: true,
-                                now: Date(),
-                                forceFollowLatest: true
-                            )
-                        } label: {
-                            scrollToBottomLabel
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.trailing, 20)
-                        .padding(.bottom, 16)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                        .accessibilityLabel("Scroll to latest message")
-                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 16)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .accessibilityLabel("Scroll to latest message")
                 }
-                .animation(.easeOut(duration: 0.18), value: showsScrollToBottomButton(in: geometry.size.height))
             }
+            .animation(.easeOut(duration: 0.18), value: showsScrollToBottomButton)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var isRetroChat: Bool {
@@ -1141,20 +1408,40 @@ private struct ChatMessagesListView: View {
         }
     }
 
-    private func showsScrollToBottomButton(in viewportHeight: CGFloat) -> Bool {
+    private var showsScrollToBottomButton: Bool {
         guard !chatClient.displayedMessages.isEmpty else { return false }
         return ChatScrollPolicy.shouldShowScrollToLatest(
             followLatest: followLatest,
-            bottomMarkerMinY: bottomMarkerMinY,
-            viewportHeight: viewportHeight,
-            visibilityThreshold: scrollToBottomVisibilityThreshold
+            isPastVisibilityThreshold: isPastScrollToLatestThreshold
         )
     }
 }
 
+struct ChatScrollState: Equatable {
+    var isNearBottom: Bool
+    var isPastVisibilityThreshold: Bool
+}
+
 enum ChatScrollPolicy {
-    static func isNearBottom(bottomMarkerMinY: CGFloat, viewportHeight: CGFloat, threshold: CGFloat) -> Bool {
-        bottomMarkerMinY <= viewportHeight + threshold
+    static func bottomDistance(contentHeight: CGFloat, visibleMaxY: CGFloat) -> CGFloat {
+        max(0, contentHeight - visibleMaxY)
+    }
+
+    static func state(
+        contentHeight: CGFloat,
+        visibleMaxY: CGFloat,
+        followLatestThreshold: CGFloat,
+        visibilityThreshold: CGFloat
+    ) -> ChatScrollState {
+        let distance = bottomDistance(contentHeight: contentHeight, visibleMaxY: visibleMaxY)
+        return ChatScrollState(
+            isNearBottom: isNearBottom(bottomDistance: distance, threshold: followLatestThreshold),
+            isPastVisibilityThreshold: distance > visibilityThreshold
+        )
+    }
+
+    static func isNearBottom(bottomDistance: CGFloat, threshold: CGFloat) -> Bool {
+        bottomDistance <= threshold
     }
 
     static func shouldAutoFollow(
@@ -1170,19 +1457,13 @@ enum ChatScrollPolicy {
 
     static func shouldShowScrollToLatest(
         followLatest: Bool,
-        bottomMarkerMinY: CGFloat,
-        viewportHeight: CGFloat,
-        visibilityThreshold: CGFloat
+        isPastVisibilityThreshold: Bool
     ) -> Bool {
         guard !followLatest else { return false }
-        return bottomMarkerMinY > viewportHeight + visibilityThreshold
+        return isPastVisibilityThreshold
     }
-}
 
-private struct ChatBottomMarkerMinYPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    static func shouldAnimateManualScroll(isLoading: Bool) -> Bool {
+        !isLoading
     }
 }

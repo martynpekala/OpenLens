@@ -22,6 +22,13 @@ protocol SSEEventHandlerDelegate: AnyObject {
 
     func finishLoading()
 
+    /// Returns true when a message event belongs to a locally stopped turn and
+    /// should not reopen streaming state.
+    func shouldIgnoreAssistantEvent(sessionID: String, messageID: String) -> Bool
+
+    /// Returns true when a busy status is stale for a locally stopped turn.
+    func shouldIgnoreBusyStatus(sessionID: String) -> Bool
+
     /// Append streamed text to the pending assistant message (not shown in chat yet).
     func appendStreamingText(messageID: String, text: String)
 
@@ -119,6 +126,11 @@ final class SSEEventHandler {
               let typeStr = statusDict["type"] as? String else { return }
 
         let statusType = OCSessionStatusType(rawValue: typeStr) ?? .idle
+
+        if statusType == .busy, delegate.shouldIgnoreBusyStatus(sessionID: sessionID) {
+            return
+        }
+
         delegate.sessionStatus = OCSessionStatus(
             type: statusType,
             attempt: statusDict["attempt"] as? Int,
@@ -164,6 +176,11 @@ final class SSEEventHandler {
               let messageID = infoDict["id"] as? String else { return }
 
         let role = infoDict["role"] as? String
+
+        if role == "assistant",
+           delegate.shouldIgnoreAssistantEvent(sessionID: sessionID, messageID: messageID) {
+            return
+        }
 
         if role == "user" {
             // User message confirmed by server — already shown optimistically
@@ -242,6 +259,10 @@ final class SSEEventHandler {
               sessionID == delegate.currentSessionID,
               let messageID = partDict["messageID"] as? String else { return }
 
+        guard !delegate.shouldIgnoreAssistantEvent(sessionID: sessionID, messageID: messageID) else {
+            return
+        }
+
         // Look up the message: first in the pending message, then in committed messages.
         let msg: ChatMessage? = {
             if let pending = delegate.pendingAssistantMessage, pending.id == messageID {
@@ -315,6 +336,10 @@ final class SSEEventHandler {
               let field = props["field"] as? String,
               let delta = props["delta"] as? String else { return }
 
+        guard !delegate.shouldIgnoreAssistantEvent(sessionID: sessionID, messageID: messageID) else {
+            return
+        }
+
         if field == "text" {
             delegate.appendStreamingText(messageID: messageID, text: delta)
             haptics.playFirstResponseIfNeeded()
@@ -328,6 +353,10 @@ final class SSEEventHandler {
               sessionID == delegate.currentSessionID,
               let messageID = props["messageID"] as? String,
               let partID = props["partID"] as? String else { return }
+
+        guard !delegate.shouldIgnoreAssistantEvent(sessionID: sessionID, messageID: messageID) else {
+            return
+        }
 
         let msg: ChatMessage? = {
             if let pending = delegate.pendingAssistantMessage, pending.id == messageID {
@@ -344,6 +373,10 @@ final class SSEEventHandler {
               let sessionID = props["sessionID"] as? String,
               sessionID == delegate.currentSessionID,
               let messageID = props["messageID"] as? String else { return }
+
+        guard !delegate.shouldIgnoreAssistantEvent(sessionID: sessionID, messageID: messageID) else {
+            return
+        }
 
         delegate.messages.removeAll { $0.id == messageID }
     }
