@@ -5,7 +5,7 @@ enum FeatureFlags {
 
     static var debugFeaturesDefault: Bool {
 #if DEBUG
-        true
+        false
 #else
         false
 #endif

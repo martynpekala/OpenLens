@@ -177,15 +177,15 @@ struct ConnectView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 18)
             .padding(.vertical, 22)
-            .background(
+            .background {
+                connectionSectionBackground(cornerRadius: 20)
+            }
+            .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.appSurface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.appSeparator.opacity(0.55), lineWidth: 0.5)
-            )
-            .surfaceShadow()
+                    .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
         }
         .buttonStyle(.plain)
         .frame(maxWidth: 300)
@@ -355,41 +355,7 @@ struct ConnectView: View {
         }
         .padding(20)
         .background {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.appSurface.opacity(0.20),
-                            Color.appTertiary.opacity(0.08),
-                            Color.appSurface.opacity(0.16)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(alignment: .topTrailing) {
-                    LinearGradient(
-                        colors: [
-                            Color.cyan.opacity(0.010),
-                            Color.blue.opacity(0.006),
-                            Color.clear
-                        ],
-                        startPoint: .topTrailing,
-                        endPoint: .bottomLeading
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-                }
-                .overlay(alignment: .bottomLeading) {
-                    LinearGradient(
-                        colors: [
-                            Color.purple.opacity(0.007),
-                            Color.clear
-                        ],
-                        startPoint: .bottomLeading,
-                        endPoint: .center
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-                }
+            connectionSectionBackground(cornerRadius: 36)
         }
         .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 36, style: .continuous))
         .overlay {
@@ -397,6 +363,44 @@ struct ConnectView: View {
                 .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
+    }
+
+    private func connectionSectionBackground(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color.appSurface.opacity(0.20),
+                        Color.appTertiary.opacity(0.08),
+                        Color.appSurface.opacity(0.16)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay(alignment: .topTrailing) {
+                LinearGradient(
+                    colors: [
+                        Color.cyan.opacity(0.010),
+                        Color.blue.opacity(0.006),
+                        Color.clear
+                    ],
+                    startPoint: .topTrailing,
+                    endPoint: .bottomLeading
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
+            .overlay(alignment: .bottomLeading) {
+                LinearGradient(
+                    colors: [
+                        Color.purple.opacity(0.007),
+                        Color.clear
+                    ],
+                    startPoint: .bottomLeading,
+                    endPoint: .center
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
     }
 
     @ViewBuilder
@@ -945,5 +949,26 @@ private extension UIView {
         }
 
         return false
+    }
+}
+
+#Preview("Connect") {
+    ConnectViewPreviewHost()
+}
+
+private struct ConnectViewPreviewHost: View {
+    @State private var connection = ConnectionManager()
+    @State private var savedConnections = SavedConnectionsStore(initialConnections: [])
+    @State private var pendingDeepLink: DeepLinkConnection?
+    @State private var pendingSessionNavigationID: String?
+
+    var body: some View {
+        ConnectView(
+            onStartDemo: {},
+            pendingDeepLink: $pendingDeepLink,
+            pendingSessionNavigationID: $pendingSessionNavigationID
+        )
+        .environment(\.connection, connection)
+        .environment(\.savedConnections, savedConnections)
     }
 }
