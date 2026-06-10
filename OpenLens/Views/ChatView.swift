@@ -27,6 +27,7 @@ struct ChatView: View {
     @State private var showContextStatus = false
     @State private var showTodoList = false
     @State private var availableSlashActions: [WorkspaceSlashActionItem] = []
+    @State private var selectedSlashAction: WorkspaceSlashActionItem?
     @State private var isLoadingCommands = false
     @State private var displayedResponseState: ChatResponseState = .idle
     @State private var isComposerExpanded = false
@@ -193,23 +194,19 @@ struct ChatView: View {
             }
         }
         .onChange(of: chatClient.inputText) { _, newValue in
-            guard newValue.hasPrefix("/"),
-                  !newValue.dropFirst().contains(where: { $0.isWhitespace || $0.isNewline }),
-                  availableSlashActions.isEmpty,
-                  !isLoadingCommands
-            else {
-                return
-            }
-
-            Task {
-                await loadCommands(force: true)
-            }
+            handleComposerTextChange(newValue)
         }
         .onChange(of: chatClient.responseState) { _, newState in
             updateDisplayedResponseState(newState)
         }
         .onChange(of: isInputFocused) { _, focused in
             setComposerExpanded(focused)
+        }
+        .onChange(of: chatClient.currentSession?.id) { _, _ in
+            clearSelectedSlashAction()
+        }
+        .onChange(of: connection.selectedProjectDirectory) { _, _ in
+            clearSelectedSlashAction()
         }
     }
 
@@ -524,7 +521,11 @@ struct ChatView: View {
 
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .center, spacing: 8) {
-                    TextField(AppText.messagePlaceholder, text: $chatClient.inputText, axis: .vertical)
+                    if let selectedSlashAction {
+                        selectedSlashActionChip(selectedSlashAction)
+                    }
+
+                    TextField(composerPlaceholder, text: $chatClient.inputText, axis: .vertical)
                         .focused($isInputFocused)
                         .onTapGesture {
                             setComposerExpanded(true)
@@ -556,6 +557,50 @@ struct ChatView: View {
         }
         .disabled(isComposerActionDisabled)
         .accessibilityLabel(composerActionAccessibilityLabel)
+    }
+
+    private var composerPlaceholder: String {
+        selectedSlashAction == nil ? AppText.messagePlaceholder : "Add arguments..."
+    }
+
+    private var selectedSlashActionTint: Color {
+        isRetroChat ? RetroChatStyle.magentaAccent : .purple
+    }
+
+    private func selectedSlashActionChip(_ action: WorkspaceSlashActionItem) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol(for: action))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(selectedSlashActionTint)
+
+            Text(action.prompt)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(selectedSlashActionTint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Button {
+                removeSelectedSlashAction()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(selectedSlashActionTint.opacity(0.75))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove slash command")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            selectedSlashActionTint.opacity(isRetroChat ? 0.18 : 0.12),
+            in: Capsule()
+        )
+        .overlay {
+            Capsule()
+                .stroke(selectedSlashActionTint.opacity(isRetroChat ? 0.75 : 0.32), lineWidth: isRetroChat ? 1.5 : 1)
+        }
+        .frame(maxWidth: 180, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -610,8 +655,40 @@ struct ChatView: View {
         if chatClient.isLoading {
             chatClient.abort()
         } else {
-            chatClient.send()
+            sendComposerInput()
         }
+    }
+
+    private func sendComposerInput() {
+        guard let selectedSlashAction else {
+            chatClient.send()
+            return
+        }
+
+        let composedText = composedSlashActionText(for: selectedSlashAction)
+        guard !composedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        chatClient.inputText = composedText
+        self.selectedSlashAction = nil
+        chatClient.send()
+    }
+
+    private func composedSlashActionText(for action: WorkspaceSlashActionItem) -> String {
+        let prompt = action.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = chatClient.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !arguments.isEmpty else { return prompt }
+        guard !prompt.isEmpty else { return arguments }
+        return "\(prompt) \(arguments)"
+    }
+
+    private func removeSelectedSlashAction() {
+        clearSelectedSlashAction()
+        isInputFocused = true
+    }
+
+    private func clearSelectedSlashAction() {
+        selectedSlashAction = nil
     }
 
     private func collapseComposerFocus() {
@@ -759,14 +836,23 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !chatClient.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !composerSendText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !chatClient.isLoading &&
             chatClient.currentSession != nil &&
             chatClient.pendingQuestion == nil &&
             chatClient.canCompose
     }
 
+    private var composerSendText: String {
+        guard let selectedSlashAction else {
+            return chatClient.inputText
+        }
+
+        return composedSlashActionText(for: selectedSlashAction)
+    }
+
     private var slashQuery: String? {
+        guard selectedSlashAction == nil else { return nil }
         let text = chatClient.inputText
         guard text.hasPrefix("/") else { return nil }
 
@@ -791,7 +877,7 @@ struct ChatView: View {
     }
 
     private var showsCommandPicker: Bool {
-        slashQuery != nil && chatClient.currentSession != nil
+        selectedSlashAction == nil && slashQuery != nil && chatClient.currentSession != nil
     }
 
     @MainActor
@@ -810,8 +896,34 @@ struct ChatView: View {
     }
 
     private func applySlashAction(_ action: WorkspaceSlashActionItem) {
-        chatClient.inputText = action.prompt + " "
+        selectedSlashAction = action
+        chatClient.inputText = ""
         isInputFocused = true
+    }
+
+    private func handleComposerTextChange(_ newValue: String) {
+        if shouldClearSelectedSlashAction(forComposerText: newValue) {
+            clearSelectedSlashAction()
+        }
+
+        guard selectedSlashAction == nil,
+              newValue.hasPrefix("/"),
+              !newValue.dropFirst().contains(where: { $0.isWhitespace || $0.isNewline }),
+              availableSlashActions.isEmpty,
+              !isLoadingCommands
+        else {
+            return
+        }
+
+        Task {
+            await loadCommands(force: true)
+        }
+    }
+
+    private func shouldClearSelectedSlashAction(forComposerText newValue: String) -> Bool {
+        selectedSlashAction != nil &&
+            !isInputFocused &&
+            !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func commandDisplayTitle(_ title: String) -> String {
