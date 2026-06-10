@@ -81,7 +81,8 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ChatHeaderToolbar(
-                projectName: connection.projectName,
+                projectName: chatClient.currentSession?.workspaceDisplayName ?? connection.projectName,
+                projectDirectory: chatClient.currentSession?.workspaceDirectory ?? connection.selectedProjectDirectory,
                 branch: connection.branch,
                 connectionState: connection.state,
                 sessionTitle: chatClient.currentSession?.title,

@@ -3,6 +3,7 @@ import SwiftUI
 /// Navigation bar toolbar content for the chat view.
 struct ChatHeaderToolbar: ToolbarContent {
     let projectName: String?
+    let projectDirectory: String?
     let branch: String?
     let connectionState: ConnectionManager.State
     let sessionTitle: String?
@@ -57,6 +58,10 @@ struct ChatHeaderToolbar: ToolbarContent {
         visualMode.isRetro
     }
 
+    private var workspaceSubtitle: String? {
+        projectDirectory ?? projectName
+    }
+
     var body: some ToolbarContent {
         ToolbarItem(placement: .title) {
                 VStack(alignment: .center, spacing: 0) {
@@ -75,9 +80,11 @@ struct ChatHeaderToolbar: ToolbarContent {
                                 .symbolEffect(.pulse, isActive: connectionState == .connected)
                                 .padding(.trailing, 4)
 
-                            
-                            if let projectName {
-                                Text(projectName)
+                            if let workspaceSubtitle {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                                Text(workspaceSubtitle)
                                     .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
                                     .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
                                     .lineLimit(1)
@@ -107,11 +114,22 @@ struct ChatHeaderToolbar: ToolbarContent {
                                 .symbolEffect(.pulse, isActive: connectionState == .connected)
                                 .padding(.trailing, 4)
 
-                            
-                            
+                            if let projectName {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                                Text(projectName)
+                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                                    .lineLimit(1)
+                            }
 
                             if let branch {
-                                
+                                if projectName != nil {
+                                    Text("\u{00B7}")
+                                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
+                                        .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                                }
                                 Image(systemName: "arrow.triangle.branch")
                                     .font(.system(size: 10))
                                     .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)

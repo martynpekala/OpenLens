@@ -1098,6 +1098,14 @@ struct OCQuestionToolRef: Codable, Sendable {
         return (worktree as NSString).lastPathComponent
     }
 
+    init(id: String, worktree: String?, vcsDir: String? = nil, vcs: String? = nil, time: OCProjectTime? = nil) {
+        self.id = id
+        self.worktree = worktree
+        self.vcsDir = vcsDir
+        self.vcs = vcs
+        self.time = time
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)

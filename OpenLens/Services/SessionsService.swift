@@ -46,14 +46,18 @@ final class SessionsService {
 
     // MARK: - Create
 
-    /// Create a new session, optionally with a title.
-    func createSession(title: String? = nil) async throws -> OCSession {
+    /// Create a new session, optionally with a title and workspace context.
+    func createSession(
+        title: String? = nil,
+        workspaceDirectory: String? = nil,
+        clearsWorkspaceContext: Bool = false
+    ) async throws -> OCSession {
         if ScreenshotFixtures.isEnabled {
             let now = Date().timeIntervalSince1970 * 1000
             return OCSession(
                 id: UUID().uuidString,
                 projectID: ScreenshotFixtures.projectID,
-                directory: ScreenshotFixtures.projectPath,
+                directory: workspaceDirectory?.nilIfBlank ?? ScreenshotFixtures.projectPath,
                 title: title?.nilIfBlank ?? "Screenshot ideation",
                 version: "v1",
                 time: OCSessionTime(created: now, updated: now)
@@ -62,6 +66,10 @@ final class SessionsService {
 
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
+        }
+
+        if workspaceDirectory?.nilIfBlank != nil || clearsWorkspaceContext {
+            await connection.setProjectContext(directory: workspaceDirectory)
         }
 
         return try await client.createSession(title: title)

@@ -27,6 +27,9 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     /// Per-connection project/worktree directory override.
     var selectedProjectDirectory: String?
 
+    /// Recent project/worktree directories for this connection, newest first.
+    var recentProjectDirectories: [String]?
+
     /// Timestamp of last successful connection (for sorting recent-first).
     var lastConnectedAt: Date?
 
@@ -76,6 +79,7 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
     var selectedModelID: String?
     var selectedVariant: String?
     var selectedProjectDirectory: String?
+    var recentProjectDirectories: [String]?
     var lastConnectedAt: Date?
 
     nonisolated init(connection: SavedConnection) {
@@ -86,6 +90,7 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
         selectedModelID = connection.selectedModelID
         selectedVariant = connection.selectedVariant
         selectedProjectDirectory = connection.selectedProjectDirectory
+        recentProjectDirectories = connection.recentProjectDirectories
         lastConnectedAt = connection.lastConnectedAt
     }
 
@@ -99,6 +104,7 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
             selectedModelID: selectedModelID,
             selectedVariant: selectedVariant,
             selectedProjectDirectory: selectedProjectDirectory,
+            recentProjectDirectories: recentProjectDirectories,
             lastConnectedAt: lastConnectedAt
         )
     }
@@ -124,6 +130,7 @@ final class SavedConnectionsStore {
     /// Flag to track whether migration from legacy UserDefaults has run.
     private static let migrationDoneKey = "saved_connections_migrated"
     private static let maximumSavedConnections = 5
+    private static let maximumRecentProjectDirectories = 5
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "OpenLens", category: "SavedConnectionsStore")
     private let shouldPersist: Bool
@@ -203,7 +210,14 @@ final class SavedConnectionsStore {
     /// Updates the project context directory for a specific connection.
     func updateProjectSelection(connectionID: String, directory: String?) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
-        connections[index].selectedProjectDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        let normalizedDirectory = normalizeProjectDirectory(directory)
+        connections[index].selectedProjectDirectory = normalizedDirectory
+        if let normalizedDirectory {
+            connections[index].recentProjectDirectories = Self.updatedRecentProjectDirectories(
+                existing: connections[index].recentProjectDirectories ?? [],
+                selected: normalizedDirectory
+            )
+        }
         persist()
     }
 
@@ -227,6 +241,16 @@ final class SavedConnectionsStore {
     /// Returns saved project directory for the given connection ID.
     func savedProjectSelection(connectionID: String) -> String? {
         connections.first(where: { $0.id == connectionID })?.selectedProjectDirectory?.nilIfBlank
+    }
+
+    /// Returns recent project directories for the given connection ID, newest first.
+    func recentProjectSelections(connectionID: String) -> [String] {
+        guard let connection = connections.first(where: { $0.id == connectionID }) else { return [] }
+
+        return Self.updatedRecentProjectDirectories(
+            existing: connection.recentProjectDirectories ?? [],
+            selected: connection.selectedProjectDirectory
+        )
     }
 
     /// Finds an existing saved connection matching a server URL and username.
@@ -383,6 +407,33 @@ final class SavedConnectionsStore {
         return Array(sorted.prefix(maximumSavedConnections))
     }
 
+    private func normalizeProjectDirectory(_ directory: String?) -> String? {
+        Self.normalizeProjectDirectory(directory)
+    }
+
+    nonisolated private static func normalizeProjectDirectory(_ directory: String?) -> String? {
+        guard let trimmed = directory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+    }
+
+    private static func updatedRecentProjectDirectories(existing: [String], selected: String?) -> [String] {
+        var directories: [String] = []
+
+        if let selected = normalizeProjectDirectory(selected) {
+            directories.append(selected)
+        }
+
+        directories.append(contentsOf: existing.compactMap(normalizeProjectDirectory))
+
+        var seen = Set<String>()
+        let deduplicated = directories.filter { seen.insert($0).inserted }
+        return Array(deduplicated.prefix(maximumRecentProjectDirectories))
+    }
+
     // MARK: - Migration from Legacy UserDefaults + Keychain
 
     private func migrateFromLegacyIfNeeded() {
@@ -450,6 +501,7 @@ private extension SavedConnection {
         selectedModelID = snapshot.selectedModelID
         selectedVariant = snapshot.selectedVariant
         selectedProjectDirectory = snapshot.selectedProjectDirectory
+        recentProjectDirectories = snapshot.recentProjectDirectories
         lastConnectedAt = snapshot.lastConnectedAt
     }
 }

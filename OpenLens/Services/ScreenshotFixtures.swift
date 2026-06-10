@@ -388,13 +388,3 @@ enum ScreenshotFixtures {
         }
     }
 }
-
-extension OCProject {
-    init(id: String, worktree: String?, vcsDir: String? = nil, vcs: String? = nil, time: OCProjectTime? = nil) {
-        self.id = id
-        self.worktree = worktree
-        self.vcsDir = vcsDir
-        self.vcs = vcs
-        self.time = time
-    }
-}

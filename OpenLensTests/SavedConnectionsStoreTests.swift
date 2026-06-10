@@ -119,4 +119,42 @@ struct SavedConnectionsStoreTests {
         #expect(restored.first?.selectedProjectDirectory == "/Users/me/project")
         #expect(restored.first?.lastConnectedAt == Date(timeIntervalSince1970: 15))
     }
+
+    @Test func remembersRecentProjectDirectoriesNewestFirst() throws {
+        let store = SavedConnectionsStore(initialConnections: [])
+        let connection = store.saveConnection(
+            serverURL: "http://192.168.1.50:4096",
+            username: "opencode",
+            password: ""
+        )
+
+        store.updateProjectSelection(connectionID: connection.id, directory: "/Users/me/Alpha")
+        store.updateProjectSelection(connectionID: connection.id, directory: "/Users/me/Beta")
+        store.updateProjectSelection(connectionID: connection.id, directory: "/Users/me/Alpha")
+
+        #expect(store.savedProjectSelection(connectionID: connection.id) == "/Users/me/Alpha")
+        #expect(store.recentProjectSelections(connectionID: connection.id) == [
+            "/Users/me/Alpha",
+            "/Users/me/Beta",
+        ])
+    }
+
+    @Test func publicSnapshotFallbackRestoresRecentProjectDirectories() {
+        let snapshots = [
+            SavedConnectionPublicSnapshot(connection: SavedConnection(
+                id: "workspace-history",
+                serverURL: "http://192.168.1.50:4096",
+                username: "opencode",
+                password: "secret",
+                selectedProjectDirectory: "/Users/me/Alpha",
+                recentProjectDirectories: ["/Users/me/Alpha", "/Users/me/Beta"],
+                lastConnectedAt: Date(timeIntervalSince1970: 10)
+            )),
+        ]
+
+        let restored = SavedConnectionsStore.mergeKeychainConnections([], withPublicSnapshots: snapshots)
+
+        #expect(restored.first?.selectedProjectDirectory == "/Users/me/Alpha")
+        #expect(restored.first?.recentProjectDirectories == ["/Users/me/Alpha", "/Users/me/Beta"])
+    }
 }
