@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.connection) private var connection
     @Environment(\.liveActivity) private var liveActivity
     @Environment(\.providersService) private var providersService
+    @Environment(\.requestReviewPrompt) private var requestReviewPrompt
     @Environment(\.savedConnections) private var savedConnections
 
     @State private var providers: [OCProvider] = []
@@ -274,6 +275,10 @@ struct SettingsView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    actionRow(icon: "star.bubble.fill", title: AppText.settingsSupportReviewCTA) {
+                        requestReviewPrompt()
+                    }
 
                     infoRow(label: AppText.settingsApp, value: appVersionBuild)
                 }

@@ -88,8 +88,6 @@ func shouldHandleConnectionAsFreshConnect(
 
 @main
 struct OpenLensApp: App {
-    @Environment(\.requestReview) private var requestReview
-
     private let screenshotModeEnabled: Bool
     @State private var connection: ConnectionManager
     
@@ -127,6 +125,7 @@ struct OpenLensApp: App {
     /// Alert shown when a deep link arrives while already connected.
     @State private var showDeepLinkSwitch: Bool = false
     @State private var reviewPromptTask: Task<Void, Never>?
+    @State private var showReviewPrePrompt = false
 
     private var startDebugPreviewAction: (() -> Void)? {
 #if DEBUG
@@ -247,6 +246,9 @@ struct OpenLensApp: App {
             .environment(\.sessionInsightsService, sessionInsightsService)
             .environment(\.recordedReplayStore, recordedReplayStore)
             .environment(\.chatEasterEgg, chatEasterEgg)
+            .environment(\.requestReviewPrompt, {
+                presentReviewPrePrompt()
+            })
             .sheet(isPresented: previewPresentationBinding) {
                 if let previewClient = previewChatClient, let previewConn = previewConnection {
                     NavigationStack {
@@ -269,6 +271,19 @@ struct OpenLensApp: App {
                         }
                     }
                 }
+            }
+            .sheet(isPresented: $showReviewPrePrompt) {
+                ReviewRequestSheet(
+                    onReview: {
+                        presentSystemReviewPrompt()
+                    },
+                    onNotNow: {
+                        showReviewPrePrompt = false
+                    }
+                )
+                .presentationDetents([.fraction(0.7)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Color.appBackground)
             }
             .onOpenURL { url in
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
@@ -412,13 +427,100 @@ struct OpenLensApp: App {
             guard !Task.isCancelled,
                   onboardingCompleted,
                   !screenshotModeEnabled,
-                  !isPreviewMode
+                  !isPreviewMode,
+                  !showReviewPrePrompt
             else {
                 return
             }
 
-            requestReview()
+            presentReviewPrePrompt()
             reviewPromptTask = nil
         }
+    }
+
+    private func presentReviewPrePrompt() {
+        guard !showReviewPrePrompt else { return }
+        showReviewPrePrompt = true
+    }
+
+    private func presentSystemReviewPrompt() {
+        showReviewPrePrompt = false
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard onboardingCompleted,
+                  !screenshotModeEnabled,
+                  !isPreviewMode
+            else {
+                return
+            }
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                AppStore.requestReview(in: windowScene)
+            }
+        }
+    }
+}
+
+private struct ReviewRequestSheet: View {
+    let onReview: () -> Void
+    let onNotNow: () -> Void
+
+    var body: some View {
+        VStack(spacing: 22) {
+            VStack(spacing: 16) {
+                Image("ReviewPanda")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 116, height: 116)
+                    .shadow(color: Color.appAccent.opacity(0.16), radius: 18, x: 0, y: 8)
+                    .accessibilityHidden(true)
+
+                Text(AppText.reviewRequestSubtitle)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(Color.appPrimary)
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 16)
+                
+                Text(AppText.reviewRequestBody)
+                    .font(.system(size: 15, design: .rounded))
+                    .foregroundStyle(Color.appPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+
+            Spacer()
+
+            VStack(spacing: 10) {
+                Button {
+                    onReview()
+                } label: {
+                    Label(AppText.reviewRequestPrimaryAction, systemImage: "star.bubble.fill")
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .foregroundStyle(Color.appOnAccent)
+                .tint(Color.appAccent)
+                .controlSize(.large)
+
+                Button {
+                    onNotNow()
+                } label: {
+                    Text(AppText.reviewRequestLater)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.appSecondary)
+                .padding(.vertical, 6)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.appBackground)
+        .accessibilityElement(children: .contain)
     }
 }

@@ -255,7 +255,7 @@ enum ScreenshotFixtures {
                 return nil
             }
 
-            return WorkspaceActivityDay(date: normalizedDate, sessionCount: count)
+            return WorkspaceActivityDay(date: normalizedDate, turnCount: count)
         }
         .sorted { $0.date < $1.date }
     }

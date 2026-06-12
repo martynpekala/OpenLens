@@ -83,6 +83,10 @@ private struct ChatEasterEggControllerKey: EnvironmentKey {
     static let defaultValue: ChatEasterEggController = ChatEasterEggController()
 }
 
+private struct ReviewPromptActionKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
 // MARK: - EnvironmentValues Extensions
 
 extension EnvironmentValues {
@@ -149,6 +153,11 @@ extension EnvironmentValues {
     var chatEasterEgg: ChatEasterEggController {
         get { self[ChatEasterEggControllerKey.self] }
         set { self[ChatEasterEggControllerKey.self] = newValue }
+    }
+
+    var requestReviewPrompt: () -> Void {
+        get { self[ReviewPromptActionKey.self] }
+        set { self[ReviewPromptActionKey.self] = newValue }
     }
 
 }
