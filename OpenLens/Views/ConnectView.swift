@@ -88,6 +88,19 @@ struct ConnectView: View {
             .scrollDismissesKeyboard(.interactively)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        startNearbyDiscovery()
+                    } label: {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
+                            .symbolEffect(.breathe, isActive: discovery.isSearching)
+                    }
+                    .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
+                    .accessibilityHint("Searches for nearby OpenCode servers on your local network")
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showOnboarding = true
@@ -135,7 +148,6 @@ struct ConnectView: View {
         .onAppear {
             guard !consumePendingDeepLinkIfNeeded() else { return }
             prefillFromMostRecentConnectionIfNeeded()
-            startNearbyDiscoveryIfNeeded()
         }
         .onDisappear {
             discovery.stopBrowsing()
@@ -781,8 +793,8 @@ struct ConnectView: View {
         startConnect(auto: isAutoReconnect)
     }
 
-    private func startNearbyDiscoveryIfNeeded() {
-        guard !discovery.isSearching, discovery.discoveredServers.isEmpty else { return }
+    private func startNearbyDiscovery() {
+        focusedManualField = nil
         discovery.startBrowsing()
     }
 
