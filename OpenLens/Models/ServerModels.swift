@@ -561,6 +561,8 @@ extension OCEvent {
              "message.part.removed",
              "message.removed",
              "permission.asked",
+             "permission.v2.asked",
+             "permission.v2.replied",
              "question.asked",
              "question.replied",
              "question.rejected":
@@ -889,9 +891,12 @@ struct OCPermissionToolRef: Codable, Sendable {
     let id: String
     let sessionID: String?
     let permission: String?
+    let action: String?
     let patterns: [String]
+    let resources: [String]
     let metadata: [String: AnyCodable]?
     let always: [String]
+    let save: [String]
     let toolRef: OCPermissionToolRef?
     let input: AnyCodable?
     let legacyDescription: String?
@@ -899,27 +904,30 @@ struct OCPermissionToolRef: Codable, Sendable {
     let legacyToolName: String?
 
     var title: String? {
-        legacyTitle?.nilIfBlank ?? permission?.nilIfBlank ?? legacyToolName?.nilIfBlank
+        legacyTitle?.nilIfBlank ?? permission?.nilIfBlank ?? action?.nilIfBlank ?? legacyToolName?.nilIfBlank
     }
 
     var description: String? {
         if let legacyDescription = legacyDescription?.nilIfBlank {
             return legacyDescription
         }
-        return patterns.first?.nilIfBlank
+        return patterns.first?.nilIfBlank ?? resources.first?.nilIfBlank
     }
 
     var toolDisplayName: String? {
-        legacyToolName?.nilIfBlank ?? permission?.nilIfBlank
+        legacyToolName?.nilIfBlank ?? permission?.nilIfBlank ?? action?.nilIfBlank
     }
 
     init(
         id: String,
         sessionID: String? = nil,
         permission: String? = nil,
+        action: String? = nil,
         patterns: [String] = [],
+        resources: [String] = [],
         metadata: [String: AnyCodable]? = nil,
         always: [String] = [],
+        save: [String] = [],
         toolRef: OCPermissionToolRef? = nil,
         input: AnyCodable? = nil,
         description: String? = nil,
@@ -929,9 +937,12 @@ struct OCPermissionToolRef: Codable, Sendable {
         self.id = id
         self.sessionID = sessionID
         self.permission = permission
+        self.action = action
         self.patterns = patterns
+        self.resources = resources
         self.metadata = metadata
         self.always = always
+        self.save = save
         self.toolRef = toolRef
         self.input = input
         self.legacyDescription = description
@@ -944,10 +955,14 @@ struct OCPermissionToolRef: Codable, Sendable {
         id = try container.decode(String.self, forKey: .id)
         sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
         permission = try container.decodeIfPresent(String.self, forKey: .permission)
+        action = try container.decodeIfPresent(String.self, forKey: .action)
         patterns = try container.decodeIfPresent([String].self, forKey: .patterns) ?? []
+        resources = try container.decodeIfPresent([String].self, forKey: .resources) ?? []
         metadata = try container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
         always = try container.decodeIfPresent([String].self, forKey: .always) ?? []
-        toolRef = try? container.decodeIfPresent(OCPermissionToolRef.self, forKey: .tool)
+        save = try container.decodeIfPresent([String].self, forKey: .save) ?? []
+        toolRef = (try? container.decodeIfPresent(OCPermissionToolRef.self, forKey: .tool))
+            ?? (try? container.decodeIfPresent(OCPermissionToolRef.self, forKey: .source))
         input = try container.decodeIfPresent(AnyCodable.self, forKey: .input)
         legacyDescription = try container.decodeIfPresent(String.self, forKey: .description)
         legacyTitle = try container.decodeIfPresent(String.self, forKey: .title)
@@ -959,9 +974,12 @@ struct OCPermissionToolRef: Codable, Sendable {
         try container.encode(id, forKey: .id)
         try container.encodeIfPresent(sessionID, forKey: .sessionID)
         try container.encodeIfPresent(permission, forKey: .permission)
+        try container.encodeIfPresent(action, forKey: .action)
         try container.encode(patterns, forKey: .patterns)
+        try container.encode(resources, forKey: .resources)
         try container.encodeIfPresent(metadata, forKey: .metadata)
         try container.encode(always, forKey: .always)
+        try container.encode(save, forKey: .save)
         try container.encodeIfPresent(toolRef, forKey: .tool)
         try container.encodeIfPresent(input, forKey: .input)
         try container.encodeIfPresent(legacyDescription, forKey: .description)
@@ -975,10 +993,14 @@ struct OCPermissionToolRef: Codable, Sendable {
         case id
         case sessionID
         case permission
+        case action
         case patterns
+        case resources
         case metadata
         case always
+        case save
         case tool
+        case source
         case input
         case description
         case title

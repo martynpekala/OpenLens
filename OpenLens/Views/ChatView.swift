@@ -111,6 +111,8 @@ struct ChatView: View {
             chatClient.setupSSEHandlers()
             await loadCommands(force: true)
             await chatClient.ensureSession()
+            await chatClient.recoverPendingPermission()
+            await chatClient.recoverPendingQuestions()
         }
 
         // Foreground recovery: refresh messages and questions when app becomes active

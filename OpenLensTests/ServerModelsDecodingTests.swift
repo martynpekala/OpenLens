@@ -112,6 +112,44 @@ struct ServerModelsDecodingTests {
         #expect(permission.metadata?["cwd"]?.value as? String == "/workspace")
     }
 
+    @Test func decodesCurrentPermissionV2Payload() throws {
+        let data = Data(
+            #"""
+            {
+              "id": "per_123",
+              "sessionID": "session_456",
+              "action": "mcp.github.list_issues",
+              "resources": ["github:list_issues"],
+              "save": ["github:*"],
+              "metadata": {
+                "server": "github",
+                "tool": "list_issues"
+              },
+              "source": {
+                "type": "tool",
+                "messageID": "message_1",
+                "callID": "call_1"
+              }
+            }
+            """#.utf8
+        )
+
+        let permission = try JSONDecoder().decode(OCPermissionRequest.self, from: data)
+
+        #expect(permission.id == "per_123")
+        #expect(permission.sessionID == "session_456")
+        #expect(permission.action == "mcp.github.list_issues")
+        #expect(permission.resources == ["github:list_issues"])
+        #expect(permission.save == ["github:*"])
+        #expect(permission.toolRef?.messageID == "message_1")
+        #expect(permission.toolRef?.callID == "call_1")
+        #expect(permission.title == "mcp.github.list_issues")
+        #expect(permission.description == "github:list_issues")
+        #expect(permission.toolDisplayName == "mcp.github.list_issues")
+        #expect(permission.metadata?["server"]?.value as? String == "github")
+        #expect(permission.metadata?["tool"]?.value as? String == "list_issues")
+    }
+
     @Test func decodesCurrentQuestionPayload() throws {
         let data = Data(
             #"""

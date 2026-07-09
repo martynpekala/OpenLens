@@ -95,7 +95,7 @@ final class SSEEventHandler {
         case "session.updated":
             handleSessionUpdated(event)
 
-        case "permission.asked":
+        case "permission.asked", "permission.v2.asked":
             handlePermissionAsked(event)
 
         case "question.asked":
@@ -417,7 +417,9 @@ final class SSEEventHandler {
                 id: id,
                 sessionID: props["sessionID"] as? String,
                 permission: props["permission"] as? String,
+                action: props["action"] as? String,
                 patterns: props["patterns"] as? [String] ?? [],
+                resources: props["resources"] as? [String] ?? [],
                 input: nil,
                 description: props["description"] as? String,
                 title: props["title"] as? String

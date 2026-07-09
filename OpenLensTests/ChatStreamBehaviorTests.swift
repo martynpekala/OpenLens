@@ -377,6 +377,42 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func permissionV2AskedShowsPendingPermissionAlert() {
+        let delegate = SSEDelegateSpy()
+        let handler = makeHandler(delegate: delegate)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "permission.v2.asked",
+                properties: AnyCodable([
+                    "id": "per_123",
+                    "sessionID": "session-1",
+                    "action": "mcp.github.list_issues",
+                    "resources": ["github:list_issues"],
+                    "save": ["github:*"],
+                    "metadata": [
+                        "server": "github",
+                        "tool": "list_issues"
+                    ],
+                    "source": [
+                        "type": "tool",
+                        "messageID": "message-1",
+                        "callID": "call-1"
+                    ]
+                ])
+            )
+        )
+
+        #expect(delegate.showPermissionAlert)
+        #expect(delegate.pendingPermission?.id == "per_123")
+        #expect(delegate.pendingPermission?.action == "mcp.github.list_issues")
+        #expect(delegate.pendingPermission?.resources == ["github:list_issues"])
+        #expect(delegate.pendingPermission?.save == ["github:*"])
+        #expect(delegate.pendingPermission?.toolRef?.messageID == "message-1")
+        #expect(delegate.pendingPermission?.toolRef?.callID == "call-1")
+    }
+
+    @MainActor
     @Test(arguments: ["file", "patch", "retry", "compaction", "agent", "subtask"])
     func partUpdatedPreservesKnownNonRenderableParts(_ rawType: String) {
         let delegate = SSEDelegateSpy()
