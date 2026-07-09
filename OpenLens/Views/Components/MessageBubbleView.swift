@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Chat message bubble view, styled differently for user vs assistant messages.
 ///
@@ -20,6 +21,48 @@ struct MessageBubbleView: View {
         message.role == .assistant
     }
 
+    private var copyableText: String? {
+        switch message.role {
+        case .user:
+            return message.content.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        case .assistant:
+            return assistantCopyableText.nilIfBlank
+        }
+    }
+
+    private var assistantCopyableText: String {
+        var lines: [String] = []
+
+        for segment in message.assistantSegments {
+            switch segment.kind {
+            case .text(let text):
+                appendCopyable(text, to: &lines)
+            case .reasoning(let text):
+                if showThinking {
+                    appendCopyable(text, to: &lines)
+                }
+            case .tool(let step):
+                appendCopyable(toolTranscriptLine(step), to: &lines)
+                if let output = transcriptOutput(for: step) {
+                    appendCopyable(output, to: &lines)
+                }
+            }
+        }
+
+        if message.isStreaming,
+           !message.hasRenderableTextPart,
+           let text = message.content.nilIfBlank {
+            appendCopyable(text, to: &lines)
+        }
+
+        if lines.isEmpty,
+           let text = message.content.nilIfBlank {
+            appendCopyable(text, to: &lines)
+        }
+
+        return lines.joined(separator: "\n\n")
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: isRetroChat ? 6 : 8) {
             if message.role == .user {
@@ -30,6 +73,7 @@ struct MessageBubbleView: View {
                 Spacer(minLength: isRetroChat ? 24 : 32)
             }
         }
+        .messageCopyActions(text: copyableText)
         .onAppear {
             if message.isStreaming {
                 preparedMarkdownText = nil
@@ -308,6 +352,12 @@ struct MessageBubbleView: View {
         guard collapsed.count > 140 else { return collapsed }
         return String(collapsed.prefix(140)) + "..."
     }
+
+    private func appendCopyable(_ text: String, to lines: inout [String]) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        lines.append(normalized)
+    }
 }
 
 private struct AssistantTranscriptShadow: ViewModifier {
@@ -319,5 +369,37 @@ private struct AssistantTranscriptShadow: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+private struct MessageCopyActions: ViewModifier {
+    let text: String?
+
+    private var normalizedText: String? {
+        text?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfBlank
+    }
+
+    func body(content: Content) -> some View {
+        if let normalizedText {
+            content
+                .textSelection(.enabled)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = normalizedText
+                    } label: {
+                        Label(AppText.copyMessage, systemImage: "doc.on.doc")
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func messageCopyActions(text: String?) -> some View {
+        modifier(MessageCopyActions(text: text))
     }
 }

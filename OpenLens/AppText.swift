@@ -22,6 +22,7 @@ enum AppText {
     static let connectingSubtitle = "Establishing connection to the server"
     static let connectionSection = "Connection"
     static let copyCode = "Copy Code"
+    static let copyMessage = "Copy Message"
     static let captureBrowserEmptySubtitle = "Start recording in a live chat, then return here to replay the saved turn."
     static let captureBrowserEmptyTitle = "No Captures"
     static let captureBrowserErrorTitle = "Couldn't Load Captures"
