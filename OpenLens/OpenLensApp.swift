@@ -193,6 +193,12 @@ struct OpenLensApp: App {
             demoClient.selectedProviderID = ScreenshotFixtures.providersResult.defaultProviderID ?? "anthropic"
             demoClient.selectedModelID = ScreenshotFixtures.providersResult.defaultModelID ?? "claude-sonnet-4-20250514"
             demoClient.selectedVariant = "high"
+            if ScreenshotFixtures.opensPermissionSheet {
+                let session = ScreenshotFixtures.defaultSession
+                demoClient.currentSession = session
+                demoClient.pendingPermission = ScreenshotFixtures.inboxSnapshot.permissions.first
+                demoClient.showPermissionAlert = demoClient.pendingPermission != nil
+            }
             self._chatClient = State(initialValue: demoClient)
         } else {
             self._chatClient = State(initialValue: ChatClient(
@@ -218,6 +224,9 @@ struct OpenLensApp: App {
                     ConnectedRootView(chatClient: chatClient)
                         .environment(\.connection, connection)
                         .environment(router)
+                        .task {
+                            openScreenshotPermissionSheetIfNeeded()
+                        }
                         .transition(.opacity)
                 } else {
                     ConnectView(
@@ -364,6 +373,17 @@ struct OpenLensApp: App {
         activePreviewSource = nil
         previewChatClient = nil
         previewConnection = nil
+    }
+
+    private func openScreenshotPermissionSheetIfNeeded() {
+        guard screenshotModeEnabled,
+              ScreenshotFixtures.opensPermissionSheet,
+              router.chatPath.isEmpty else {
+            return
+        }
+
+        router.selectedTab = .chat
+        router.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
     }
 
     private var previewPresentationBinding: Binding<Bool> {

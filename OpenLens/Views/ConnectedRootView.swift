@@ -8,6 +8,7 @@ struct ConnectedRootView: View {
     @Bindable var chatClient: ChatClient
 
     @Environment(AppRouter.self) private var router
+    @State private var permissionSheetDetent = PermissionRequestSheet.defaultPresentationDetent
 
     var body: some View {
         @Bindable var router = router
@@ -35,6 +36,34 @@ struct ConnectedRootView: View {
             }
         }
         .tint(Color.appPrimary)
+        .sheet(item: permissionSheetBinding) { permission in
+            PermissionRequestSheet(
+                permission: permission,
+                selectedDetent: $permissionSheetDetent,
+                initiallyConfirmsAllowAll: ScreenshotFixtures.opensPermissionAllowAllConfirmation
+            ) { reply in
+                await chatClient.respondToPermission(requestID: permission.id, reply: reply)
+            }
+            .id(permission.id)
+            .presentationDetents(
+                PermissionRequestSheet.presentationDetents(for: permission),
+                selection: $permissionSheetDetent
+            )
+            .presentationBackground(Color.appBackground)
+            .presentationCornerRadius(32)
+            .presentationContentInteraction(.resizes)
+            .presentationDragIndicator(.visible)
+            .interactiveDismissDisabled()
+        }
+        .onChange(of: chatClient.pendingPermission?.id) { _, _ in
+            permissionSheetDetent = PermissionRequestSheet.defaultPresentationDetent
+        }
+        .task {
+            await chatClient.recoverPendingPermission()
+        }
+        .task(id: chatClient.isLoading) {
+            await recoverPendingPermissionsWhileLoading()
+        }
     }
 
     private func tabLabel(for tab: AppTab, selectedTab: AppTab) -> some View {
@@ -47,6 +76,27 @@ struct ConnectedRootView: View {
             selectedTab: router.selectedTab,
             chatPath: router.chatPath
         ) ? .hidden : .visible
+    }
+
+    private var permissionSheetBinding: Binding<OCPermissionRequest?> {
+        Binding(
+            get: {
+                chatClient.showPermissionAlert ? chatClient.pendingPermission : nil
+            },
+            set: { permission in
+                chatClient.pendingPermission = permission
+                chatClient.showPermissionAlert = permission != nil
+            }
+        )
+    }
+
+    private func recoverPendingPermissionsWhileLoading() async {
+        guard chatClient.isLoading else { return }
+
+        while !Task.isCancelled, chatClient.isLoading {
+            await chatClient.recoverPendingPermission()
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
     }
 
     private func tabNavigationView(for tab: AppTab) -> some View {

@@ -224,9 +224,9 @@ actor OpenCodeClient {
         try await get("/permission")
     }
 
-    func replyToPermission(requestID: String, reply: String) async throws -> Bool {
+    func replyToPermission(requestID: String, reply: OCPermissionReply) async throws -> Bool {
         try await post("/permission/\(requestID)/reply", body: [
-            "reply": reply,
+            "reply": reply.rawValue,
         ] as [String: Any])
     }
 

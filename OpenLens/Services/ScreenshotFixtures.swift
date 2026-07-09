@@ -4,10 +4,14 @@ enum ScreenshotFixtures {
     static let launchArgument = "SCREENSHOT_MODE"
     static let tabArgumentPrefix = "SCREENSHOT_TAB="
     static let chatSessionArgument = "SCREENSHOT_CHAT_SESSION"
+    static let permissionSheetArgument = "SCREENSHOT_PERMISSION_SHEET"
+    static let permissionAllowAllConfirmationArgument = "SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let settingsSectionArgumentPrefix = "SCREENSHOT_SETTINGS_SECTION="
     static let environmentKey = "OPENLENS_SCREENSHOT_MODE"
     static let tabEnvironmentKey = "OPENLENS_SCREENSHOT_TAB"
     static let chatSessionEnvironmentKey = "OPENLENS_SCREENSHOT_CHAT_SESSION"
+    static let permissionSheetEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_SHEET"
+    static let permissionAllowAllConfirmationEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let settingsSectionEnvironmentKey = "OPENLENS_SCREENSHOT_SETTINGS_SECTION"
 
     static var isEnabled: Bool {
@@ -33,6 +37,17 @@ enum ScreenshotFixtures {
     static var opensDefaultChatSession: Bool {
         let processInfo = ProcessInfo.processInfo
         return processInfo.arguments.contains(chatSessionArgument) || processInfo.environment[chatSessionEnvironmentKey] == "1"
+    }
+
+    static var opensPermissionSheet: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains(permissionSheetArgument) || processInfo.environment[permissionSheetEnvironmentKey] == "1"
+    }
+
+    static var opensPermissionAllowAllConfirmation: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains(permissionAllowAllConfirmationArgument)
+            || processInfo.environment[permissionAllowAllConfirmationEnvironmentKey] == "1"
     }
 
     static var settingsSection: String? {
@@ -158,7 +173,7 @@ enum ScreenshotFixtures {
                 sessionID: defaultSessionID,
                 permission: "bash",
                 patterns: ["git push origin feature/app-store-assets"],
-                always: [],
+                always: ["*"],
                 description: "Push the screenshot branch to origin.",
                 title: "Permission required",
                 toolName: "bash"

@@ -4,6 +4,8 @@ enum AppText {
     static let activityEmpty = "No activity recorded yet."
     static let activityThinking = "Thinking"
     static let activityTitle = "Agent Activity"
+    static let allowAll = "Allow all"
+    static let allowOnce = "Allow once"
     static let approve = "Approve"
     static let appearance = "Appearance"
     static let appearanceSubtitle = "Choose the app look"

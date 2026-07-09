@@ -403,7 +403,8 @@ final class SSEEventHandler {
 
         // Chat should only interrupt the currently opened session.
         if let sessionID = props["sessionID"] as? String,
-           sessionID != delegate.currentSessionID {
+           let currentSessionID = delegate.currentSessionID,
+           sessionID != currentSessionID {
             return
         }
 

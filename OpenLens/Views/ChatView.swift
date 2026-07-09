@@ -158,24 +158,6 @@ struct ChatView: View {
                     .presentationDragIndicator(.visible)
             }
         }
-        .alert(
-            AppText.permissionRequired,
-            isPresented: $chatClient.showPermissionAlert,
-            presenting: chatClient.pendingPermission
-        ) { permission in
-            Button(AppText.approve, role: .none) {
-                Task {
-                    await chatClient.respondToPermission(requestID: permission.id, approve: true)
-                }
-            }
-            Button(AppText.deny, role: .destructive) {
-                Task {
-                    await chatClient.respondToPermission(requestID: permission.id, approve: false)
-                }
-            }
-        } message: { permission in
-            Text(permissionMessage(permission))
-        }
         .sheet(isPresented: $chatClient.showQuestionSheet, onDismiss: {
             // Handle swipe-dismiss: reject the question and clear state.
             if chatClient.pendingQuestion != nil {
@@ -951,21 +933,484 @@ struct ChatView: View {
         }
     }
 
-    private func permissionMessage(_ permission: OCPermissionRequest) -> String {
-        var parts: [String] = []
-        if let title = permission.title, !title.isEmpty {
-            parts.append(title)
+}
+
+struct PermissionRequestSheet: View {
+    static let defaultPresentationDetent: PresentationDetent = .height(390)
+
+    let permission: OCPermissionRequest
+    @Binding var selectedDetent: PresentationDetent
+    private let initiallyConfirmsAllowAll: Bool
+    let onRespond: (OCPermissionReply) async -> Bool
+
+    @State private var pendingReply: OCPermissionReply?
+    @State private var confirmsAllowAll: Bool
+
+    init(
+        permission: OCPermissionRequest,
+        selectedDetent: Binding<PresentationDetent>,
+        initiallyConfirmsAllowAll: Bool = false,
+        onRespond: @escaping (OCPermissionReply) async -> Bool
+    ) {
+        self.permission = permission
+        self._selectedDetent = selectedDetent
+        self.initiallyConfirmsAllowAll = initiallyConfirmsAllowAll
+        self.onRespond = onRespond
+        self._confirmsAllowAll = State(initialValue: initiallyConfirmsAllowAll)
+    }
+
+    static func presentationDetents(for permission: OCPermissionRequest) -> Set<PresentationDetent> {
+        [
+            defaultPresentationDetent,
+            .height(allowAllPresentationHeight(for: permission)),
+            .medium
+        ]
+    }
+
+    private static func allowAllPresentationHeight(for permission: OCPermissionRequest) -> CGFloat {
+        let visiblePatternCount = min(allowAllPatterns(for: permission).count, 4)
+        let usesWildcardScope = allowAllPatterns(for: permission).contains("*")
+        let patternListHeight: CGFloat = visiblePatternCount == 0
+            ? 0
+            : CGFloat(visiblePatternCount) * 41 + 24
+
+        let baseHeight: CGFloat = usesWildcardScope ? 492 : 360
+        return min(max(baseHeight + patternListHeight, usesWildcardScope ? 540 : 430), 620)
+    }
+
+    private static func allowAllDetent(for permission: OCPermissionRequest) -> PresentationDetent {
+        .height(allowAllPresentationHeight(for: permission))
+    }
+
+    private static func allowAllPatterns(for permission: OCPermissionRequest) -> [String] {
+        let candidates = [
+            permission.save,
+            permission.always,
+            permission.resources,
+            permission.patterns
+        ]
+
+        return candidates
+            .first(where: { !$0.cleanedForDisplay.isEmpty })?
+            .cleanedForDisplay ?? []
+    }
+
+    private var isResponding: Bool {
+        pendingReply != nil
+    }
+
+    private var title: String {
+        permission.title?.nilIfBlank ?? AppText.permissionRequired
+    }
+
+    private var detail: String {
+        permission.description?.nilIfBlank ?? AppText.permissionFallback
+    }
+
+    private var toolName: String? {
+        guard let tool = permission.toolDisplayName?.nilIfBlank, tool != title else { return nil }
+        return tool
+    }
+
+    private var resourceSummary: String? {
+        compactList(permission.resources, fallback: permission.patterns)
+    }
+
+    private var allowAllPatterns: [String] {
+        Self.allowAllPatterns(for: permission)
+    }
+
+    private var hasWildcardAllowAllScope: Bool {
+        allowAllPatterns.contains("*")
+    }
+
+    private var rawAllowAllPermissionKind: String? {
+        toolName ?? permission.permission?.nilIfBlank ?? permission.action?.nilIfBlank
+    }
+
+    private var allowAllPermissionKind: String? {
+        rawAllowAllPermissionKind.map { rawKind in
+            let keepsOriginalCasing = rawKind.contains(" ") || rawKind.rangeOfCharacter(from: .uppercaseLetters) != nil
+            return keepsOriginalCasing ? rawKind : rawKind.capitalized
         }
-        if let tool = permission.toolDisplayName, !tool.isEmpty {
-            parts.append("Tool: \(tool)")
+    }
+
+    private var allowAllScopeTitle: String {
+        if hasWildcardAllowAllScope {
+            if let allowAllPermissionKind {
+                return "Every future \(allowAllPermissionKind) permission prompt"
+            }
+            return "Every future permission prompt of this type"
         }
-        if let desc = permission.description, !desc.isEmpty {
-            parts.append(desc)
+
+        if allowAllPatterns.isEmpty {
+            return "Future matching permission requests"
         }
-        if parts.isEmpty {
-            return AppText.permissionFallback
+
+        return "Only requests matching these rules"
+    }
+
+    private var allowAllScopeDetail: String {
+        if hasWildcardAllowAllScope {
+            if let allowAllPermissionKind {
+                return "OpenCode sent a wildcard rule. Future \(allowAllPermissionKind) permission prompts can be approved automatically until OpenCode is restarted."
+            }
+            return "OpenCode sent a wildcard rule. Future prompts of this type can be approved automatically until OpenCode is restarted."
         }
-        return parts.joined(separator: "\n")
+
+        return "OpenLens will auto-approve future permission prompts only when they match this scope, until OpenCode is restarted."
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SurfaceCard(padding: 0, cornerRadius: 24) {
+                VStack(alignment: .leading, spacing: 18) {
+                    if confirmsAllowAll {
+                        allowAllConfirmation
+                    } else {
+                        permissionRequest
+                    }
+                }
+                .padding(20)
+                .animation(.snappy(duration: 0.2), value: confirmsAllowAll)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 8)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.appBackground)
+        .onAppear {
+            if initiallyConfirmsAllowAll {
+                selectedDetent = Self.allowAllDetent(for: permission)
+            }
+        }
+    }
+
+    private var permissionRequest: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+
+            if detail != title {
+                Text(detail)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.appSecondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            metadata
+            actions
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            SurfaceIconTile(
+                icon: "lock.shield",
+                fill: Color.appWarning.opacity(0.14),
+                foreground: Color.appWarning
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Permission")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.appWarning)
+                    .textCase(.uppercase)
+
+                Text(title)
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.appPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var allowAllConfirmation: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 12) {
+                SurfaceIconTile(
+                    icon: "checkmark.shield",
+                    fill: Color.appWarning.opacity(0.14),
+                    foreground: Color.appWarning
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Always Allow")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.appWarning)
+                        .textCase(.uppercase)
+
+                    Text(AppText.allowAll)
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                }
+            }
+
+            Text(allowAllExplanation)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.appSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            allowAllScopeCard
+
+            HStack(spacing: 10) {
+                permissionControlButton(
+                    title: AppText.cancel,
+                    systemImage: "chevron.left",
+                    fill: Color.appTertiary,
+                    foreground: Color.appPrimary
+                ) {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        confirmsAllowAll = false
+                        selectedDetent = Self.defaultPresentationDetent
+                    }
+                }
+
+                permissionReplyButton(
+                    title: AppText.allowAll,
+                    systemImage: "checkmark.shield",
+                    fill: Color.appWarning,
+                    foreground: Color.appBackground,
+                    reply: .always
+                )
+            }
+        }
+    }
+
+    private var allowAllExplanation: String {
+        if hasWildcardAllowAllScope {
+            return "Use this only if you trust this agent to continue with this kind of action without asking again."
+        }
+        return "This keeps the current run moving without approving unrelated future actions."
+    }
+
+    private var allowAllScopeCard: some View {
+        VStack(spacing: 0) {
+            allowAllScopeRow(
+                icon: hasWildcardAllowAllScope ? "exclamationmark.triangle" : "scope",
+                title: allowAllScopeTitle,
+                detail: allowAllScopeDetail,
+                emphasis: hasWildcardAllowAllScope
+            )
+
+            if hasWildcardAllowAllScope {
+                SurfaceDivider(leadingPadding: 28)
+                allowAllScopeRow(
+                    icon: "asterisk",
+                    title: "Wildcard rule from OpenCode",
+                    detail: "The raw rule is *, meaning all future prompts of this same type.",
+                    emphasis: false
+                )
+            } else {
+                ForEach(Array(allowAllPatterns.prefix(4).enumerated()), id: \.offset) { index, pattern in
+                    SurfaceDivider(leadingPadding: 28)
+                    allowAllScopeRow(
+                        icon: "scope",
+                        title: pattern,
+                        detail: nil,
+                        emphasis: false
+                    )
+
+                    if index == 3, allowAllPatterns.count > 4 {
+                        SurfaceDivider(leadingPadding: 28)
+                        allowAllScopeRow(
+                            icon: "ellipsis",
+                            title: "\(allowAllPatterns.count - 4) more matching rules",
+                            detail: nil,
+                            emphasis: false
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .background(Color.appTertiary.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func allowAllScopeRow(icon: String, title: String, detail: String?, emphasis: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(emphasis ? Color.appWarning : Color.appSecondary)
+                .frame(width: 18)
+                .padding(.top, detail == nil ? 0 : 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.appPrimary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.appSecondary)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var metadata: some View {
+        let rows = metadataRows
+
+        if !rows.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    HStack(spacing: 10) {
+                        Image(systemName: row.icon)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.appSecondary)
+                            .frame(width: 18)
+
+                        Text(row.value)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.appPrimary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.vertical, 10)
+
+                    if index < rows.count - 1 {
+                        SurfaceDivider(leadingPadding: 28)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(Color.appTertiary.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    private var metadataRows: [(icon: String, value: String)] {
+        var rows: [(icon: String, value: String)] = []
+
+        if let toolName {
+            rows.append((icon: "wrench.and.screwdriver", value: toolName))
+        }
+
+        if let resourceSummary, resourceSummary != detail {
+            rows.append((icon: "scope", value: resourceSummary))
+        }
+
+        return rows
+    }
+
+    private var actions: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                permissionReplyButton(
+                    title: AppText.deny,
+                    systemImage: "xmark",
+                    fill: Color.appTertiary,
+                    foreground: Color.appPrimary,
+                    reply: .reject
+                )
+
+                permissionReplyButton(
+                    title: AppText.allowOnce,
+                    systemImage: "checkmark",
+                    fill: Color.appAccent,
+                    foreground: Color.appOnAccent,
+                    reply: .once
+                )
+            }
+
+            permissionControlButton(
+                title: AppText.allowAll,
+                systemImage: "checkmark.shield",
+                fill: Color.appWarning.opacity(0.14),
+                foreground: Color.appWarning
+            ) {
+                withAnimation(.snappy(duration: 0.2)) {
+                    confirmsAllowAll = true
+                    selectedDetent = Self.allowAllDetent(for: permission)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func permissionReplyButton(
+        title: String,
+        systemImage: String,
+        fill: Color,
+        foreground: Color,
+        reply: OCPermissionReply
+    ) -> some View {
+        permissionControlButton(
+            title: title,
+            systemImage: systemImage,
+            fill: fill,
+            foreground: foreground,
+            isLoading: pendingReply == reply
+        ) {
+            Task {
+                pendingReply = reply
+                let didMovePastCurrentRequest = await onRespond(reply)
+                if !didMovePastCurrentRequest {
+                    pendingReply = nil
+                }
+            }
+        }
+    }
+
+    private func permissionControlButton(
+        title: String,
+        systemImage: String,
+        fill: Color,
+        foreground: Color,
+        isLoading: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            action()
+        } label: {
+            HStack(spacing: 7) {
+                if isLoading {
+                    ProgressView()
+                        .tint(foreground)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .bold))
+                }
+
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(foreground)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(fill, in: Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isResponding)
+    }
+
+    private func compactList(_ values: [String], fallback: [String]) -> String? {
+        let visibleValues = (values.isEmpty ? fallback : values)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !visibleValues.isEmpty else { return nil }
+
+        let visiblePrefix = visibleValues.prefix(3).joined(separator: ", ")
+        let hiddenCount = visibleValues.count - 3
+
+        guard hiddenCount > 0 else { return visiblePrefix }
+        return "\(visiblePrefix) +\(hiddenCount)"
+    }
+}
+
+private extension Array where Element == String {
+    var cleanedForDisplay: [String] {
+        map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }
 

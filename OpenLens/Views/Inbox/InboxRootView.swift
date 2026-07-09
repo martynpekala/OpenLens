@@ -141,14 +141,19 @@ struct InboxRootView: View {
                             }
 
                             HStack(spacing: 10) {
-                                actionButton(title: "Approve", fill: Color.appAccent, foreground: Color.appOnAccent) {
+                                actionButton(title: AppText.deny, fill: Color.appTertiary, foreground: Color.appPrimary) {
                                     Task {
-                                        await respondToPermission(permission, approve: true)
+                                        await respondToPermission(permission, reply: .reject)
                                     }
                                 }
-                                actionButton(title: "Deny", fill: Color.appTertiary, foreground: Color.appPrimary) {
+                                actionButton(title: AppText.allowOnce, fill: Color.appAccent, foreground: Color.appOnAccent) {
                                     Task {
-                                        await respondToPermission(permission, approve: false)
+                                        await respondToPermission(permission, reply: .once)
+                                    }
+                                }
+                                actionButton(title: AppText.allowAll, fill: Color.appWarning.opacity(0.14), foreground: Color.appWarning) {
+                                    Task {
+                                        await respondToPermission(permission, reply: .always)
                                     }
                                 }
                             }
@@ -307,9 +312,9 @@ struct InboxRootView: View {
         }
     }
 
-    private func respondToPermission(_ permission: OCPermissionRequest, approve: Bool) async {
+    private func respondToPermission(_ permission: OCPermissionRequest, reply: OCPermissionReply) async {
         do {
-            try await inboxService.respondToPermission(requestID: permission.id, approve: approve)
+            try await inboxService.respondToPermission(requestID: permission.id, reply: reply)
             if chatClient.pendingPermission?.id == permission.id {
                 chatClient.pendingPermission = nil
                 chatClient.showPermissionAlert = false
@@ -348,4 +353,3 @@ struct InboxRootView: View {
         }
     }
 }
-

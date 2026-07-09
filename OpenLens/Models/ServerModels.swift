@@ -887,7 +887,13 @@ struct OCPermissionToolRef: Codable, Sendable {
     let callID: String
 }
 
- struct OCPermissionRequest: Codable, Identifiable, Sendable {
+enum OCPermissionReply: String, Codable, Sendable {
+    case once
+    case always
+    case reject
+}
+
+struct OCPermissionRequest: Codable, Identifiable, Sendable {
     let id: String
     let sessionID: String?
     let permission: String?

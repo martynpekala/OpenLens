@@ -1296,16 +1296,19 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     // MARK: - Permission Response
 
-    func respondToPermission(requestID: String, approve: Bool) async {
+    @discardableResult
+    func respondToPermission(requestID: String, reply: OCPermissionReply) async -> Bool {
         guard let questionService else {
             errorMessage = "Failed to respond to permission: Not connected."
-            return
+            return false
         }
+
+        let recoverySessionID = pendingPermission?.sessionID ?? currentSession?.id
 
         do {
             try await questionService.respondToPermission(
                 requestID: requestID,
-                approve: approve
+                reply: reply
             )
 
             if pendingPermission?.id == requestID {
@@ -1313,15 +1316,19 @@ final class ChatClient: SSEEventHandlerDelegate {
                 showPermissionAlert = false
             }
 
-            await recoverPendingPermission()
+            await recoverPendingPermission(sessionID: recoverySessionID)
+            return pendingPermission?.id != requestID
         } catch {
             errorMessage = "Failed to respond to permission: \(error.localizedDescription)"
+            return false
         }
     }
 
     /// Recover any pending permission from the server for the current session.
-    func recoverPendingPermission() async {
-        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return }
+    func recoverPendingPermission(sessionID preferredSessionID: String? = nil) async {
+        guard !isOfflinePreviewMode else { return }
+
+        let sessionID = preferredSessionID ?? currentSession?.id
 
         do {
             let permission = try await questionService?.recoverPendingPermission(sessionID: sessionID)
@@ -1329,7 +1336,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             if let permission {
                 pendingPermission = permission
                 showPermissionAlert = true
-            } else if pendingPermission?.sessionID == sessionID {
+            } else if sessionID == nil || pendingPermission?.sessionID == sessionID {
                 pendingPermission = nil
                 showPermissionAlert = false
             }

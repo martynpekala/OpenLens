@@ -413,6 +413,62 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func permissionAskedShowsAlertWhenCurrentSessionIsNotLoadedYet() {
+        let delegate = SSEDelegateSpy()
+        delegate.currentSessionID = nil
+        let handler = makeHandler(delegate: delegate)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "permission.v2.asked",
+                properties: AnyCodable([
+                    "id": "per_early",
+                    "sessionID": "session-1",
+                    "action": "mcp.github.list_issues",
+                    "resources": ["github:list_issues"]
+                ])
+            )
+        )
+
+        #expect(delegate.showPermissionAlert)
+        #expect(delegate.pendingPermission?.id == "per_early")
+    }
+
+    @MainActor
+    @Test func subsequentPermissionAskedReplacesCurrentPendingPermission() {
+        let delegate = SSEDelegateSpy()
+        let handler = makeHandler(delegate: delegate)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "permission.v2.asked",
+                properties: AnyCodable([
+                    "id": "per_first",
+                    "sessionID": "session-1",
+                    "action": "mcp.github.list_issues",
+                    "resources": ["github:list_issues"]
+                ])
+            )
+        )
+
+        handler.handleEvent(
+            OCEvent(
+                type: "permission.v2.asked",
+                properties: AnyCodable([
+                    "id": "per_second",
+                    "sessionID": "session-1",
+                    "action": "mcp.github.create_issue",
+                    "resources": ["github:create_issue"]
+                ])
+            )
+        )
+
+        #expect(delegate.showPermissionAlert)
+        #expect(delegate.pendingPermission?.id == "per_second")
+        #expect(delegate.pendingPermission?.action == "mcp.github.create_issue")
+    }
+
+    @MainActor
     @Test(arguments: ["file", "patch", "retry", "compaction", "agent", "subtask"])
     func partUpdatedPreservesKnownNonRenderableParts(_ rawType: String) {
         let delegate = SSEDelegateSpy()
