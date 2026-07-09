@@ -72,4 +72,113 @@ struct ChatClientPreviewModeTests {
         #expect(hasLongResponse)
         #expect(hasRapidDeltaCadence)
     }
+
+    @Test func resolveDefaultModelSelectionPrefersSavedDefaultWhenAvailable() {
+        let models = [
+            ChatClient.SelectableModel(
+                providerID: "anthropic",
+                providerName: "Anthropic",
+                modelID: "claude-sonnet-4-20250514",
+                modelName: "Claude Sonnet 4",
+                reasoning: true,
+                attachment: true,
+                toolCall: true,
+                cost: nil,
+                limit: nil,
+                variants: []
+            ),
+            ChatClient.SelectableModel(
+                providerID: "openai",
+                providerName: "OpenAI",
+                modelID: "gpt-5",
+                modelName: "GPT-5",
+                reasoning: true,
+                attachment: true,
+                toolCall: true,
+                cost: nil,
+                limit: nil,
+                variants: []
+            )
+        ]
+
+        let selection = ChatClient.resolveDefaultModelSelection(
+            savedDefault: (providerID: "anthropic", modelID: "claude-sonnet-4-20250514"),
+            serverDefault: (providerID: "openai", modelID: "gpt-5"),
+            configDefault: nil,
+            availableModels: models
+        )
+
+        #expect(selection.providerID == "anthropic")
+        #expect(selection.modelID == "claude-sonnet-4-20250514")
+        #expect(selection.unavailableDefaultModelID == nil)
+    }
+
+    @Test func resolveDefaultModelSelectionFallsBackFromUnavailableSavedDefault() {
+        let models = [
+            ChatClient.SelectableModel(
+                providerID: "openai",
+                providerName: "OpenAI",
+                modelID: "gpt-5",
+                modelName: "GPT-5",
+                reasoning: true,
+                attachment: true,
+                toolCall: true,
+                cost: nil,
+                limit: nil,
+                variants: []
+            )
+        ]
+
+        let selection = ChatClient.resolveDefaultModelSelection(
+            savedDefault: (providerID: "anthropic", modelID: "claude-sonnet-4-20250514"),
+            serverDefault: (providerID: "openai", modelID: "gpt-5"),
+            configDefault: nil,
+            availableModels: models
+        )
+
+        #expect(selection.providerID == "openai")
+        #expect(selection.modelID == "gpt-5")
+        #expect(selection.unavailableDefaultModelID == "claude-sonnet-4-20250514")
+    }
+
+    @Test func resolveDefaultModelSelectionFallsBackToConfigDefault() {
+        let models = [
+            ChatClient.SelectableModel(
+                providerID: "anthropic",
+                providerName: "Anthropic",
+                modelID: "claude-sonnet-4-20250514",
+                modelName: "Claude Sonnet 4",
+                reasoning: true,
+                attachment: true,
+                toolCall: true,
+                cost: nil,
+                limit: nil,
+                variants: []
+            )
+        ]
+
+        let selection = ChatClient.resolveDefaultModelSelection(
+            savedDefault: nil,
+            serverDefault: nil,
+            configDefault: (providerID: "anthropic", modelID: "claude-sonnet-4-20250514"),
+            availableModels: models
+        )
+
+        #expect(selection.providerID == "anthropic")
+        #expect(selection.modelID == "claude-sonnet-4-20250514")
+        #expect(selection.unavailableDefaultModelID == nil)
+    }
+
+    @Test func resolveDefaultModelSelectionReturnsUnavailableSignalWithoutFallback() {
+        let selection = ChatClient.resolveDefaultModelSelection(
+            savedDefault: (providerID: "anthropic", modelID: "claude-sonnet-4-20250514"),
+            serverDefault: nil,
+            configDefault: nil,
+            availableModels: []
+        )
+
+        #expect(selection.providerID == nil)
+        #expect(selection.modelID == nil)
+        #expect(selection.unavailableDefaultModelID == "claude-sonnet-4-20250514")
+    }
 }

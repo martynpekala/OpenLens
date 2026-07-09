@@ -6,7 +6,9 @@ struct ModelPickerView: View {
     let selectedModelID: String
     let isLoading: Bool
     let visualMode: ChatVisualMode
+    let defaultModelSelection: (providerID: String, modelID: String)?
     var onSelect: (ChatClient.SelectableModel) -> Void
+    var onToggleDefault: (ChatClient.SelectableModel) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -18,14 +20,18 @@ struct ModelPickerView: View {
         selectedProviderID: String,
         selectedModelID: String,
         isLoading: Bool,
+        defaultModelSelection: (providerID: String, modelID: String)? = nil,
         visualMode: ChatVisualMode = .standard,
-        onSelect: @escaping (ChatClient.SelectableModel) -> Void
+        onSelect: @escaping (ChatClient.SelectableModel) -> Void,
+        onToggleDefault: @escaping (ChatClient.SelectableModel) -> Void
     ) {
         self.selectedProviderID = selectedProviderID
         self.selectedModelID = selectedModelID
         self.isLoading = isLoading
+        self.defaultModelSelection = defaultModelSelection
         self.visualMode = visualMode
         self.onSelect = onSelect
+        self.onToggleDefault = onToggleDefault
 
         // O(n) grouping — computed once at init, not on every body evaluation.
         let dict = Dictionary(grouping: models, by: \.providerName)
@@ -185,49 +191,70 @@ struct ModelPickerView: View {
 
     private func modelRow(_ model: ChatClient.SelectableModel) -> some View {
         let isSelected = model.providerID == selectedProviderID && model.modelID == selectedModelID
+        let isDefault = defaultModelSelection?.providerID == model.providerID
+            && defaultModelSelection?.modelID == model.modelID
 
-        return Button {
-            onSelect(model)
-        } label: {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.modelName)
-                        .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(primaryTextColor)
-                        .lineLimit(isRetroChat ? 1 : 2)
-                        .minimumScaleFactor(isRetroChat ? 0.75 : 1)
+        return HStack(spacing: 12) {
+            Button {
+                onSelect(model)
+            } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.modelName)
+                            .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16, weight: isSelected ? .semibold : .regular))
+                            .foregroundStyle(primaryTextColor)
+                            .lineLimit(isRetroChat ? 1 : 2)
+                            .minimumScaleFactor(isRetroChat ? 0.75 : 1)
 
-                    Text(model.modelID)
-                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, design: .monospaced))
-                        .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary.opacity(0.72))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                        Text(model.modelID)
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, design: .monospaced))
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary.opacity(0.72))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
 
-                    modelMetadata(for: model)
+                        modelMetadata(for: model, isDefault: isDefault)
+                    }
+
+                    Spacer()
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.blueAccent : .blue)
+                    }
                 }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(isRetroChat ? RetroChatStyle.blueAccent : .blue)
-                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, isRetroChat ? 12 : 0)
-            .padding(.vertical, isRetroChat ? 10 : 4)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button {
+                onToggleDefault(model)
+            } label: {
+                Image(systemName: isDefault ? "star.fill" : "star")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(isDefault
+                        ? (isRetroChat ? RetroChatStyle.magentaAccent : Color.appAccent)
+                        : secondaryTextColor)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isDefault ? AppText.clearDefaultModel : AppText.setAsDefaultModel)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, isRetroChat ? 12 : 0)
+        .padding(.vertical, isRetroChat ? 10 : 4)
     }
 
     // MARK: - Helpers
 
     @ViewBuilder
-    private func modelMetadata(for model: ChatClient.SelectableModel) -> some View {
+    private func modelMetadata(for model: ChatClient.SelectableModel, isDefault: Bool) -> some View {
         if isRetroChat {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
+                    if isDefault {
+                        capabilityBadge("star.fill", label: AppText.defaultModel, color: RetroChatStyle.magentaAccent)
+                    }
                     modelCapabilities(for: model)
                 }
 
@@ -247,6 +274,9 @@ struct ModelPickerView: View {
             }
         } else {
             HStack(spacing: 6) {
+                if isDefault {
+                    capabilityBadge("star.fill", label: AppText.defaultModel, color: Color.appAccent)
+                }
                 modelCapabilities(for: model)
 
                 if let costStr = formatCost(model.cost) {

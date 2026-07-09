@@ -62,7 +62,7 @@ struct ConnectedRootView: View {
             await chatClient.recoverPendingPermission()
         }
         .task(id: chatClient.isLoading) {
-            await recoverPendingPermissionsWhileLoading()
+            await recoverSessionStateWhileLoading()
         }
     }
 
@@ -90,10 +90,11 @@ struct ConnectedRootView: View {
         )
     }
 
-    private func recoverPendingPermissionsWhileLoading() async {
+    private func recoverSessionStateWhileLoading() async {
         guard chatClient.isLoading else { return }
 
         while !Task.isCancelled, chatClient.isLoading {
+            await chatClient.refreshCurrentSessionStatus()
             await chatClient.recoverPendingPermission()
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }

@@ -25,6 +25,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private struct PendingTextDelta {
         let sessionID: String
         let messageID: String
+        let partID: String?
         let field: String
         var delta: String
     }
@@ -268,9 +269,12 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return false
         }
 
+        let partID = props["partID"] as? String ?? props["partId"] as? String
+
         if var pending = pendingTextDelta,
            pending.sessionID == sessionID,
            pending.messageID == messageID,
+           pending.partID == partID,
            pending.field == field {
             pending.delta.append(delta)
             pendingTextDelta = pending
@@ -279,6 +283,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             pendingTextDelta = PendingTextDelta(
                 sessionID: sessionID,
                 messageID: messageID,
+                partID: partID,
                 field: field,
                 delta: delta
             )
@@ -306,15 +311,20 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         pendingTextDelta = nil
 
         ChatStreamInstrumentation.recordCoalescedTextDelta(characterCount: pending.delta.count)
+        var properties: [String: Any] = [
+            "sessionID": pending.sessionID,
+            "messageID": pending.messageID,
+            "field": pending.field,
+            "delta": pending.delta,
+        ]
+        if let partID = pending.partID {
+            properties["partID"] = partID
+        }
+
         deliverEvent(
             OCEvent(
                 type: "message.part.delta",
-                properties: AnyCodable([
-                    "sessionID": pending.sessionID,
-                    "messageID": pending.messageID,
-                    "field": pending.field,
-                    "delta": pending.delta,
-                ])
+                properties: AnyCodable(properties)
             )
         )
     }

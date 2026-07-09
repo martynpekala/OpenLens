@@ -32,9 +32,17 @@ final class RecordedReplayStore {
 
     func saveReplay(_ replay: RecordedChatReplay) throws -> RecordedChatReplay.Descriptor {
         let url = try replayURL(id: replay.id, createDirectoryIfNeeded: true)
-        let data = try Self.makeEncoder().encode(replay)
+        let data = try Self.encodedReplayData(replay)
         try data.write(to: url, options: .atomic)
         return replay.descriptor
+    }
+
+    func exportReplay(_ descriptor: RecordedChatReplay.Descriptor) throws -> RecordedReplayExport {
+        let replay = try loadReplay(descriptor)
+        return RecordedReplayExport(
+            filename: "\(replay.id).json",
+            data: try Self.encodedReplayData(replay)
+        )
     }
 
     func listReplays() throws -> [RecordedChatReplay.Descriptor] {
@@ -140,6 +148,10 @@ final class RecordedReplayStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
+    }
+
+    private static func encodedReplayData(_ replay: RecordedChatReplay) throws -> Data {
+        try Self.makeEncoder().encode(replay)
     }
 
     private static func makeDecoder() -> JSONDecoder {

@@ -144,10 +144,13 @@ struct ChatView: View {
                 selectedProviderID: chatClient.selectedProviderID,
                 selectedModelID: chatClient.selectedModelID,
                 isLoading: chatClient.isLoadingProviders,
+                defaultModelSelection: chatClient.defaultModelSelection,
                 visualMode: visualMode
             ) { model in
                 chatClient.selectModel(model)
                 showModelPicker = false
+            } onToggleDefault: { model in
+                chatClient.toggleDefaultModel(model)
             }
             .presentationDetents([.medium])
         }

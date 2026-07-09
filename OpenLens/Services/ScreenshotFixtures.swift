@@ -106,17 +106,22 @@ enum ScreenshotFixtures {
         "session-screenshot-3": OCSessionStatus(type: .idle, attempt: nil, message: nil, next: nil)
     ]
 
-    static let savedConnection = SavedConnection(
-        id: "saved-screenshot-connection",
-        serverURL: "demo.openlens.local:4096",
-        username: "developer",
-        password: "demo-token",
-        selectedProviderID: "anthropic",
-        selectedModelID: "claude-sonnet-4-20250514",
-        selectedVariant: "high",
-        selectedProjectDirectory: projectPath,
-        lastConnectedAt: Date()
-    )
+    static let savedConnection: SavedConnection = {
+        var connection = SavedConnection(
+            id: "saved-screenshot-connection",
+            serverURL: "demo.openlens.local:4096",
+            username: "developer",
+            password: "demo-token",
+            selectedProviderID: "anthropic",
+            selectedModelID: "claude-sonnet-4-20250514",
+            selectedVariant: "high",
+            selectedProjectDirectory: projectPath,
+            lastConnectedAt: Date()
+        )
+        connection.defaultProviderID = "anthropic"
+        connection.defaultModelID = "claude-sonnet-4-20250514"
+        return connection
+    }()
 
     static let providersResult = ProvidersService.ProvidersResult(
         providers: [

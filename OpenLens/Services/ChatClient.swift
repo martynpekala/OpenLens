@@ -89,6 +89,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
     var selectedVariant: String?
     var isLoadingProviders: Bool = false
+    private var preferredDefaultProviderID: String = ""
+    private var preferredDefaultModelID: String = ""
+    private var serverReportedDefault: (providerID: String, modelID: String)?
+    private var configReportedDefault: (providerID: String, modelID: String)?
 
     /// Provider filter lists from server config (enabled_providers / disabled_providers).
     private var enabledProviders: [String]? {
@@ -186,6 +190,20 @@ final class ChatClient: SSEEventHandlerDelegate {
         )
     }
 
+    private func persistDefaultModelSelection(providerID: String, modelID: String) {
+        guard let connID = savedConnectionsStore?.activeConnectionID else { return }
+        savedConnectionsStore?.updateDefaultModelSelection(
+            connectionID: connID,
+            providerID: providerID,
+            modelID: modelID
+        )
+    }
+
+    private func clearDefaultModelSelection() {
+        guard let connID = savedConnectionsStore?.activeConnectionID else { return }
+        savedConnectionsStore?.clearDefaultModelSelection(connectionID: connID)
+    }
+
     private func sortedVariants(from variants: [String: OCProviderVariant]?) -> [SelectableModel.SelectableVariant] {
         guard let variants else { return [] }
 
@@ -254,6 +272,39 @@ final class ChatClient: SSEEventHandlerDelegate {
         } ?? []
     }
 
+    var defaultModelSelection: (providerID: String, modelID: String)? {
+        guard let activeConnectionID = savedConnectionsStore?.activeConnectionID else { return nil }
+        return savedConnectionsStore?.defaultModelSelection(connectionID: activeConnectionID)
+    }
+
+    private func applyPreferredDefaultModelSelection() {
+        guard !preferredDefaultProviderID.isEmpty, !preferredDefaultModelID.isEmpty else { return }
+        selectedProviderID = preferredDefaultProviderID
+        selectedModelID = preferredDefaultModelID
+        selectedVariant = nil
+    }
+
+    private func refreshPreferredDefaultModelSelection() {
+        let resolution = Self.resolveDefaultModelSelection(
+            savedDefault: defaultModelSelection,
+            serverDefault: serverReportedDefault,
+            configDefault: configReportedDefault,
+            availableModels: availableModels
+        )
+
+        preferredDefaultProviderID = resolution.providerID ?? ""
+        preferredDefaultModelID = resolution.modelID ?? ""
+
+        if let unavailableDefaultModelID = resolution.unavailableDefaultModelID {
+            errorMessage = AppText.defaultModelUnavailable(unavailableDefaultModelID)
+        }
+    }
+
+    func isDefaultModel(_ model: SelectableModel) -> Bool {
+        guard let selection = defaultModelSelection else { return false }
+        return selection.providerID == model.providerID && selection.modelID == model.modelID
+    }
+
     var selectedModelRef: OCPromptInput.OCModelRef? {
         guard !selectedProviderID.isEmpty, !selectedModelID.isEmpty else { return nil }
         return OCPromptInput.OCModelRef(providerID: selectedProviderID, modelID: selectedModelID)
@@ -272,6 +323,83 @@ final class ChatClient: SSEEventHandlerDelegate {
             return selectedModelID
         }
         return "Choose model"
+    }
+
+    struct DefaultModelResolution: Equatable {
+        let providerID: String?
+        let modelID: String?
+        let unavailableDefaultModelID: String?
+    }
+
+    static func resolveDefaultModelSelection(
+        savedDefault: (providerID: String, modelID: String)?,
+        serverDefault: (providerID: String, modelID: String)?,
+        configDefault: (providerID: String, modelID: String)?,
+        availableModels: [SelectableModel]
+    ) -> DefaultModelResolution {
+        let availableIDs = Set(availableModels.map(\.id))
+
+        func isAvailable(providerID: String, modelID: String) -> Bool {
+            availableIDs.contains("\(providerID)/\(modelID)")
+        }
+
+        if let savedDefault {
+            if isAvailable(providerID: savedDefault.providerID, modelID: savedDefault.modelID) {
+                return DefaultModelResolution(
+                    providerID: savedDefault.providerID,
+                    modelID: savedDefault.modelID,
+                    unavailableDefaultModelID: nil
+                )
+            }
+
+            if let serverDefault,
+               isAvailable(providerID: serverDefault.providerID, modelID: serverDefault.modelID) {
+                return DefaultModelResolution(
+                    providerID: serverDefault.providerID,
+                    modelID: serverDefault.modelID,
+                    unavailableDefaultModelID: savedDefault.modelID
+                )
+            }
+
+            if let configDefault,
+               isAvailable(providerID: configDefault.providerID, modelID: configDefault.modelID) {
+                return DefaultModelResolution(
+                    providerID: configDefault.providerID,
+                    modelID: configDefault.modelID,
+                    unavailableDefaultModelID: savedDefault.modelID
+                )
+            }
+
+            return DefaultModelResolution(
+                providerID: nil,
+                modelID: nil,
+                unavailableDefaultModelID: savedDefault.modelID
+            )
+        }
+
+        if let serverDefault,
+           isAvailable(providerID: serverDefault.providerID, modelID: serverDefault.modelID) {
+            return DefaultModelResolution(
+                providerID: serverDefault.providerID,
+                modelID: serverDefault.modelID,
+                unavailableDefaultModelID: nil
+            )
+        }
+
+        if let configDefault,
+           isAvailable(providerID: configDefault.providerID, modelID: configDefault.modelID) {
+            return DefaultModelResolution(
+                providerID: configDefault.providerID,
+                modelID: configDefault.modelID,
+                unavailableDefaultModelID: nil
+            )
+        }
+
+        return DefaultModelResolution(
+            providerID: nil,
+            modelID: nil,
+            unavailableDefaultModelID: nil
+        )
     }
 
     // MARK: - Pagination
@@ -362,6 +490,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Duration before a pending question is auto-rejected (5 minutes).
     private static let questionTimeoutSeconds: UInt64 = 300
     static let stoppedResponseDisplayDuration: Duration = .milliseconds(1500)
+    private static let statusRefreshIdleGraceInterval: TimeInterval = 1.5
 
     // MARK: - Streaming Text Buffer
     //
@@ -414,6 +543,21 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     func questionDidPresent() {
         startQuestionTimeout()
+    }
+
+    func beginExternalResponse() {
+        abortTask?.cancel()
+        abortTask = nil
+        cancelStoppedStateClear()
+        ignoredAssistantMessageIDs.removeAll()
+        locallyStoppedSessionID = nil
+        responseState = .generating
+        errorMessage = nil
+        isLoading = true
+        currentActivity = AgentActivity()
+        currentActivity?.currentLabel = "Thinking..."
+        responseStartDate = Date()
+        haptics.prepareForResponse()
     }
 
     func shouldIgnoreAssistantEvent(sessionID: String, messageID: String) -> Bool {
@@ -670,7 +814,11 @@ final class ChatClient: SSEEventHandlerDelegate {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
             let visibleMessages = mergeLoadedMessagesWithLocallyStoppedMessages(loaded)
             self.messages = visibleMessages
-            syncSessionModelSelection(from: visibleMessages)
+            if Self.recentSessionModelSelection(from: visibleMessages) != nil {
+                syncSessionModelSelection(from: visibleMessages)
+            } else {
+                applyPreferredDefaultModelSelection()
+            }
             Logger.debug.info("messages count: \(visibleMessages.count)")
             self.contentVersion &+= 1
             self.scrollAnchor &+= 1
@@ -678,7 +826,57 @@ final class ChatClient: SSEEventHandlerDelegate {
             self.errorMessage = "Failed to load messages: \(error.localizedDescription)"
         }
 
+        await refreshCurrentSessionStatus()
         await loadTodos()
+    }
+
+    func refreshCurrentSessionStatus() async {
+        guard !isOfflinePreviewMode,
+              let sessionsService,
+              let sessionID = currentSession?.id else { return }
+
+        do {
+            let statuses = try await sessionsService.getSessionStatuses()
+            guard currentSession?.id == sessionID else { return }
+            applyCurrentSessionStatus(statuses[sessionID])
+        } catch {
+            Logger.chat.warning("refreshCurrentSessionStatus failed: \(error, privacy: .public)")
+        }
+    }
+
+    func applyCurrentSessionStatus(_ status: OCSessionStatus?) {
+        guard let status else { return }
+
+        switch status.type {
+        case .idle:
+            sessionStatus = status
+
+            if shouldDeferIdleStatusRefresh() {
+                return
+            }
+
+            guard isLoading || pendingAssistantMessage != nil || responseState == .generating || responseState == .stopping else {
+                sessionStatus = nil
+                return
+            }
+
+            finishLoading()
+
+        case .busy, .retry:
+            guard let sessionID = currentSession?.id,
+                  !shouldIgnoreBusyStatus(sessionID: sessionID) else { return }
+
+            sessionStatus = status
+
+            if !isLoading || responseState == .idle || responseState == .failed {
+                beginExternalResponse()
+            }
+        }
+    }
+
+    private func shouldDeferIdleStatusRefresh(now: Date = Date()) -> Bool {
+        guard let responseStartDate else { return false }
+        return now.timeIntervalSince(responseStartDate) < Self.statusRefreshIdleGraceInterval
     }
 
     private func mergeLoadedMessagesWithLocallyStoppedMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
@@ -762,35 +960,51 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.enabledProviders = configResult.enabledProviders
         self.disabledProviders = configResult.disabledProviders
 
+        let savedDefault = savedConnectionsStore?.activeConnectionID.flatMap {
+            savedConnectionsStore?.defaultModelSelection(connectionID: $0)
+        }
+        var serverDefault: (providerID: String, modelID: String)?
+        let configDefault = configResult.defaultProviderID.flatMap { providerID in
+            configResult.defaultModelID.map { (providerID: providerID, modelID: $0) }
+        }
+        configReportedDefault = configDefault
+
         do {
             let result = try await providersService!.loadProviders()
             self.providers = result.providers
             self.connectedProviderIDs = result.connectedProviderIDs
-
-            // Always sync model from server on connect — override any local selection
-            if let providerID = result.defaultProviderID, let modelID = result.defaultModelID {
-                self.selectedProviderID = providerID
-                self.selectedModelID = modelID
-                self.selectedVariant = nil
-                // Clear persisted override so next launch also syncs from server
-                if let connID = savedConnectionsStore?.activeConnectionID {
-                    savedConnectionsStore?.clearModelSelection(connectionID: connID)
-                }
+            serverDefault = result.defaultProviderID.flatMap { providerID in
+                result.defaultModelID.map { (providerID: providerID, modelID: $0) }
             }
+            serverReportedDefault = serverDefault
         } catch {
             Logger.chat.error("loadProviders failed: \(error, privacy: .public)")
         }
 
-        // Fallback: try config for default model (matches server session config)
-        if selectedProviderID.isEmpty,
-           let providerID = configResult.defaultProviderID,
-           let modelID = configResult.defaultModelID {
+        let resolution = Self.resolveDefaultModelSelection(
+            savedDefault: savedDefault,
+            serverDefault: serverDefault,
+            configDefault: configDefault,
+            availableModels: availableModels
+        )
+
+        if let providerID = resolution.providerID,
+           let modelID = resolution.modelID {
+            preferredDefaultProviderID = providerID
+            preferredDefaultModelID = modelID
             self.selectedProviderID = providerID
             self.selectedModelID = modelID
             self.selectedVariant = nil
-            if let connID = savedConnectionsStore?.activeConnectionID {
-                savedConnectionsStore?.clearModelSelection(connectionID: connID)
-            }
+        } else {
+            preferredDefaultProviderID = ""
+            preferredDefaultModelID = ""
+            self.selectedProviderID = ""
+            self.selectedModelID = ""
+            self.selectedVariant = nil
+        }
+
+        if let unavailableDefaultModelID = resolution.unavailableDefaultModelID {
+            errorMessage = AppText.defaultModelUnavailable(unavailableDefaultModelID)
         }
 
         // Guard: if selected model's provider is filtered out, clear selection
@@ -852,6 +1066,16 @@ final class ChatClient: SSEEventHandlerDelegate {
     func selectVariant(_ variantID: String?) {
         selectedVariant = variantID
         persistCurrentSelection()
+    }
+
+    func toggleDefaultModel(_ model: SelectableModel) {
+        if isDefaultModel(model) {
+            clearDefaultModelSelection()
+        } else {
+            persistDefaultModelSelection(providerID: model.providerID, modelID: model.modelID)
+        }
+
+        refreshPreferredDefaultModelSelection()
     }
 
     func updateSlashCatalog(commands: [String], agents: [String]) {
@@ -1530,7 +1754,9 @@ final class ChatClient: SSEEventHandlerDelegate {
             // rebuildDisplayedMessages (messages.append triggers didSet
             // which would still see the pending message).
             pendingAssistantMessage = nil
-            messages.append(pending)
+            if !messages.contains(where: { $0.id == pending.id }) {
+                messages.append(pending)
+            }
         }
 
         responseStartDate = nil

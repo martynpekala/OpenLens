@@ -21,6 +21,7 @@ protocol SSEEventHandlerDelegate: AnyObject {
     var todos: [OCTodo] { get set }
 
     func finishLoading()
+    func beginExternalResponse()
 
     /// Returns true when a message event belongs to a locally stopped turn and
     /// should not reopen streaming state.
@@ -61,6 +62,7 @@ final class SSEEventHandler {
     private let haptics: HapticController
     private let liveActivityTracker: LiveActivityTracker
     private var lastToolStatusByPartID: [String: OCToolStatus] = [:]
+    private var relatedSessionIDsByParentSessionID: [String: Set<String>] = [:]
 
     init(haptics: HapticController, liveActivityTracker: LiveActivityTracker) {
         self.haptics = haptics
@@ -144,9 +146,7 @@ final class SSEEventHandler {
         } else if statusType == .busy {
             lastToolStatusByPartID.removeAll()
             if !delegate.isLoading {
-                delegate.isLoading = true
-                delegate.currentActivity = AgentActivity()
-                delegate.currentActivity?.currentLabel = "Thinking..."
+                delegate.beginExternalResponse()
 
                 // Start Live Activity for externally-triggered turns (e.g. message
                 // sent from desktop). When the user sends from iOS, ChatClient.send()
@@ -238,9 +238,7 @@ final class SSEEventHandler {
                     finish: finish
                 )
                 if !delegate.isLoading {
-                    delegate.isLoading = true
-                    delegate.currentActivity = AgentActivity()
-                    delegate.currentActivity?.currentLabel = "Thinking..."
+                    delegate.beginExternalResponse()
                 }
             }
         }
@@ -301,12 +299,7 @@ final class SSEEventHandler {
 
         case .reasoning:
             if let text = part.text {
-                delegate.currentActivity?.thinkingText = text
-                // Extract first line as subject for Live Activity
-                if liveActivityTracker.subject == nil, !text.isEmpty {
-                    let firstLine = text.components(separatedBy: .newlines).first ?? text
-                    liveActivityTracker.updateSubject(String(firstLine.prefix(60)))
-                }
+                updateReasoningActivity(text: text, delegate: delegate)
             }
 
         case .stepFinish:
@@ -341,8 +334,63 @@ final class SSEEventHandler {
         }
 
         if field == "text" {
-            delegate.appendStreamingText(messageID: messageID, text: delta)
-            haptics.playFirstResponseIfNeeded()
+            let partID = props["partID"] as? String ?? props["partId"] as? String
+            handleTextDelta(messageID: messageID, partID: partID, delta: delta, delegate: delegate)
+        }
+    }
+
+    private func handleTextDelta(
+        messageID: String,
+        partID: String?,
+        delta: String,
+        delegate: SSEEventHandlerDelegate
+    ) {
+        if let partID,
+           let msg = assistantMessage(withID: messageID, delegate: delegate),
+           let partIndex = msg.parts.firstIndex(where: { $0.id == partID }) {
+            let part = msg.parts[partIndex]
+
+            switch part.type {
+            case .reasoning:
+                let text = (part.text ?? "") + delta
+                msg.parts[partIndex] = part.replacingText(text)
+                updateReasoningActivity(text: text, delegate: delegate)
+                return
+
+            case .text:
+                break
+
+            case .tool,
+                 .file,
+                 .stepStart,
+                 .stepFinish,
+                 .snapshot,
+                 .patch,
+                 .retry,
+                 .compaction,
+                 .agent,
+                 .subtask,
+                 .unknown:
+                return
+            }
+        }
+
+        delegate.appendStreamingText(messageID: messageID, text: delta)
+        haptics.playFirstResponseIfNeeded()
+    }
+
+    private func assistantMessage(withID messageID: String, delegate: SSEEventHandlerDelegate) -> ChatMessage? {
+        if let pending = delegate.pendingAssistantMessage, pending.id == messageID {
+            return pending
+        }
+        return delegate.messages.first(where: { $0.id == messageID })
+    }
+
+    private func updateReasoningActivity(text: String, delegate: SSEEventHandlerDelegate) {
+        delegate.currentActivity?.thinkingText = text
+        if liveActivityTracker.subject == nil, !text.isEmpty {
+            let firstLine = text.components(separatedBy: .newlines).first ?? text
+            liveActivityTracker.updateSubject(String(firstLine.prefix(60)))
         }
     }
 
@@ -401,10 +449,7 @@ final class SSEEventHandler {
         guard let delegate else { return }
         guard let props = event.properties?.value as? [String: Any] else { return }
 
-        // Chat should only interrupt the currently opened session.
-        if let sessionID = props["sessionID"] as? String,
-           let currentSessionID = delegate.currentSessionID,
-           sessionID != currentSessionID {
+        if !sessionBelongsToCurrentConversation(props["sessionID"] as? String, delegate: delegate) {
             return
         }
 
@@ -436,9 +481,7 @@ final class SSEEventHandler {
         guard let delegate else { return }
         guard let props = event.properties?.value as? [String: Any] else { return }
 
-        // Check session matches
-        if let sessionID = props["sessionID"] as? String,
-           sessionID != delegate.currentSessionID {
+        if !sessionBelongsToCurrentConversation(props["sessionID"] as? String, delegate: delegate) {
             return
         }
 
@@ -525,6 +568,8 @@ final class SSEEventHandler {
         guard let toolName = part.tool,
               let state = part.state else { return }
 
+        registerRelatedSessionIfNeeded(from: state, parentSessionID: part.sessionID, delegate: delegate)
+
         Logger.sseHandler.debug("tool update: \(toolName, privacy: .public), status=\(String(describing: state.status), privacy: .public)")
 
         let category = ToolCategory.from(toolName: toolName)
@@ -584,5 +629,76 @@ final class SSEEventHandler {
         guard previousStatus != status else { return }
 
         lastToolStatusByPartID[partID] = status
+    }
+
+    private func sessionBelongsToCurrentConversation(
+        _ sessionID: String?,
+        delegate: SSEEventHandlerDelegate
+    ) -> Bool {
+        guard let sessionID else { return true }
+        guard let currentSessionID = delegate.currentSessionID else { return true }
+
+        return sessionID == currentSessionID
+            || relatedSessionIDsByParentSessionID[currentSessionID]?.contains(sessionID) == true
+    }
+
+    private func registerRelatedSessionIfNeeded(
+        from state: OCToolState,
+        parentSessionID: String,
+        delegate: SSEEventHandlerDelegate
+    ) {
+        guard parentSessionID == delegate.currentSessionID,
+              let relatedSessionID = relatedSessionID(from: state),
+              relatedSessionID != parentSessionID else { return }
+
+        relatedSessionIDsByParentSessionID[parentSessionID, default: []].insert(relatedSessionID)
+    }
+
+    private func relatedSessionID(from state: OCToolState) -> String? {
+        let metadata = state.metadata ?? [:]
+
+        return stringValue(for: "sessionId", in: metadata)
+            ?? stringValue(for: "sessionID", in: metadata)
+            ?? stringValue(for: "session_id", in: metadata)
+    }
+
+    private func stringValue(for key: String, in metadata: [String: AnyCodable]) -> String? {
+        (metadata[key]?.value as? String)?.nilIfBlank
+    }
+}
+
+private extension OCPart {
+    func replacingText(_ text: String?) -> OCPart {
+        OCPart(
+            id: id,
+            sessionID: sessionID,
+            messageID: messageID,
+            type: type,
+            text: text,
+            synthetic: synthetic,
+            ignored: ignored,
+            metadata: metadata,
+            time: time,
+            callID: callID,
+            tool: tool,
+            state: state,
+            mime: mime,
+            filename: filename,
+            url: url,
+            source: source,
+            snapshot: snapshot,
+            hash: hash,
+            files: files,
+            name: name,
+            reason: reason,
+            cost: cost,
+            tokens: tokens,
+            prompt: prompt,
+            partDescription: partDescription,
+            agent: agent,
+            attempt: attempt,
+            retryError: retryError,
+            auto: auto
+        )
     }
 }

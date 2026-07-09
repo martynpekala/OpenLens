@@ -45,6 +45,7 @@ enum AppText {
     static let emptyModelsTitle = "No Models Available"
     static let emptySessionsSubtitle = "Create a session to start chatting with OpenCode."
     static let emptySessionsTitle = "No Sessions"
+    static let exportCapture = "Export Capture"
     static let files = "Files"
     static let forget = "Forget"
     static let forgetConnection = "Forget Connection"
@@ -57,6 +58,9 @@ enum AppText {
     static let manualConnectErrorTitle = "Could not connect to server"
     static let messagePlaceholder = "Ask anything or use /command"
     static let model = "Model"
+    static let defaultModel = "Default Model"
+    static let setAsDefaultModel = "Set as default model"
+    static let clearDefaultModel = "Clear default model"
     static let multipleSelection = "Select multiple options"
     static let nearby = "Nearby"
     static let newSession = "New Session"
@@ -82,6 +86,11 @@ enum AppText {
     static let qrInvalid = "Invalid QR code — use openlens-qr to generate"
     static let qrScan = "Scan QR Code"
     static let qrScanSubtitle = "Quick connect via openlens-qr CLI"
+    static let questionTranscriptAnswer = "Answer"
+    static let questionTranscriptAnswered = "Answered"
+    static let questionTranscriptAsking = "Asking questions..."
+    static let questionTranscriptTitle = "Agent Question"
+    static let questionTranscriptWaiting = "Waiting for answer"
     static let recordedReplayReadOnly = "Recorded replays are read-only previews."
     static let recordingAlreadyInProgress = "A stream capture is already in progress."
     static let recordingDebugFeaturesDisabled = "Enable debug features in Settings to use stream recording."
@@ -273,6 +282,10 @@ enum AppText {
         "Failed to delete capture: \(description)"
     }
 
+    static func recordedCaptureExportFailed(_ description: String) -> String {
+        "Failed to export capture: \(description)"
+    }
+
     static func recordedCaptureLoadFailed(_ description: String) -> String {
         "Failed to load captures: \(description)"
     }
@@ -283,6 +296,10 @@ enum AppText {
 
     static func recordedCaptureSaveFailed(_ description: String) -> String {
         "Failed to save capture: \(description)"
+    }
+
+    static func defaultModelUnavailable(_ modelName: String) -> String {
+        "Your default model \(modelName) is no longer available."
     }
 
     static func activitySteps(_ count: Int) -> String {

@@ -24,6 +24,12 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     /// Per-connection model variant / thinking effort (e.g. "high").
     var selectedVariant: String?
 
+    /// Per-connection default model: provider ID used for new sessions.
+    var defaultProviderID: String? = nil
+
+    /// Per-connection default model: model ID used for new sessions.
+    var defaultModelID: String? = nil
+
     /// Per-connection project/worktree directory override.
     var selectedProjectDirectory: String?
 
@@ -42,6 +48,32 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     }
 
     // MARK: - Computed (same as old ConnectionConfig)
+
+    nonisolated init(
+        id: String,
+        serverURL: String,
+        username: String,
+        password: String,
+        selectedProviderID: String? = nil,
+        selectedModelID: String? = nil,
+        selectedVariant: String? = nil,
+        selectedProjectDirectory: String? = nil,
+        recentProjectDirectories: [String]? = nil,
+        lastConnectedAt: Date? = nil
+    ) {
+        self.id = id
+        self.serverURL = serverURL
+        self.username = username
+        self.password = password
+        self.selectedProviderID = selectedProviderID
+        self.selectedModelID = selectedModelID
+        self.selectedVariant = selectedVariant
+        self.defaultProviderID = nil
+        self.defaultModelID = nil
+        self.selectedProjectDirectory = selectedProjectDirectory
+        self.recentProjectDirectories = recentProjectDirectories
+        self.lastConnectedAt = lastConnectedAt
+    }
 
     var isConfigured: Bool {
         !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -78,6 +110,8 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
     var selectedProviderID: String?
     var selectedModelID: String?
     var selectedVariant: String?
+    var defaultProviderID: String? = nil
+    var defaultModelID: String? = nil
     var selectedProjectDirectory: String?
     var recentProjectDirectories: [String]?
     var lastConnectedAt: Date?
@@ -89,13 +123,15 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
         selectedProviderID = connection.selectedProviderID
         selectedModelID = connection.selectedModelID
         selectedVariant = connection.selectedVariant
+        defaultProviderID = connection.defaultProviderID
+        defaultModelID = connection.defaultModelID
         selectedProjectDirectory = connection.selectedProjectDirectory
         recentProjectDirectories = connection.recentProjectDirectories
         lastConnectedAt = connection.lastConnectedAt
     }
 
     nonisolated func savedConnectionWithoutPassword() -> SavedConnection {
-        SavedConnection(
+        var connection = SavedConnection(
             id: id,
             serverURL: serverURL,
             username: username,
@@ -107,6 +143,9 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
             recentProjectDirectories: recentProjectDirectories,
             lastConnectedAt: lastConnectedAt
         )
+        connection.defaultProviderID = defaultProviderID
+        connection.defaultModelID = defaultModelID
+        return connection
     }
 }
 
@@ -207,6 +246,14 @@ final class SavedConnectionsStore {
         persist()
     }
 
+    /// Updates the default model for a specific connection.
+    func updateDefaultModelSelection(connectionID: String, providerID: String, modelID: String) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
+        connections[index].defaultProviderID = providerID
+        connections[index].defaultModelID = modelID
+        persist()
+    }
+
     /// Updates the project context directory for a specific connection.
     func updateProjectSelection(connectionID: String, directory: String?) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
@@ -230,12 +277,28 @@ final class SavedConnectionsStore {
         persist()
     }
 
+    /// Clears the default model for a specific connection.
+    func clearDefaultModelSelection(connectionID: String) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
+        connections[index].defaultProviderID = nil
+        connections[index].defaultModelID = nil
+        persist()
+    }
+
     /// Returns saved model selection for the given connection ID.
     func savedModelSelection(connectionID: String) -> (providerID: String, modelID: String, variant: String?)? {
         guard let conn = connections.first(where: { $0.id == connectionID }),
               let provider = conn.selectedProviderID, !provider.isEmpty,
               let model = conn.selectedModelID, !model.isEmpty else { return nil }
         return (providerID: provider, modelID: model, variant: conn.selectedVariant)
+    }
+
+    /// Returns default model selection for the given connection ID.
+    func defaultModelSelection(connectionID: String) -> (providerID: String, modelID: String)? {
+        guard let conn = connections.first(where: { $0.id == connectionID }),
+              let provider = conn.defaultProviderID, !provider.isEmpty,
+              let model = conn.defaultModelID, !model.isEmpty else { return nil }
+        return (providerID: provider, modelID: model)
     }
 
     /// Returns saved project directory for the given connection ID.
@@ -500,6 +563,8 @@ private extension SavedConnection {
         selectedProviderID = snapshot.selectedProviderID
         selectedModelID = snapshot.selectedModelID
         selectedVariant = snapshot.selectedVariant
+        defaultProviderID = snapshot.defaultProviderID
+        defaultModelID = snapshot.defaultModelID
         selectedProjectDirectory = snapshot.selectedProjectDirectory
         recentProjectDirectories = snapshot.recentProjectDirectories
         lastConnectedAt = snapshot.lastConnectedAt
@@ -507,7 +572,7 @@ private extension SavedConnection {
 }
 
 extension String {
-    var nilIfBlank: String? {
+    nonisolated var nilIfBlank: String? {
         trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
     }
 }

@@ -41,6 +41,10 @@ struct MessageBubbleView: View {
                 if showThinking {
                     appendCopyable(text, to: &lines)
                 }
+            case .question(let step):
+                appendCopyable(questionTranscriptText(step), to: &lines)
+            case .subagent(let step):
+                appendCopyable(subagentTranscriptText(step), to: &lines)
             case .tool(let step):
                 appendCopyable(toolTranscriptLine(step), to: &lines)
                 if let output = transcriptOutput(for: step) {
@@ -179,6 +183,10 @@ struct MessageBubbleView: View {
             if showThinking {
                 reasoningSegment(text: text)
             }
+        case .question(let step):
+            questionSegment(step)
+        case .subagent(let step):
+            subagentSegment(step)
         case .tool(let step):
             toolSegment(step)
         }
@@ -322,6 +330,342 @@ struct MessageBubbleView: View {
             }
         }
         .padding(.leading, 2)
+    }
+
+    private func questionSegment(_ step: ChatMessage.PersistedQuestionStep) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            questionHeader(step)
+
+            if step.questions.isEmpty {
+                Text(AppText.questionTranscriptAsking)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(Array(step.questions.enumerated()), id: \.offset) { item in
+                    questionItem(item.element, index: item.offset, step: step)
+                }
+            }
+        }
+        .padding(12)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(questionCardFill(for: step))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(questionCardStroke(for: step), lineWidth: isRetroChat ? 1.5 : 1)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(questionTranscriptText(step))
+    }
+
+    private func subagentSegment(_ step: ChatMessage.PersistedSubagentStep) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: subagentIconName(for: step))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(subagentAccent(for: step))
+
+                Text(subagentTitle(for: step))
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : Color.appPrimary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(subagentStatusText(for: step))
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 11, weight: .medium))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
+                    .lineLimit(1)
+            }
+
+            if !step.detail.isEmpty {
+                Text(step.detail)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(subagentCardFill(for: step))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(subagentCardStroke(for: step), lineWidth: isRetroChat ? 1.5 : 1)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(subagentTranscriptText(step))
+    }
+
+    private func questionHeader(_ step: ChatMessage.PersistedQuestionStep) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: questionIconName(for: step))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(questionAccent(for: step))
+
+            Text(AppText.questionTranscriptTitle)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold))
+                .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : Color.appPrimary)
+
+            Spacer(minLength: 8)
+
+            Text(questionStatusText(for: step))
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 11, weight: .medium))
+                .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
+        }
+    }
+
+    private func questionItem(
+        _ question: OCQuestionInfo,
+        index: Int,
+        step: ChatMessage.PersistedQuestionStep
+    ) -> some View {
+        let customAnswers = unmatchedAnswers(for: question, index: index, step: step)
+
+        return VStack(alignment: .leading, spacing: 7) {
+            if let header = question.header.nilIfBlank {
+                Text(header)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .semibold))
+                    .foregroundStyle(questionAccent(for: step))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(question.question.nilIfBlank ?? AppText.questionTranscriptTitle)
+                .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 14, weight: .medium))
+                .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !question.options.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(question.options) { option in
+                        questionOptionRow(option, questionIndex: index, step: step)
+                    }
+                }
+                .padding(.top, 1)
+            }
+
+            if !customAnswers.isEmpty {
+                questionAnswerRows(customAnswers, step: step)
+                    .padding(.top, question.options.isEmpty ? 1 : 3)
+            }
+        }
+    }
+
+    private func questionOptionRow(
+        _ option: OCQuestionOption,
+        questionIndex: Int,
+        step: ChatMessage.PersistedQuestionStep
+    ) -> some View {
+        let isSelected = isQuestionOptionSelected(option, questionIndex: questionIndex, step: step)
+
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? questionAccent(for: step) : questionMutedColor)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.label)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : Color.appPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let description = option.description.nilIfBlank {
+                    Text(description)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .opacity(step.hasAnswers && !isSelected ? 0.58 : 1)
+    }
+
+    private func questionAnswerRows(_ answers: [String], step: ChatMessage.PersistedQuestionStep) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(answers, id: \.self) { answer in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(questionAccent(for: step))
+                        .padding(.top, 1)
+
+                    Text(answer)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : Color.appPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func questionTranscriptText(_ step: ChatMessage.PersistedQuestionStep) -> String {
+        var lines: [String] = [
+            "\(AppText.questionTranscriptTitle): \(questionStatusText(for: step))"
+        ]
+
+        if step.questions.isEmpty {
+            lines.append(AppText.questionTranscriptAsking)
+        }
+
+        for (index, question) in step.questions.enumerated() {
+            if let header = question.header.nilIfBlank {
+                lines.append(header)
+            }
+
+            if let questionText = question.question.nilIfBlank {
+                lines.append(questionText)
+            }
+
+            for option in question.options {
+                let isSelected = isQuestionOptionSelected(option, questionIndex: index, step: step)
+                let marker = isSelected ? "[x]" : "[ ]"
+                let description = option.description.nilIfBlank.map { ": \($0)" } ?? ""
+                lines.append("\(marker) \(option.label)\(description)")
+            }
+
+            let answers = selectedAnswers(for: index, in: step)
+            if !answers.isEmpty {
+                lines.append("\(AppText.questionTranscriptAnswer): \(answers.joined(separator: ", "))")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func selectedAnswers(for questionIndex: Int, in step: ChatMessage.PersistedQuestionStep) -> [String] {
+        guard step.answers.indices.contains(questionIndex) else { return [] }
+        return step.answers[questionIndex]
+    }
+
+    private func unmatchedAnswers(
+        for question: OCQuestionInfo,
+        index: Int,
+        step: ChatMessage.PersistedQuestionStep
+    ) -> [String] {
+        let optionLabels = Set(question.options.map { normalizedQuestionAnswer($0.label) })
+        return selectedAnswers(for: index, in: step)
+            .filter { !optionLabels.contains(normalizedQuestionAnswer($0)) }
+    }
+
+    private func isQuestionOptionSelected(
+        _ option: OCQuestionOption,
+        questionIndex: Int,
+        step: ChatMessage.PersistedQuestionStep
+    ) -> Bool {
+        let normalizedOption = normalizedQuestionAnswer(option.label)
+        return selectedAnswers(for: questionIndex, in: step)
+            .contains { normalizedQuestionAnswer($0) == normalizedOption }
+    }
+
+    private func normalizedQuestionAnswer(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func questionStatusText(for step: ChatMessage.PersistedQuestionStep) -> String {
+        step.isAnswered ? AppText.questionTranscriptAnswered : AppText.questionTranscriptWaiting
+    }
+
+    private func questionIconName(for step: ChatMessage.PersistedQuestionStep) -> String {
+        if step.isError {
+            return "exclamationmark.circle.fill"
+        }
+        return step.isAnswered ? "checkmark.circle.fill" : "questionmark.circle"
+    }
+
+    private func questionCardFill(for step: ChatMessage.PersistedQuestionStep) -> Color {
+        if isRetroChat {
+            return RetroChatStyle.paperWarm
+        }
+        return step.isError ? Color.appWarning.opacity(0.12) : Color.appTertiary.opacity(0.58)
+    }
+
+    private func questionCardStroke(for step: ChatMessage.PersistedQuestionStep) -> Color {
+        if isRetroChat {
+            return step.isError ? RetroChatStyle.danger : RetroChatStyle.mutedInk.opacity(0.8)
+        }
+        return step.isError ? Color.appWarning.opacity(0.42) : Color.appSeparator.opacity(0.68)
+    }
+
+    private func questionAccent(for step: ChatMessage.PersistedQuestionStep) -> Color {
+        if step.isError {
+            return isRetroChat ? RetroChatStyle.danger : Color.appWarning
+        }
+        return isRetroChat ? RetroChatStyle.blueAccent : Color.appAccent
+    }
+
+    private var questionMutedColor: Color {
+        isRetroChat ? RetroChatStyle.mutedInk.opacity(0.75) : Color.appSecondary.opacity(0.62)
+    }
+
+    private func subagentTitle(for step: ChatMessage.PersistedSubagentStep) -> String {
+        step.title == "Subagent" ? "Subagent" : "Subagent \(step.title)"
+    }
+
+    private func subagentStatusText(for step: ChatMessage.PersistedSubagentStep) -> String {
+        if step.isError {
+            return "Error"
+        }
+        return step.isCompleted ? "Done" : "Working"
+    }
+
+    private func subagentIconName(for step: ChatMessage.PersistedSubagentStep) -> String {
+        if step.isError {
+            return "exclamationmark.circle.fill"
+        }
+        return step.isCompleted ? "checkmark.circle.fill" : "person.crop.circle.badge.clock"
+    }
+
+    private func subagentCardFill(for step: ChatMessage.PersistedSubagentStep) -> Color {
+        if isRetroChat {
+            return RetroChatStyle.paperWarm
+        }
+        if step.isError {
+            return Color.appWarning.opacity(0.12)
+        }
+        return step.isCompleted ? Color.appTertiary.opacity(0.58) : Color.appAccent.opacity(0.10)
+    }
+
+    private func subagentCardStroke(for step: ChatMessage.PersistedSubagentStep) -> Color {
+        if isRetroChat {
+            if step.isError {
+                return RetroChatStyle.danger
+            }
+            return step.isCompleted ? RetroChatStyle.mutedInk.opacity(0.8) : RetroChatStyle.blueAccent.opacity(0.9)
+        }
+        if step.isError {
+            return Color.appWarning.opacity(0.42)
+        }
+        return step.isCompleted ? Color.appSeparator.opacity(0.68) : Color.appAccent.opacity(0.34)
+    }
+
+    private func subagentAccent(for step: ChatMessage.PersistedSubagentStep) -> Color {
+        if step.isError {
+            return isRetroChat ? RetroChatStyle.danger : Color.appWarning
+        }
+        if step.isCompleted {
+            return isRetroChat ? RetroChatStyle.blueAccent : Color.appSecondary
+        }
+        return isRetroChat ? RetroChatStyle.magentaAccent : Color.appAccent
+    }
+
+    private func subagentTranscriptText(_ step: ChatMessage.PersistedSubagentStep) -> String {
+        var lines = [
+            "\(subagentTitle(for: step)): \(subagentStatusText(for: step))"
+        ]
+
+        if !step.detail.isEmpty {
+            lines.append(step.detail)
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     private func toolTranscriptLine(_ step: ChatMessage.PersistedToolStep) -> String {

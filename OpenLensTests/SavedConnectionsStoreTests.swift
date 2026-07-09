@@ -157,4 +157,47 @@ struct SavedConnectionsStoreTests {
         #expect(restored.first?.selectedProjectDirectory == "/Users/me/Alpha")
         #expect(restored.first?.recentProjectDirectories == ["/Users/me/Alpha", "/Users/me/Beta"])
     }
+
+    @Test func updatesAndClearsDefaultModelSelection() {
+        let store = SavedConnectionsStore(initialConnections: [])
+        let connection = store.saveConnection(
+            serverURL: "http://192.168.1.50:4096",
+            username: "opencode",
+            password: ""
+        )
+
+        store.updateDefaultModelSelection(
+            connectionID: connection.id,
+            providerID: "anthropic",
+            modelID: "claude-sonnet-4-20250514"
+        )
+
+        #expect(store.defaultModelSelection(connectionID: connection.id)?.providerID == "anthropic")
+        #expect(store.defaultModelSelection(connectionID: connection.id)?.modelID == "claude-sonnet-4-20250514")
+
+        store.clearDefaultModelSelection(connectionID: connection.id)
+
+        #expect(store.defaultModelSelection(connectionID: connection.id) == nil)
+    }
+
+    @Test func publicSnapshotFallbackRestoresDefaultModelSelection() {
+        var connection = SavedConnection(
+            id: "default-model",
+            serverURL: "http://192.168.1.50:4096",
+            username: "opencode",
+            password: "secret",
+            lastConnectedAt: Date(timeIntervalSince1970: 10)
+        )
+        connection.defaultProviderID = "anthropic"
+        connection.defaultModelID = "claude-sonnet-4-20250514"
+
+        let snapshots = [
+            SavedConnectionPublicSnapshot(connection: connection),
+        ]
+
+        let restored = SavedConnectionsStore.mergeKeychainConnections([], withPublicSnapshots: snapshots)
+
+        #expect(restored.first?.defaultProviderID == "anthropic")
+        #expect(restored.first?.defaultModelID == "claude-sonnet-4-20250514")
+    }
 }

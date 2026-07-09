@@ -46,6 +46,95 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func busySessionStatusStartsGeneratingResponseStateForExternalTurn() {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+
+        handler.handleEvent(
+            OCEvent(
+                type: "session.status",
+                properties: AnyCodable([
+                    "sessionID": sessionID,
+                    "status": ["type": "busy"]
+                ])
+            )
+        )
+
+        #expect(client.isLoading)
+        #expect(client.responseState == .generating)
+        #expect(client.currentActivity?.currentLabel == "Thinking...")
+    }
+
+    @MainActor
+    @Test func firstAssistantMessageUpdateStartsGeneratingResponseState() {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.updated",
+                properties: AnyCodable([
+                    "info": [
+                        "id": messageID,
+                        "sessionID": sessionID,
+                        "role": "assistant"
+                    ]
+                ])
+            )
+        )
+
+        #expect(client.isLoading)
+        #expect(client.responseState == .generating)
+        #expect(client.currentActivity?.currentLabel == "Thinking...")
+        #expect(client.pendingAssistantMessage?.id == messageID)
+    }
+
+    @MainActor
+    @Test func idleStatusRefreshClearsLoadingAfterMissedSSEIdle() {
+        let client = ChatClient(demoMode: true)
+        let sessionID = "session-1"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.isLoading = true
+        client.responseState = .generating
+        client.currentActivity = AgentActivity()
+        client.currentActivity?.currentLabel = "Thinking..."
+        client.pendingAssistantMessage = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "Done",
+            isStreaming: true
+        )
+
+        client.applyCurrentSessionStatus(
+            OCSessionStatus(type: .idle, attempt: nil, message: nil, next: nil)
+        )
+
+        #expect(!client.isLoading)
+        #expect(client.responseState == .idle)
+        #expect(client.currentActivity == nil)
+        #expect(client.pendingAssistantMessage == nil)
+        #expect(client.messages.last?.content == "Done")
+        #expect(client.messages.last?.isStreaming == false)
+    }
+
+    @MainActor
     @Test func abortStopsLocalStreamingAndDropsLateBufferedText() async {
         let client = ChatClient(demoMode: true)
         let sessionID = "session-1"
@@ -469,6 +558,88 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func subagentPermissionAskedShowsPendingPermissionAlertAfterTaskSessionIsLinked() {
+        let delegate = SSEDelegateSpy()
+        delegate.currentSessionID = "parent-session"
+        delegate.pendingAssistantMessage = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        let handler = makeHandler(delegate: delegate)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.part.updated",
+                properties: AnyCodable([
+                    "part": [
+                        "id": "task-part",
+                        "sessionID": "parent-session",
+                        "messageID": "assistant-message",
+                        "type": "tool",
+                        "tool": "task",
+                        "callID": "parent-task-call",
+                        "state": [
+                            "status": "running",
+                            "metadata": [
+                                "sessionId": "child-session"
+                            ],
+                            "input": [
+                                "subagent_type": "explore"
+                            ]
+                        ]
+                    ]
+                ])
+            )
+        )
+
+        handler.handleEvent(
+            OCEvent(
+                type: "permission.asked",
+                properties: AnyCodable([
+                    "id": "per_child",
+                    "sessionID": "child-session",
+                    "permission": "bash",
+                    "patterns": ["rg models"],
+                    "always": ["*"],
+                    "tool": [
+                        "messageID": "child-message",
+                        "callID": "child-tool-call"
+                    ]
+                ])
+            )
+        )
+
+        #expect(delegate.showPermissionAlert)
+        #expect(delegate.pendingPermission?.id == "per_child")
+        #expect(delegate.pendingPermission?.sessionID == "child-session")
+        #expect(delegate.pendingPermission?.patterns == ["rg models"])
+    }
+
+    @MainActor
+    @Test func permissionAskedFromUnrelatedSessionIsIgnored() {
+        let delegate = SSEDelegateSpy()
+        delegate.currentSessionID = "parent-session"
+        let handler = makeHandler(delegate: delegate)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "permission.asked",
+                properties: AnyCodable([
+                    "id": "per_other",
+                    "sessionID": "other-session",
+                    "permission": "bash",
+                    "patterns": ["rg models"]
+                ])
+            )
+        )
+
+        #expect(!delegate.showPermissionAlert)
+        #expect(delegate.pendingPermission == nil)
+    }
+
+    @MainActor
     @Test(arguments: ["file", "patch", "retry", "compaction", "agent", "subtask"])
     func partUpdatedPreservesKnownNonRenderableParts(_ rawType: String) {
         let delegate = SSEDelegateSpy()
@@ -515,6 +686,274 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func reasoningPartDeltaUpdatesReasoningPartWithoutAssistantContent() {
+        let delegate = SSEDelegateSpy()
+        let handler = makeHandler(delegate: delegate)
+        let messageID = "assistant-message"
+        delegate.currentActivity = AgentActivity()
+        delegate.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: "reasoning-part",
+                    sessionID: "session-1",
+                    messageID: messageID,
+                    type: .reasoning,
+                    text: ""
+                )
+            ],
+            isStreaming: true
+        )
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.part.delta",
+                properties: AnyCodable([
+                    "sessionID": "session-1",
+                    "messageID": messageID,
+                    "partID": "reasoning-part",
+                    "field": "text",
+                    "delta": "Inspecting stream state"
+                ])
+            )
+        )
+
+        #expect(delegate.pendingAssistantMessage?.content == "")
+        #expect(delegate.appendedStreamingTexts.isEmpty)
+        #expect(delegate.currentActivity?.thinkingText == "Inspecting stream state")
+
+        guard case .reasoning(let text) = delegate.pendingAssistantMessage?.assistantSegments.first?.kind else {
+            Issue.record("Expected reasoning delta to update a reasoning segment")
+            return
+        }
+
+        #expect(text == "Inspecting stream state")
+    }
+
+    @MainActor
+    @Test func textPartDeltaStillAppendsStreamingText() {
+        let delegate = SSEDelegateSpy()
+        let handler = makeHandler(delegate: delegate)
+        let messageID = "assistant-message"
+        delegate.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: "text-part",
+                    sessionID: "session-1",
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                )
+            ],
+            isStreaming: true
+        )
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.part.delta",
+                properties: AnyCodable([
+                    "sessionID": "session-1",
+                    "messageID": messageID,
+                    "partID": "text-part",
+                    "field": "text",
+                    "delta": "Hello"
+                ])
+            )
+        )
+
+        #expect(delegate.appendedStreamingTexts == ["Hello"])
+        #expect(delegate.pendingAssistantMessage?.content == "")
+    }
+
+    @MainActor
+    @Test func streamingSubtaskPartBuildsWorkingSubagentSegment() {
+        let message = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: "subtask-part",
+                    sessionID: "session-1",
+                    messageID: "assistant-message",
+                    type: .subtask,
+                    prompt: "Check tests",
+                    partDescription: "Run the failing suite",
+                    agent: AnyCodable(["id": "tester"])
+                )
+            ],
+            isStreaming: true
+        )
+
+        #expect(message.assistantSegments.count == 1)
+
+        guard case .subagent(let step) = message.assistantSegments.first?.kind else {
+            Issue.record("Expected a visible subagent segment")
+            return
+        }
+
+        #expect(step.agentName == "tester")
+        #expect(step.title == "tester")
+        #expect(step.detail == "Run the failing suite")
+        #expect(step.prompt == "Check tests")
+        #expect(!step.isCompleted)
+    }
+
+    @MainActor
+    @Test func completedSubtaskPartBuildsDoneSubagentSegment() {
+        let message = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: "subtask-part",
+                    sessionID: "session-1",
+                    messageID: "assistant-message",
+                    type: .subtask,
+                    cost: 0.012,
+                    prompt: "Check tests",
+                    partDescription: "Run the failing suite",
+                    agent: AnyCodable(["id": "tester"])
+                )
+            ],
+            isStreaming: true
+        )
+
+        guard case .subagent(let step) = message.assistantSegments.first?.kind else {
+            Issue.record("Expected a visible subagent segment")
+            return
+        }
+
+        #expect(step.agentName == "tester")
+        #expect(step.isCompleted)
+        #expect(step.cost == 0.012)
+    }
+
+    @MainActor
+    @Test func runningTaskToolBuildsWorkingSubagentSegment() {
+        let message = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: "task-part",
+                    sessionID: "session-1",
+                    messageID: "assistant-message",
+                    type: .tool,
+                    callID: "task-call",
+                    tool: "task",
+                    state: OCToolState(
+                        status: .running,
+                        input: AnyCodable([
+                            "subagent_type": "explore",
+                            "description": "Inspect the workspace"
+                        ])
+                    )
+                )
+            ],
+            isStreaming: true
+        )
+
+        guard case .subagent(let step) = message.assistantSegments.first?.kind else {
+            Issue.record("Expected task tool to render as a subagent segment")
+            return
+        }
+
+        #expect(step.agentName == "explore")
+        #expect(step.title == "explore")
+        #expect(step.detail == "Inspect the workspace")
+        #expect(!step.isCompleted)
+        #expect(!step.isError)
+    }
+
+    @MainActor
+    @Test func questionToolRunningBuildsQuestionTranscriptSegment() {
+        let message = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "",
+            parts: [
+                questionToolPart(
+                    status: .running,
+                    input: questionInput(
+                        header: "Zakres domyślnego modelu",
+                        question: "Czy domyślny model ma być globalny czy per-połączenie?",
+                        options: [
+                            ("Per-połączenie (Rekomendowane)", "Lepsze, gdy serwery mają różne modele."),
+                            ("Globalny", "Jedno ustawienie dla całej aplikacji.")
+                        ]
+                    )
+                )
+            ],
+            isStreaming: true
+        )
+
+        #expect(message.assistantSegments.count == 1)
+
+        guard case .question(let step) = message.assistantSegments.first?.kind else {
+            Issue.record("Expected a question transcript segment")
+            return
+        }
+
+        #expect(step.questions.count == 1)
+        #expect(step.questions.first?.header == "Zakres domyślnego modelu")
+        #expect(step.questions.first?.options.map(\.label) == [
+            "Per-połączenie (Rekomendowane)",
+            "Globalny"
+        ])
+        #expect(step.answers.isEmpty)
+        #expect(!step.isAnswered)
+        #expect(message.persistedToolSteps.isEmpty)
+    }
+
+    @MainActor
+    @Test func questionToolCompletedIncludesSelectedAnswersWithoutGenericToolSegment() {
+        let message = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "",
+            parts: [
+                questionToolPart(
+                    status: .completed,
+                    input: questionInput(
+                        header: "Priorytet wobec serwera",
+                        question: "Czy wybór użytkownika ma mieć pierwszeństwo?",
+                        options: [
+                            ("Wybór użytkownika zawsze wygrywa (Rekomendowane)", "Najbardziej przewidywalne."),
+                            ("Serwer nadal wygrywa", "Zachowuje server default.")
+                        ]
+                    ),
+                    metadata: [
+                        "answers": AnyCodable([
+                            ["Wybór użytkownika zawsze wygrywa (Rekomendowane)"]
+                        ])
+                    ],
+                    output: "User has answered the question."
+                )
+            ],
+            isStreaming: false
+        )
+
+        #expect(message.assistantSegments.count == 1)
+
+        guard case .question(let step) = message.assistantSegments.first?.kind else {
+            Issue.record("Expected a completed question transcript segment")
+            return
+        }
+
+        #expect(step.answers == [["Wybór użytkownika zawsze wygrywa (Rekomendowane)"]])
+        #expect(step.isAnswered)
+        #expect(message.persistedToolSteps.isEmpty)
+    }
+
+    @MainActor
     private func waitForMainQueue(milliseconds: Int) async {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
@@ -529,6 +968,52 @@ struct ChatStreamBehaviorTests {
         let handler = SSEEventHandler(haptics: HapticController(), liveActivityTracker: tracker)
         handler.delegate = delegate
         return handler
+    }
+
+    private func questionInput(
+        header: String,
+        question: String,
+        options: [(label: String, description: String)]
+    ) -> AnyCodable {
+        AnyCodable([
+            "questions": [
+                [
+                    "header": header,
+                    "question": question,
+                    "options": options.map { option in
+                        [
+                            "label": option.label,
+                            "description": option.description
+                        ]
+                    },
+                    "multiple": false,
+                    "custom": false
+                ]
+            ]
+        ])
+    }
+
+    private func questionToolPart(
+        status: OCToolStatus,
+        input: AnyCodable,
+        metadata: [String: AnyCodable]? = nil,
+        output: String? = nil
+    ) -> OCPart {
+        OCPart(
+            id: "question-part",
+            sessionID: "session-1",
+            messageID: "assistant-message",
+            type: .tool,
+            callID: "question-call",
+            tool: "question",
+            state: OCToolState(
+                status: status,
+                input: input,
+                output: output,
+                title: status == .completed ? "Asked 1 question" : nil,
+                metadata: metadata
+            )
+        )
     }
 }
 
@@ -546,9 +1031,16 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
     var pendingQuestion: OCQuestionRequest?
     var showQuestionSheet: Bool = false
     var todos: [OCTodo] = []
+    var appendedStreamingTexts: [String] = []
     var clearedStreamingBuffers: [String] = []
 
     func finishLoading() {}
+
+    func beginExternalResponse() {
+        isLoading = true
+        currentActivity = AgentActivity()
+        currentActivity?.currentLabel = "Thinking..."
+    }
 
     func shouldIgnoreAssistantEvent(sessionID: String, messageID: String) -> Bool {
         false
@@ -558,7 +1050,9 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
         false
     }
 
-    func appendStreamingText(messageID: String, text: String) {}
+    func appendStreamingText(messageID: String, text: String) {
+        appendedStreamingTexts.append(text)
+    }
 
     func clearStreamingBuffer(messageID: String) {
         clearedStreamingBuffers.append(messageID)
