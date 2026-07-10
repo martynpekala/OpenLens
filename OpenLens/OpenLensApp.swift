@@ -4,6 +4,9 @@ import SwiftUI
 private enum BuiltinChatPreview {
     case demo
     case debug
+    case heavyLoad
+    case concurrentSend
+    case streamStress
 
     var script: DemoScript {
         switch self {
@@ -11,6 +14,12 @@ private enum BuiltinChatPreview {
             return .showcase
         case .debug:
             return .debugBaseline
+        case .heavyLoad:
+            return .heavyLoad
+        case .concurrentSend:
+            return .concurrentSend
+        case .streamStress:
+            return .streamStress
         }
     }
 
@@ -20,6 +29,12 @@ private enum BuiltinChatPreview {
             return "openlens-demo"
         case .debug:
             return "chat-debug-baseline"
+        case .heavyLoad:
+            return "chat-heavy-load"
+        case .concurrentSend:
+            return "chat-concurrent-send"
+        case .streamStress:
+            return "chat-stream-stress"
         }
     }
 
@@ -29,6 +44,12 @@ private enum BuiltinChatPreview {
             return "tour"
         case .debug:
             return "baseline"
+        case .heavyLoad:
+            return "heavy-load"
+        case .concurrentSend:
+            return "concurrent-send"
+        case .streamStress:
+            return "stress"
         }
     }
 }
@@ -88,7 +109,9 @@ func shouldHandleConnectionAsFreshConnect(
 
 @main
 struct OpenLensApp: App {
+    private static let streamStressLaunchArgument = "CHAT_STREAM_STRESS_MODE"
     private let screenshotModeEnabled: Bool
+    private let streamStressModeEnabled: Bool
     @State private var connection: ConnectionManager
     
     @State private var router = AppRouter()
@@ -136,8 +159,34 @@ struct OpenLensApp: App {
 #endif
     }
 
+    private var startHeavyLoadPreviewAction: (() -> Void)? {
+#if DEBUG
+        guard debugFeaturesEnabled else { return nil }
+        return { startPreview(.builtin(.heavyLoad)) }
+#else
+        nil
+#endif
+    }
+
+    private var startConcurrentSendPreviewAction: (() -> Void)? {
+#if DEBUG
+        guard debugFeaturesEnabled else { return nil }
+        return { startPreview(.builtin(.concurrentSend)) }
+#else
+        nil
+#endif
+    }
+
     init() {
+#if DEBUG
+        let streamStressModeEnabled = ProcessInfo.processInfo.arguments.contains(
+            Self.streamStressLaunchArgument
+        )
+#else
+        let streamStressModeEnabled = false
+#endif
         self.screenshotModeEnabled = ScreenshotFixtures.isEnabled
+        self.streamStressModeEnabled = streamStressModeEnabled
 
 //        if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
 //            router.selectedTab = launchTab
@@ -212,12 +261,34 @@ struct OpenLensApp: App {
                 recordedReplayStore: recordedReplayStore
             ))
         }
+
+        if streamStressModeEnabled {
+            let preview = BuiltinChatPreview.streamStress
+            let source = ChatPreviewSource.builtin(preview)
+            let previewConnection = ConnectionManager()
+            previewConnection.configureDemoState(
+                projectName: source.projectName,
+                branch: source.branch
+            )
+            self._activePreviewSource = State(initialValue: source)
+            self._previewConnection = State(initialValue: previewConnection)
+            self._previewChatClient = State(
+                initialValue: ChatClient(demoMode: true, script: preview.script)
+            )
+        }
     }
 
     var body: some Scene {
         WindowGroup {
             Group {
-                if !screenshotModeEnabled && !onboardingCompleted {
+                if streamStressModeEnabled,
+                   let previewClient = previewChatClient,
+                   let previewConn = previewConnection {
+                    NavigationStack {
+                        ChatView(chatClient: previewClient)
+                            .environment(\.connection, previewConn)
+                    }
+                } else if !screenshotModeEnabled && !onboardingCompleted {
                     OnboardingView(onDone: { onboardingCompleted = true })
                         .transition(.opacity)
                 } else if screenshotModeEnabled || connection.isConnected || connection.isReconnecting {
@@ -232,6 +303,8 @@ struct OpenLensApp: App {
                     ConnectView(
                         onStartDemo: { startPreview(.builtin(.demo)) },
                         onStartDebug: startDebugPreviewAction,
+                        onStartHeavyLoad: startHeavyLoadPreviewAction,
+                        onStartConcurrentSend: startConcurrentSendPreviewAction,
                         onStartRecordedReplay: { replay, mode in
                             startPreview(.recordedReplay(replay, mode: mode))
                         },
@@ -388,7 +461,12 @@ struct OpenLensApp: App {
 
     private var previewPresentationBinding: Binding<Bool> {
         Binding(
-            get: { isPreviewMode && previewChatClient != nil && previewConnection != nil },
+            get: {
+                !streamStressModeEnabled
+                    && isPreviewMode
+                    && previewChatClient != nil
+                    && previewConnection != nil
+            },
             set: { isPresented in
                 if !isPresented, isPreviewMode {
                     exitPreview()

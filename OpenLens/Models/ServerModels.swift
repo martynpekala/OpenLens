@@ -4,7 +4,7 @@ import Foundation
 
 /// Matches the server's `Session` type:
 /// `{ id, projectID, directory, parentID?, title, version, time: { created, updated }, share?, summary?, revert? }`
-struct OCSession: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let projectID: String?
     let directory: String?
@@ -64,7 +64,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
- struct OCSessionTime: Codable, Hashable, Sendable {
+nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
     let created: Double
     let updated: Double
     let compacting: Double?
@@ -87,7 +87,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
- struct OCShareInfo: Codable, Hashable, Sendable {
+nonisolated struct OCShareInfo: Codable, Hashable, Sendable {
     let url: String?
 }
 
@@ -97,7 +97,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
 /// Both share: id, sessionID, role, time: { created: number (milliseconds) }.
 /// UserMessage adds: agent, model: { providerID, modelID }, system, tools, summary.
 /// AssistantMessage adds: cost, tokens, error, modelID, providerID, mode, path, finish.
- struct OCMessage: Codable, Identifiable, Sendable {
+nonisolated struct OCMessage: Codable, Identifiable, Sendable {
     let id: String
     let sessionID: String
     let role: OCMessageRole
@@ -343,7 +343,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
- struct OCPart: Codable, Identifiable, Sendable {
+nonisolated struct OCPart: Codable, Identifiable, Sendable {
     let id: String
     let sessionID: String
     let messageID: String
@@ -471,7 +471,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
- struct OCToolState: Codable, Sendable {
+nonisolated struct OCToolState: Codable, Sendable {
     let status: OCToolStatus
     let input: AnyCodable?
     let output: String?
@@ -525,7 +525,7 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
- enum OCToolStatus: String, Codable, Sendable {
+nonisolated enum OCToolStatus: String, Codable, Sendable {
     case pending
     case running
     case completed
@@ -539,14 +539,14 @@ struct OCSession: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
- struct OCToolTime: Codable, Sendable {
+nonisolated struct OCToolTime: Codable, Sendable {
     let start: Double?
     let end: Double?
 }
 
 // MARK: - SSE Events
 
- struct OCEvent: Codable, Sendable {
+nonisolated struct OCEvent: Codable, Sendable {
     let type: String
     let properties: AnyCodable?
  }
@@ -612,13 +612,13 @@ extension OCEvent {
 
 // MARK: - Session Status
 
- enum OCSessionStatusType: String, Codable, Sendable {
+nonisolated enum OCSessionStatusType: String, Codable, Sendable {
     case idle
     case busy
     case retry
 }
 
- struct OCSessionStatus: Codable, Sendable {
+nonisolated struct OCSessionStatus: Codable, Sendable {
     let type: OCSessionStatusType
     let attempt: Int?
     let message: String?
@@ -882,7 +882,7 @@ struct OCReasoningConfigVariant: Codable, Hashable, Sendable {
 
 // MARK: - Permission
 
-struct OCPermissionToolRef: Codable, Sendable {
+nonisolated struct OCPermissionToolRef: Codable, Sendable {
     let messageID: String
     let callID: String
 }
@@ -893,7 +893,7 @@ enum OCPermissionReply: String, Codable, Sendable {
     case reject
 }
 
-struct OCPermissionRequest: Codable, Identifiable, Sendable {
+nonisolated struct OCPermissionRequest: Codable, Identifiable, Sendable {
     let id: String
     let sessionID: String?
     let permission: String?
@@ -908,6 +908,9 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
     let legacyDescription: String?
     let legacyTitle: String?
     let legacyToolName: String?
+    /// Local display metadata. This is set after reducing a server payload so
+    /// the UI never offers a broad approval for a scope it cannot show fully.
+    let displayScopeWasTruncated: Bool
 
     var title: String? {
         legacyTitle?.nilIfBlank ?? permission?.nilIfBlank ?? action?.nilIfBlank ?? legacyToolName?.nilIfBlank
@@ -938,7 +941,8 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
         input: AnyCodable? = nil,
         description: String? = nil,
         title: String? = nil,
-        toolName: String? = nil
+        toolName: String? = nil,
+        displayScopeWasTruncated: Bool = false
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -954,6 +958,7 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
         self.legacyDescription = description
         self.legacyTitle = title
         self.legacyToolName = toolName
+        self.displayScopeWasTruncated = displayScopeWasTruncated
     }
 
     init(from decoder: Decoder) throws {
@@ -973,6 +978,7 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
         legacyDescription = try container.decodeIfPresent(String.self, forKey: .description)
         legacyTitle = try container.decodeIfPresent(String.self, forKey: .title)
         legacyToolName = try? container.decodeIfPresent(String.self, forKey: .tool)
+        displayScopeWasTruncated = try container.decodeIfPresent(Bool.self, forKey: .displayScopeWasTruncated) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -990,6 +996,7 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
         try container.encodeIfPresent(input, forKey: .input)
         try container.encodeIfPresent(legacyDescription, forKey: .description)
         try container.encodeIfPresent(legacyTitle, forKey: .title)
+        try container.encode(displayScopeWasTruncated, forKey: .displayScopeWasTruncated)
         if legacyToolName != nil, toolRef == nil {
             try container.encodeIfPresent(legacyToolName, forKey: .tool)
         }
@@ -1010,13 +1017,105 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
         case input
         case description
         case title
+        case displayScopeWasTruncated
+    }
+}
+
+/// Bounds an untrusted permission request before it reaches a presentation
+/// surface. Valid request and session IDs stay byte-for-byte intact because
+/// they identify the eventual response; oversized IDs are rejected. Only
+/// display fields and the approval scope are shortened.
+nonisolated enum PermissionRequestDisplaySafety {
+    static let maximumIdentifierBytes = 256
+    static let maximumTitleBytes = 320
+    static let maximumDescriptionBytes = 1_200
+    static let maximumScopeEntryBytes = 320
+    /// The sheet renders at most four rules. Keeping exactly that prefix avoids
+    /// carrying a larger scope into main-thread view work.
+    static let maximumScopeEntryCount = 4
+
+    static func sanitize(_ request: OCPermissionRequest) -> OCPermissionRequest? {
+        // Do not carry an unbounded response or session identifier into SwiftUI
+        // state. A rejected request is safer than inventing an ID the server
+        // cannot correlate with a reply.
+        guard fitsIdentifier(request.id),
+              request.sessionID.map(fitsIdentifier) ?? true
+        else {
+            return nil
+        }
+
+        let patterns = sanitizeScope(request.patterns)
+        let resources = sanitizeScope(request.resources)
+        let always = sanitizeScope(request.always)
+        let save = sanitizeScope(request.save)
+
+        return OCPermissionRequest(
+            id: request.id,
+            sessionID: request.sessionID,
+            permission: boundedText(request.permission, maximumBytes: maximumTitleBytes),
+            action: boundedText(request.action, maximumBytes: maximumTitleBytes),
+            patterns: patterns.values,
+            resources: resources.values,
+            metadata: nil,
+            always: always.values,
+            save: save.values,
+            toolRef: nil,
+            input: nil,
+            description: boundedText(request.legacyDescription, maximumBytes: maximumDescriptionBytes),
+            title: boundedText(request.legacyTitle, maximumBytes: maximumTitleBytes),
+            toolName: boundedText(request.legacyToolName, maximumBytes: maximumTitleBytes),
+            displayScopeWasTruncated: request.displayScopeWasTruncated
+                || patterns.wasTruncated
+                || resources.wasTruncated
+                || always.wasTruncated
+                || save.wasTruncated
+        )
+    }
+
+    private static func sanitizeScope(_ values: [String]) -> (values: [String], wasTruncated: Bool) {
+        let visibleValues = values.prefix(maximumScopeEntryCount)
+        var sanitizedValues: [String] = []
+        sanitizedValues.reserveCapacity(visibleValues.count)
+        var wasTruncated = values.count > maximumScopeEntryCount
+
+        for value in visibleValues {
+            let bounded = boundedText(value, maximumBytes: maximumScopeEntryBytes)
+            wasTruncated = wasTruncated || bounded.wasTruncated
+
+            let trimmed = bounded.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                sanitizedValues.append(trimmed)
+            }
+        }
+
+        return (sanitizedValues, wasTruncated)
+    }
+
+    private static func fitsIdentifier(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        return value.utf8.prefix(maximumIdentifierBytes + 1).count <= maximumIdentifierBytes
+    }
+
+    private static func boundedText(_ value: String?, maximumBytes: Int) -> String? {
+        value.map { boundedText($0, maximumBytes: maximumBytes).value }
+    }
+
+    private static func boundedText(_ value: String, maximumBytes: Int) -> (value: String, wasTruncated: Bool) {
+        let utf8 = value.utf8
+        let prefix = utf8.prefix(maximumBytes)
+
+        guard prefix.endIndex != utf8.endIndex else {
+            return (value, false)
+        }
+
+        return (String(decoding: prefix, as: UTF8.self), true)
     }
 }
 
 // MARK: - Question
 
 /// A single option within a question.
- struct OCQuestionOption: Codable, Identifiable, Sendable {
+nonisolated struct OCQuestionOption: Codable, Identifiable, Sendable {
     let label: String
     let description: String
 
@@ -1039,7 +1138,7 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
 }
 
 /// A single question with header, text, options, and selection mode.
- struct OCQuestionInfo: Codable, Identifiable, Sendable {
+nonisolated struct OCQuestionInfo: Codable, Identifiable, Sendable {
     let question: String
     let header: String
     let options: [OCQuestionOption]
@@ -1071,14 +1170,14 @@ struct OCPermissionRequest: Codable, Identifiable, Sendable {
 }
 
 /// Tool reference inside a question request (which message/tool call triggered it).
-struct OCQuestionToolRef: Codable, Sendable {
+nonisolated struct OCQuestionToolRef: Codable, Sendable {
     let messageID: String
     let callID: String
 }
 
 /// A question request from the server, sent via SSE `question.asked` event.
 /// Contains one or more questions the AI wants to ask the user.
- struct OCQuestionRequest: Codable, Identifiable, Sendable {
+nonisolated struct OCQuestionRequest: Codable, Identifiable, Sendable {
     let id: String
     let sessionID: String
     let questions: [OCQuestionInfo]
@@ -1556,7 +1655,7 @@ struct OCFileContent: Codable, Hashable, Sendable {
 
 // MARK: - Todo
 
-struct OCTodo: Identifiable, Codable {
+nonisolated struct OCTodo: Identifiable, Codable, Sendable {
     let id: String
     let content: String
     let status: String
@@ -1564,6 +1663,13 @@ struct OCTodo: Identifiable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case content, status, priority
+    }
+
+    init(id: String, content: String, status: String, priority: String? = nil) {
+        self.id = id
+        self.content = content
+        self.status = status
+        self.priority = priority
     }
 
     init(from decoder: Decoder) throws {
@@ -1584,7 +1690,7 @@ struct OCTodo: Identifiable, Codable {
 
 // MARK: - AnyCodable (utility for dynamic JSON)
 
- struct AnyCodable: Codable {
+nonisolated struct AnyCodable: Codable {
     let value: Any
 
     init(_ value: Any) {

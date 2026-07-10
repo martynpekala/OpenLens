@@ -53,6 +53,13 @@ struct ChatClientPreviewModeTests {
             return false
         }
 
+        let hasTaskPart = events.contains { event in
+            if case .toolCallPart(let name, _, _, _, _) = event {
+                return name.lowercased() == "task"
+            }
+            return false
+        }
+
         let hasLongResponse = events.contains { event in
             if case .streamText(let text, _, _) = event {
                 return text.count > 1_500
@@ -69,8 +76,60 @@ struct ChatClientPreviewModeTests {
 
         #expect(hasReasoning)
         #expect(hasToolCallPart)
+        #expect(hasTaskPart)
         #expect(hasLongResponse)
         #expect(hasRapidDeltaCadence)
+    }
+
+    @Test func heavyLoadProfileSeedsHistoryBeforeStreaming() {
+        let events = DemoScript.heavyLoad.events
+
+        #expect(events.contains { event in
+            if case .seedHistory(let messageCount) = event {
+                return messageCount >= 100
+            }
+            return false
+        })
+        #expect(events.contains { event in
+            if case .streamReasoning(_, let chunkSize, let delay) = event {
+                return chunkSize > 1 && delay < 0.02
+            }
+            return false
+        })
+        #expect(events.contains { event in
+            if case .streamText(_, let chunkSize, let delay) = event {
+                return chunkSize > 1 && delay < 0.02
+            }
+            return false
+        })
+    }
+
+    @Test func concurrentSendProfileInjectsAUserMessageDuringStreaming() {
+        let events = DemoScript.concurrentSend.events
+
+        guard let event = events.first(where: { event in
+            if case .streamTextWithConcurrentSend = event { return true }
+            return false
+        }) else {
+            Issue.record("Expected the concurrent-send stress event")
+            return
+        }
+
+        guard case .streamTextWithConcurrentSend(
+            _,
+            let chunkSize,
+            let delay,
+            let userMessage,
+            let after
+        ) = event else {
+            Issue.record("Expected the concurrent-send stress event payload")
+            return
+        }
+
+        #expect(chunkSize > 1)
+        #expect(delay < 0.02)
+        #expect(after > 0)
+        #expect(userMessage.contains("streaming"))
     }
 
     @Test func resolveDefaultModelSelectionPrefersSavedDefaultWhenAvailable() {

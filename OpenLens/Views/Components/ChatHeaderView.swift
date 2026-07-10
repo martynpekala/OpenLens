@@ -3,7 +3,6 @@ import SwiftUI
 /// Navigation bar toolbar content for the chat view.
 struct ChatHeaderToolbar: ToolbarContent {
     let projectName: String?
-    let projectDirectory: String?
     let branch: String?
     let connectionState: ConnectionManager.State
     let sessionTitle: String?
@@ -58,94 +57,53 @@ struct ChatHeaderToolbar: ToolbarContent {
         visualMode.isRetro
     }
 
-    private var workspaceSubtitle: String? {
-        projectDirectory ?? projectName
-    }
-
     var body: some ToolbarContent {
-        ToolbarItem(placement: .title) {
-                VStack(alignment: .center, spacing: 0) {
-                    Text(sessionTitle ?? "OpenCode")
-                        .font(isRetroChat ? RetroChatStyle.headerFont : .system(size: 16, weight: .semibold))
-                        .foregroundStyle(isRetroChat ? RetroChatStyle.ink : .primary)
-                        .lineLimit(1)
-                        .padding(.vertical, 4)
-                        .padding(.horizontal)
+        ToolbarItem(placement: .principal) {
+            VStack(alignment: .center, spacing: 0) {
+                Text(sessionTitle ?? "OpenCode")
+                    .font(isRetroChat ? RetroChatStyle.headerFont : .system(size: 16, weight: .semibold))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.ink : .primary)
+                    .lineLimit(1)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal)
 
-                    ViewThatFits {
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 6, height: 6)
-                                .symbolEffect(.pulse, isActive: connectionState == .connected)
-                                .padding(.trailing, 4)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                        .symbolEffect(.pulse, isActive: connectionState == .connected)
+                        .padding(.trailing, 4)
 
-                            if let workspaceSubtitle {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
-                                Text(workspaceSubtitle)
-                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
-                                    .lineLimit(1)
-                            }
+                    if let projectName {
+                        Image(systemName: "folder")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                        Text(projectName)
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                            .lineLimit(1)
+                    }
 
-                            if let branch {
-                                Text("\u{00B7}")
-                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
-                                Image(systemName: "arrow.triangle.branch")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
-                                Text(branch)
-                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
-                                    .lineLimit(1)
-                            }
+                    if let branch {
+                        if projectName != nil {
+                            Text("\u{00B7}")
+                                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
+                                .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
                         }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal)
-                        .chatHeaderStatusChrome(visualMode)
-                        
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 6, height: 6)
-                                .symbolEffect(.pulse, isActive: connectionState == .connected)
-                                .padding(.trailing, 4)
-
-                            if let projectName {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
-                                Text(projectName)
-                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
-                                    .lineLimit(1)
-                            }
-
-                            if let branch {
-                                if projectName != nil {
-                                    Text("\u{00B7}")
-                                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
-                                        .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
-                                }
-                                Image(systemName: "arrow.triangle.branch")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
-                                Text(branch)
-                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
-                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal)
-                        .chatHeaderStatusChrome(visualMode)
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 10))
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                        Text(branch)
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                            .lineLimit(1)
                     }
                 }
-                .safeAreaPadding(.vertical)
-            
+                .padding(.vertical, 4)
+                .padding(.horizontal)
+                .chatHeaderStatusChrome(visualMode)
+            }
+            .safeAreaPadding(.vertical)
         }
 
         if showsRecordingControls, let onToggleRecording {

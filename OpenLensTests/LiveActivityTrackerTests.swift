@@ -68,6 +68,26 @@ struct LiveActivityTrackerTests {
         #expect(clearedUpdate.pendingUserResponse == nil)
         #expect(clearedUpdate.currentIntent == "Thinking")
     }
+
+    @Test func boundsUntrustedQuestionDetailBeforeUpdatingActivityKit() throws {
+        let liveActivity = LiveActivitySpy()
+        let tracker = LiveActivityTracker(liveActivity: liveActivity)
+        let oversized = String(repeating: "x", count: 10_000)
+
+        tracker.start(agentName: oversized, userTask: oversized)
+        tracker.setPendingQuestion(
+            OCQuestionRequest(
+                id: "question-1",
+                sessionID: "session-1",
+                questions: [
+                    OCQuestionInfo(question: oversized, header: "Header", options: [])
+                ]
+            )
+        )
+
+        let update = try #require(liveActivity.updates.last)
+        #expect(update.pendingUserResponse?.detail.count ?? 0 <= 181)
+    }
 }
 
 private final class LiveActivitySpy: LiveActivityProviding {

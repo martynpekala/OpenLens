@@ -174,6 +174,10 @@ enum AppText {
     static let switchServerTitle = "Switch Server?"
     static let tryDebugChat = "Open Debug Chat"
     static let tryDebugChatSubtitle = "Replay a heavy streaming scenario for chat comparison"
+    static let tryHeavyLoadChat = "Open Heavy Load Chat"
+    static let tryHeavyLoadChatSubtitle = "Load a large message history and stream a 100 KB response"
+    static let tryConcurrentSendChat = "Send During Stream"
+    static let tryConcurrentSendChatSubtitle = "Inject another message while the first response is streaming"
     static let thinking = "Thinking"
     static let thinkingDefault = "Default"
     static let titleUntitled = "Untitled"
@@ -316,6 +320,10 @@ enum AppText {
 
     static func markdownShowMore(_ remainingCount: Int) -> String {
         "Show more (\(remainingCount) blocks)"
+    }
+
+    static func streamingEarlierTextHidden(_ chunkCount: Int) -> String {
+        "Earlier text is retained for the final response (\(chunkCount) chunks)"
     }
 
     static func groupedProjectCount(_ count: Int) -> String {

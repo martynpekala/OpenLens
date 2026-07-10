@@ -4,9 +4,17 @@ import Foundation
 /// and Live Activity display.
 enum ToolLabelFormatter {
 
+    private static let maximumInspectedCharacters = 2_048
+    private static let maximumPathCharacters = 180
+    private static let maximumTitleCharacters = 80
+
     /// Build a short label describing what the tool is doing (e.g. "Reading main.swift...").
     static func label(toolName: String, state: OCToolState) -> String {
-        let normalizedToolName = toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Tool names are ordinarily tiny, but keep the fallback itself bounded
+        // when handling untrusted server payloads on MainActor.
+        let normalizedToolName = String(toolName.prefix(64))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         let input = state.input?.value as? [String: Any]
 
         switch normalizedToolName {
@@ -23,21 +31,21 @@ enum ToolLabelFormatter {
                 return "Edit \(compactPath(path))"
             }
         case "glob":
-            if let pattern = input?["pattern"] as? String {
+            if let pattern = boundedPreview(input?["pattern"] as? String, limit: 40) {
                 let scope = compactScope(input?["path"] as? String)
                 return scope == "." ? "Glob \"\(pattern)\"" : "Glob \"\(pattern)\" in \(scope)"
             }
         case "grep":
-            if let pattern = input?["pattern"] as? String {
+            if let pattern = boundedPreview(input?["pattern"] as? String, limit: 40) {
                 let scope = compactScope(input?["path"] as? String)
                 return scope == "." ? "Grep \"\(pattern)\"" : "Grep \"\(pattern)\" in \(scope)"
             }
         case "bash":
-            if let command = input?["command"] as? String {
-                return "Bash \(commandPreview(command))"
+            if let command = commandPreview(input?["command"] as? String) {
+                return "Bash \(command)"
             }
         case "question":
-            if let title = state.title?.nilIfBlank {
+            if let title = boundedPreview(state.title, limit: maximumTitleCharacters) {
                 return title
             }
             return "Question"
@@ -47,15 +55,15 @@ enum ToolLabelFormatter {
             break
         }
 
-        if let query = input?["query"] as? String {
-            return "Search \(String(query.prefix(40)))"
+        if let query = boundedPreview(input?["query"] as? String, limit: 40) {
+            return "Search \(query)"
         }
 
-        if let pattern = input?["pattern"] as? String {
-            return "Find \(String(pattern.prefix(40)))"
+        if let pattern = boundedPreview(input?["pattern"] as? String, limit: 40) {
+            return "Find \(pattern)"
         }
 
-        if let title = state.title?.nilIfBlank {
+        if let title = boundedPreview(state.title, limit: maximumTitleCharacters) {
             return title
         }
         return normalizedToolName
@@ -63,7 +71,7 @@ enum ToolLabelFormatter {
             .capitalized
     }
 
-    /// Build a detail string (typically the full path, if available).
+    /// Build a bounded path detail for the activity state.
     static func detail(state: OCToolState) -> String {
         if let input = state.input?.value as? [String: Any],
            let path = toolPath(input) {
@@ -73,8 +81,8 @@ enum ToolLabelFormatter {
     }
 
     private static func toolPath(_ input: [String: Any]?) -> String? {
-        (input?["filePath"] as? String)?.nilIfBlank ??
-        (input?["path"] as? String)?.nilIfBlank
+        boundedPreview(input?["filePath"] as? String, limit: maximumPathCharacters)
+            ?? boundedPreview(input?["path"] as? String, limit: maximumPathCharacters)
     }
 
     private static func compactPath(_ path: String) -> String {
@@ -84,7 +92,7 @@ enum ToolLabelFormatter {
     }
 
     private static func compactScope(_ path: String?) -> String {
-        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+        guard let path = boundedPreview(path, limit: maximumPathCharacters) else {
             return "."
         }
 
@@ -97,9 +105,50 @@ enum ToolLabelFormatter {
         return last.isEmpty ? compact : last
     }
 
-    private static func commandPreview(_ command: String) -> String {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > 52 else { return trimmed }
-        return String(trimmed.prefix(52)) + "..."
+    private static func commandPreview(_ command: String?) -> String? {
+        boundedPreview(command, limit: 52)
+    }
+
+    /// A small, display-ready prefix that never calls `trimmingCharacters` or
+    /// `count` over a full untrusted command/path. This formatter is invoked by
+    /// streamed tool updates on MainActor, so both input inspection and output
+    /// allocation stay bounded.
+    private static func boundedPreview(_ text: String?, limit: Int) -> String? {
+        guard let text, limit > 0 else { return nil }
+
+        var preview = ""
+        preview.reserveCapacity(limit + 3)
+        var inspectedCharacters = 0
+        var visibleCharacters = 0
+        var hasStarted = false
+        var isTruncated = false
+
+        for character in text {
+            guard inspectedCharacters < maximumInspectedCharacters else {
+                isTruncated = true
+                break
+            }
+            inspectedCharacters += 1
+
+            if !hasStarted {
+                guard !character.isWhitespace else { continue }
+                hasStarted = true
+            }
+
+            guard visibleCharacters < limit else {
+                isTruncated = true
+                break
+            }
+
+            preview.append(character)
+            visibleCharacters += 1
+        }
+
+        while let last = preview.last, last.isWhitespace {
+            preview.removeLast()
+        }
+
+        guard !preview.isEmpty else { return nil }
+        return isTruncated ? preview + "..." : preview
     }
 }

@@ -6,6 +6,7 @@ import os
 actor OpenCodeClient {
 
     private let session: URLSession
+    private static let maximumPendingPromptCount = 24
     private var baseURL: URL
     private var authHeader: String?
     private var contextDirectory: String?
@@ -87,8 +88,9 @@ actor OpenCodeClient {
 
     // MARK: - Todos
 
-    func listTodos(sessionID: String) async throws -> [OCTodo] {
-        try await get("/session/\(sessionID)/todo")
+    func listTodos(sessionID: String) async throws -> TodoDisplaySnapshot {
+        let todos: [OCTodo] = try await get("/session/\(sessionID)/todo")
+        return TodoDisplaySafety.prepare(todos)
     }
 
     /// Send a prompt asynchronously (fire and forget, monitor via SSE).
@@ -221,7 +223,21 @@ actor OpenCodeClient {
     // MARK: - Permissions
 
     func listPermissions() async throws -> [OCPermissionRequest] {
-        try await get("/permission")
+        let requests: [OCPermissionRequest] = try await get("/permission")
+        var safeRequests: [OCPermissionRequest] = []
+        safeRequests.reserveCapacity(min(requests.count, Self.maximumPendingPromptCount))
+
+        for request in requests {
+            guard let sanitized = PermissionRequestDisplaySafety.sanitize(request) else {
+                continue
+            }
+            safeRequests.append(sanitized)
+            if safeRequests.count == Self.maximumPendingPromptCount {
+                break
+            }
+        }
+
+        return safeRequests
     }
 
     func replyToPermission(requestID: String, reply: OCPermissionReply) async throws -> Bool {
@@ -235,7 +251,18 @@ actor OpenCodeClient {
     /// Fetch any pending (unanswered) questions from the server.
     /// Used after reconnection to recover questions that arrived while disconnected.
     func listPendingQuestions() async throws -> [OCQuestionRequest] {
-        try await get("/question")
+        let requests: [OCQuestionRequest] = try await get("/question")
+        var safeRequests: [OCQuestionRequest] = []
+        safeRequests.reserveCapacity(min(requests.count, Self.maximumPendingPromptCount))
+
+        for request in requests where InteractiveQuestionSafety.accepts(request) {
+            safeRequests.append(request)
+            if safeRequests.count == Self.maximumPendingPromptCount {
+                break
+            }
+        }
+
+        return safeRequests
     }
 
     /// Reply to a question request with selected answers.
@@ -389,4 +416,3 @@ enum OpenCodeError: LocalizedError {
 // MARK: - Empty response for 204s
 
 struct EmptyResponse: Decodable {}
-

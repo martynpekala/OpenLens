@@ -33,6 +33,8 @@ struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
     var onStartDebug: (() -> Void)?
+    var onStartHeavyLoad: (() -> Void)?
+    var onStartConcurrentSend: (() -> Void)?
     var onStartRecordedReplay: ((RecordedChatReplay, RecordedReplayPlayer.PlaybackMode) -> Void)?
 
     /// Deep link received from `openlens://connect` URL or QR scan.
@@ -525,7 +527,12 @@ struct ConnectView: View {
 
     private var showsPreviewModesSection: Bool {
 #if DEBUG
-        onStartDemo != nil || (debugFeaturesEnabled && (onStartDebug != nil || onStartRecordedReplay != nil))
+        onStartDemo != nil || (debugFeaturesEnabled && (
+            onStartDebug != nil
+                || onStartHeavyLoad != nil
+                || onStartConcurrentSend != nil
+                || onStartRecordedReplay != nil
+        ))
 #else
         onStartDemo != nil
 #endif
@@ -554,6 +561,24 @@ struct ConnectView: View {
                     subtitle: AppText.tryDebugChatSubtitle,
                     systemImage: "ladybug.fill",
                     action: onStartDebug
+                )
+            }
+
+            if debugFeaturesEnabled, let onStartHeavyLoad {
+                previewButton(
+                    title: AppText.tryHeavyLoadChat,
+                    subtitle: AppText.tryHeavyLoadChatSubtitle,
+                    systemImage: "gauge.with.dots.needle.67percent",
+                    action: onStartHeavyLoad
+                )
+            }
+
+            if debugFeaturesEnabled, let onStartConcurrentSend {
+                previewButton(
+                    title: AppText.tryConcurrentSendChat,
+                    subtitle: AppText.tryConcurrentSendChatSubtitle,
+                    systemImage: "arrow.up.message.fill",
+                    action: onStartConcurrentSend
                 )
             }
 #endif

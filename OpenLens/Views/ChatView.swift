@@ -83,7 +83,6 @@ struct ChatView: View {
         .toolbar {
             ChatHeaderToolbar(
                 projectName: chatClient.currentSession?.workspaceDisplayName ?? connection.projectName,
-                projectDirectory: chatClient.currentSession?.workspaceDirectory ?? connection.selectedProjectDirectory,
                 branch: connection.branch,
                 connectionState: connection.state,
                 sessionTitle: chatClient.currentSession?.title,
@@ -123,6 +122,7 @@ struct ChatView: View {
                 chatClient.setupSSEHandlers()
                 Task {
                     await loadCommands(force: true)
+                    await chatClient.refreshCurrentSessionStatus()
                     await chatClient.loadMessages()
                     await chatClient.recoverPendingPermission()
                     await chatClient.recoverPendingQuestions()
@@ -321,19 +321,26 @@ struct ChatView: View {
 
     private var todoChipLabel: String {
         let completed = chatClient.todos.filter { $0.status == "completed" }.count
-        let total = chatClient.todos.count
-        return "\(completed)/\(total)"
+        let visible = chatClient.todos.count
+        guard chatClient.hiddenTodoCount > 0 else {
+            return "\(completed)/\(visible)"
+        }
+        return "\(completed)/\(visible) +\(chatClient.hiddenTodoCount)"
     }
 
     private var todoChipIcon: String {
-        let allDone = chatClient.todos.allSatisfy { $0.status == "completed" }
+        let allDone = chatClient.hiddenTodoCount == 0
+            && !chatClient.todos.isEmpty
+            && chatClient.todos.allSatisfy { $0.status == "completed" }
         if allDone { return "checkmark.circle.fill" }
         let hasInProgress = chatClient.todos.contains { $0.status == "in_progress" }
         return hasInProgress ? "circle.dashed" : "checklist"
     }
 
     private var todoChipColor: Color {
-        let allDone = chatClient.todos.allSatisfy { $0.status == "completed" }
+        let allDone = chatClient.hiddenTodoCount == 0
+            && !chatClient.todos.isEmpty
+            && chatClient.todos.allSatisfy { $0.status == "completed" }
         if allDone { return isRetroChat ? RetroChatStyle.blueAccent : .green }
         let hasInProgress = chatClient.todos.contains { $0.status == "in_progress" }
         if hasInProgress { return isRetroChat ? RetroChatStyle.magentaAccent : .orange }
@@ -356,6 +363,13 @@ struct ChatView: View {
                         .lineLimit(1)
                 }
                 .padding(.vertical, 4)
+            }
+
+            if chatClient.hiddenTodoCount > 0 {
+                Text("Showing the first \(chatClient.todos.count) of \(chatClient.todos.count + chatClient.hiddenTodoCount) tasks")
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .medium))
+                    .foregroundStyle(secondaryTextColor)
+                    .padding(.top, 4)
             }
         }
         .padding(.vertical, 8)
@@ -955,19 +969,40 @@ struct PermissionRequestSheet: View {
         initiallyConfirmsAllowAll: Bool = false,
         onRespond: @escaping (OCPermissionReply) async -> Bool
     ) {
-        self.permission = permission
+        let safePermission = Self.safeDisplayPermission(permission)
+        let canOfferAllowAll = !safePermission.displayScopeWasTruncated
+
+        self.permission = safePermission
         self._selectedDetent = selectedDetent
-        self.initiallyConfirmsAllowAll = initiallyConfirmsAllowAll
+        self.initiallyConfirmsAllowAll = initiallyConfirmsAllowAll && canOfferAllowAll
         self.onRespond = onRespond
-        self._confirmsAllowAll = State(initialValue: initiallyConfirmsAllowAll)
+        self._confirmsAllowAll = State(initialValue: initiallyConfirmsAllowAll && canOfferAllowAll)
     }
 
     static func presentationDetents(for permission: OCPermissionRequest) -> Set<PresentationDetent> {
-        [
+        let safePermission = safeDisplayPermission(permission)
+        var detents: Set<PresentationDetent> = [
             defaultPresentationDetent,
-            .height(allowAllPresentationHeight(for: permission)),
             .medium
         ]
+
+        if !safePermission.displayScopeWasTruncated {
+            detents.insert(.height(allowAllPresentationHeight(for: safePermission)))
+        }
+
+        return detents
+    }
+
+    static func offersAlwaysApproval(for permission: OCPermissionRequest) -> Bool {
+        !safeDisplayPermission(permission).displayScopeWasTruncated
+    }
+
+    private static func safeDisplayPermission(_ permission: OCPermissionRequest) -> OCPermissionRequest {
+        PermissionRequestDisplaySafety.sanitize(permission)
+            ?? OCPermissionRequest(
+                id: "invalid-permission",
+                displayScopeWasTruncated: true
+            )
     }
 
     private static func allowAllPresentationHeight(for permission: OCPermissionRequest) -> CGFloat {
@@ -1027,6 +1062,10 @@ struct PermissionRequestSheet: View {
         allowAllPatterns.contains("*")
     }
 
+    private var canOfferAllowAll: Bool {
+        !permission.displayScopeWasTruncated
+    }
+
     private var rawAllowAllPermissionKind: String? {
         toolName ?? permission.permission?.nilIfBlank ?? permission.action?.nilIfBlank
     }
@@ -1068,7 +1107,7 @@ struct PermissionRequestSheet: View {
         VStack(spacing: 0) {
             SurfaceCard(padding: 0, cornerRadius: 24) {
                 VStack(alignment: .leading, spacing: 18) {
-                    if confirmsAllowAll {
+                    if confirmsAllowAll && canOfferAllowAll {
                         allowAllConfirmation
                     } else {
                         permissionRequest
@@ -1084,7 +1123,7 @@ struct PermissionRequestSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.appBackground)
         .onAppear {
-            if initiallyConfirmsAllowAll {
+            if initiallyConfirmsAllowAll && canOfferAllowAll {
                 selectedDetent = Self.allowAllDetent(for: permission)
             }
         }
@@ -1324,15 +1363,17 @@ struct PermissionRequestSheet: View {
                 )
             }
 
-            permissionControlButton(
-                title: AppText.allowAll,
-                systemImage: "checkmark.shield",
-                fill: Color.appWarning.opacity(0.14),
-                foreground: Color.appWarning
-            ) {
-                withAnimation(.snappy(duration: 0.2)) {
-                    confirmsAllowAll = true
-                    selectedDetent = Self.allowAllDetent(for: permission)
+            if canOfferAllowAll {
+                permissionControlButton(
+                    title: AppText.allowAll,
+                    systemImage: "checkmark.shield",
+                    fill: Color.appWarning.opacity(0.14),
+                    foreground: Color.appWarning
+                ) {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        confirmsAllowAll = true
+                        selectedDetent = Self.allowAllDetent(for: permission)
+                    }
                 }
             }
         }
@@ -1825,14 +1866,20 @@ private struct ChatMessagesListView: View {
     @Bindable var chatClient: ChatClient
 
     @Environment(\.chatEasterEgg) private var chatEasterEgg
+    @AppStorage("showThinking") private var showThinking: Bool = true
 
     @State private var lastAutoScrollDate: Date = .distantPast
-    @State private var isPastScrollToLatestThreshold = false
+    @State private var lastHandledContentVersion: UInt?
     @State private var followLatest = true
+    @State private var scrollInteraction = ChatScrollInteraction.idle
+    @State private var scrollState = ChatScrollState.initial
+    @State private var pendingForcedScroll = false
+    @State private var paginationRestoreAnchorID: String?
+    @State private var timelineItems: [ChatTimelineItem] = []
 
     private let bottomAnchorID = "bottom"
     private let streamingScrollInterval: TimeInterval = 0.18
-    private let followLatestThreshold: CGFloat = 96
+    private let settledBottomTolerance: CGFloat = 8
     private let scrollToBottomVisibilityThreshold: CGFloat = 56
 
     var body: some View {
@@ -1844,7 +1891,7 @@ private struct ChatMessagesListView: View {
                     LazyVStack(alignment: .leading, spacing: isRetroChat ? 13 : 16) {
                         if chatClient.hasEarlierMessages {
                             Button {
-                                chatClient.loadEarlierMessages()
+                                loadEarlierMessages(using: proxy)
                             } label: {
                                 Text("Load earlier messages")
                                     .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium))
@@ -1855,8 +1902,8 @@ private struct ChatMessagesListView: View {
                             }
                         }
 
-                        ForEach(chatClient.displayedMessages) { message in
-                            MessageBubbleView(message: message)
+                        ForEach(timelineItems) { item in
+                            timelineRow(item)
                         }
                     }
                     .padding(.horizontal, isRetroChat ? 12 : 16)
@@ -1865,37 +1912,54 @@ private struct ChatMessagesListView: View {
                         .frame(height: 17)
                         .id(bottomAnchorID)
                         .padding(.horizontal, 16)
+
+                    ChatStreamingAutoFollowObserver(
+                        chatClient: chatClient,
+                        proxy: proxy,
+                        bottomAnchorID: bottomAnchorID,
+                        minimumInterval: streamingScrollInterval,
+                        settledBottomTolerance: settledBottomTolerance,
+                        followLatest: $followLatest,
+                        scrollInteraction: $scrollInteraction,
+                        scrollState: $scrollState,
+                        lastHandledContentVersion: $lastHandledContentVersion,
+                        lastAutoScrollDate: $lastAutoScrollDate
+                    )
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
                 }
                 .onScrollGeometryChange(for: ChatScrollState.self) { geometry in
                     ChatScrollPolicy.state(
                         contentHeight: geometry.contentSize.height,
-                        visibleMaxY: geometry.visibleRect.maxY,
-                        followLatestThreshold: followLatestThreshold,
+                        containerHeight: geometry.containerSize.height,
+                        contentOffsetY: geometry.contentOffset.y,
+                        topInset: geometry.contentInsets.top,
+                        bottomInset: geometry.contentInsets.bottom,
+                        settledBottomTolerance: settledBottomTolerance,
                         visibilityThreshold: scrollToBottomVisibilityThreshold
                     )
                 } action: { _, state in
-                    followLatest = state.isNearBottom
-                    isPastScrollToLatestThreshold = state.isPastVisibilityThreshold
+                    scrollState = state
                 }
-                .onChange(of: chatClient.contentVersion) {
-                    let now = Date()
-                    guard ChatScrollPolicy.shouldAutoFollow(
-                        isLoading: chatClient.isLoading,
-                        followLatest: followLatest,
-                        now: now,
-                        lastAutoScrollDate: lastAutoScrollDate,
-                        minimumInterval: streamingScrollInterval
-                    ) else { return }
-
-                    scrollToBottom(using: proxy, animated: false, now: now)
+                .onScrollPhaseChange { _, newPhase, context in
+                    let state = ChatScrollPolicy.state(
+                        contentHeight: context.geometry.contentSize.height,
+                        containerHeight: context.geometry.containerSize.height,
+                        contentOffsetY: context.geometry.contentOffset.y,
+                        topInset: context.geometry.contentInsets.top,
+                        bottomInset: context.geometry.contentInsets.bottom,
+                        settledBottomTolerance: settledBottomTolerance,
+                        visibilityThreshold: scrollToBottomVisibilityThreshold
+                    )
+                    scrollState = state
+                    handleScrollPhaseChange(
+                        newPhase,
+                        state: state,
+                        using: proxy
+                    )
                 }
                 .onChange(of: chatClient.scrollAnchor) {
-                    scrollToBottom(
-                        using: proxy,
-                        animated: false,
-                        now: Date(),
-                        forceFollowLatest: true
-                    )
+                    requestForcedScrollToBottom(using: proxy)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onTapGesture {
@@ -1904,6 +1968,9 @@ private struct ChatMessagesListView: View {
 
                 if showsScrollToBottomButton {
                     Button {
+                        guard scrollInteraction.allowsProgrammaticScroll else { return }
+                        pendingForcedScroll = false
+                        paginationRestoreAnchorID = nil
                         scrollToBottom(
                             using: proxy,
                             animated: ChatScrollPolicy.shouldAnimateManualScroll(isLoading: chatClient.isLoading),
@@ -1923,10 +1990,50 @@ private struct ChatMessagesListView: View {
             .animation(.easeOut(duration: 0.18), value: showsScrollToBottomButton)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear(perform: rebuildTimeline)
+        .onChange(of: chatClient.timelineVersion) { _, _ in
+            rebuildTimeline()
+        }
+        .onChange(of: showThinking) { _, _ in
+            rebuildTimeline()
+        }
     }
 
     private var isRetroChat: Bool {
         chatEasterEgg.visualMode.isRetro
+    }
+
+    private func rebuildTimeline() {
+        timelineItems = ChatTimeline.items(
+            from: chatClient.displayedMessages,
+            showsThinking: showThinking
+        )
+#if DEBUG
+        print(
+            "CHAT_STRESS_TIMELINE_REBUILD displayed=\(chatClient.displayedMessages.count) "
+                + "items=\(timelineItems.count) version=\(chatClient.timelineVersion)"
+        )
+#endif
+    }
+
+    @ViewBuilder
+    private func timelineRow(_ item: ChatTimelineItem) -> some View {
+        switch item.content {
+        case .message(let message):
+            MessageBubbleView(message: message)
+        case .assistantSegment(let message, let segment):
+            AssistantSegmentTimelineRow(
+                message: message,
+                segmentID: segment.id,
+                animatesSubagentStatus: item.animatesSubagentStatus
+            )
+        case .streamingAssistantText(let message, let projection):
+            MessageBubbleView(
+                message: message,
+                assistantSegments: [],
+                streamingText: projection
+            )
+        }
     }
 
     @ViewBuilder
@@ -1963,7 +2070,7 @@ private struct ChatMessagesListView: View {
         ChatStreamInstrumentation.recordScrollToBottom()
 
         if animated {
-            withAnimation(.easeOut(duration: 0.2)) {
+            withAnimation(.smooth(duration: streamingScrollInterval, extraBounce: 0)) {
                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
             }
         } else {
@@ -1971,51 +2078,335 @@ private struct ChatMessagesListView: View {
         }
     }
 
+    private func requestForcedScrollToBottom(using proxy: ScrollViewProxy) {
+        guard followLatest else {
+            pendingForcedScroll = false
+            return
+        }
+
+        guard ChatScrollPolicy.shouldPerformProgrammaticScroll(
+            interaction: scrollInteraction
+        ) else {
+            pendingForcedScroll = true
+            return
+        }
+
+        pendingForcedScroll = false
+        paginationRestoreAnchorID = nil
+        scrollToBottom(
+            using: proxy,
+            animated: false,
+            now: Date(),
+            forceFollowLatest: true
+        )
+    }
+
+    private func handleScrollPhaseChange(
+        _ phase: ScrollPhase,
+        state: ChatScrollState,
+        using proxy: ScrollViewProxy
+    ) {
+        let interaction = ChatScrollPolicy.interaction(for: phase)
+        scrollInteraction = interaction
+        followLatest = ChatScrollPolicy.updatedFollowLatest(
+            currentValue: followLatest,
+            interaction: interaction,
+            isAtBottom: state.isAtBottom
+        )
+
+        if interaction.isUserControlled {
+            // User intent wins immediately, before the drag has moved far
+            // enough for geometry thresholds to change.
+            return
+        }
+
+        guard interaction == .idle else { return }
+
+        if pendingForcedScroll {
+            requestForcedScrollToBottom(using: proxy)
+            return
+        }
+
+        if let anchorID = paginationRestoreAnchorID {
+            restorePositionAfterLoadingEarlierMessages(
+                anchorID: anchorID,
+                using: proxy
+            )
+        }
+    }
+
+    private func loadEarlierMessages(using proxy: ScrollViewProxy) {
+        guard ChatScrollPolicy.shouldLoadEarlierMessages(
+            hasEarlierMessages: chatClient.hasEarlierMessages,
+            interaction: scrollInteraction,
+            hasPendingRestoration: paginationRestoreAnchorID != nil
+        ), let anchorID = timelineItems.first?.id else { return }
+
+        paginationRestoreAnchorID = anchorID
+        chatClient.loadEarlierMessages()
+        restorePositionAfterLoadingEarlierMessages(
+            anchorID: anchorID,
+            using: proxy
+        )
+    }
+
+    private func restorePositionAfterLoadingEarlierMessages(
+        anchorID: String,
+        using proxy: ScrollViewProxy
+    ) {
+        Task { @MainActor in
+            // Give the rebuilt LazyVStack one layout pass before restoring the
+            // first item that was visible before older messages were prepended.
+            try? await Task.sleep(for: .milliseconds(32))
+            guard paginationRestoreAnchorID == anchorID,
+                  scrollInteraction.allowsProgrammaticScroll else { return }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+            paginationRestoreAnchorID = nil
+        }
+    }
+
     private var showsScrollToBottomButton: Bool {
-        guard !chatClient.displayedMessages.isEmpty else { return false }
+        guard !timelineItems.isEmpty else { return false }
         return ChatScrollPolicy.shouldShowScrollToLatest(
             followLatest: followLatest,
-            isPastVisibilityThreshold: isPastScrollToLatestThreshold
+            isPastVisibilityThreshold: scrollState.isPastVisibilityThreshold
         )
+    }
+}
+
+/// The flattened timeline keeps a stable segment identity, while the row reads
+/// the current value directly from its observable message. A tool status change
+/// therefore invalidates only this row instead of rebuilding the entire chat
+/// timeline to replace a copied `AssistantSegment` value.
+private struct AssistantSegmentTimelineRow: View {
+    let message: ChatMessage
+    let segmentID: String
+    let animatesSubagentStatus: Bool
+
+    var body: some View {
+        if let segment = message.assistantSegment(withID: segmentID) {
+            MessageBubbleView(
+                message: message,
+                assistantSegments: [segment],
+                animatesSubagentStatus: animatesSubagentStatus
+            )
+        }
+    }
+}
+
+/// A deliberately tiny observation subtree for stream ticks. It keeps
+/// auto-follow responsive without causing the parent list to materialize its
+/// complete timeline again for each text-buffer flush.
+private struct ChatStreamingAutoFollowObserver: View {
+    @Bindable var chatClient: ChatClient
+
+    let proxy: ScrollViewProxy
+    let bottomAnchorID: String
+    let minimumInterval: TimeInterval
+    let settledBottomTolerance: CGFloat
+    @Binding var followLatest: Bool
+    @Binding var scrollInteraction: ChatScrollInteraction
+    @Binding var scrollState: ChatScrollState
+    @Binding var lastHandledContentVersion: UInt?
+    @Binding var lastAutoScrollDate: Date
+
+    var body: some View {
+        Color.clear
+            .task(id: chatClient.contentVersion) {
+                let contentVersion = chatClient.contentVersion
+                guard lastHandledContentVersion != nil else {
+                    lastHandledContentVersion = contentVersion
+                    return
+                }
+
+                // Coalesce a burst and let the new row height reach the scroll
+                // geometry before deciding whether any movement is necessary.
+                try? await Task.sleep(for: .milliseconds(32))
+                guard !Task.isCancelled else { return }
+
+                let now = Date()
+                let shouldAutoFollow = ChatScrollPolicy.shouldAutoFollow(
+                    isLoading: chatClient.isLoading,
+                    followLatest: followLatest,
+                    interaction: scrollInteraction,
+                    bottomDistance: scrollState.bottomDistance,
+                    bottomOverscroll: scrollState.bottomOverscroll,
+                    settledBottomTolerance: settledBottomTolerance,
+                    contentVersion: contentVersion,
+                    lastHandledContentVersion: lastHandledContentVersion,
+                    now: now,
+                    lastAutoScrollDate: lastAutoScrollDate,
+                    minimumInterval: minimumInterval
+                )
+                lastHandledContentVersion = contentVersion
+                guard shouldAutoFollow else { return }
+
+                lastAutoScrollDate = now
+                ChatStreamInstrumentation.recordScrollToBottom()
+                // A stream emits many small content updates. Scrolling them
+                // with a fresh animation every ~180 ms keeps the scroll view
+                // in perpetual layout/animation work and can amplify a busy
+                // transcript into visible hitching. Auto-follow is therefore
+                // deliberately immediate; the explicit user action remains
+                // the only animated scroll path.
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                }
+            }
     }
 }
 
 struct ChatScrollState: Equatable {
-    var isNearBottom: Bool
+    var bottomDistance: CGFloat
+    var bottomOverscroll: CGFloat
+    var isAtBottom: Bool
     var isPastVisibilityThreshold: Bool
+
+    static let initial = ChatScrollState(
+        bottomDistance: .infinity,
+        bottomOverscroll: 0,
+        isAtBottom: false,
+        isPastVisibilityThreshold: false
+    )
+}
+
+enum ChatScrollInteraction: Equatable {
+    case idle
+    case userControlled
+    case programmatic
+
+    var isUserControlled: Bool {
+        self == .userControlled
+    }
+
+    var allowsProgrammaticScroll: Bool {
+        self == .idle
+    }
 }
 
 enum ChatScrollPolicy {
-    static func bottomDistance(contentHeight: CGFloat, visibleMaxY: CGFloat) -> CGFloat {
-        max(0, contentHeight - visibleMaxY)
+    static func bottomMetrics(
+        contentHeight: CGFloat,
+        containerHeight: CGFloat,
+        contentOffsetY: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat
+    ) -> (distance: CGFloat, overscroll: CGFloat) {
+        let minimumOffset = -topInset
+        let maximumOffset = max(
+            minimumOffset,
+            contentHeight - containerHeight + bottomInset
+        )
+        return (
+            distance: max(0, maximumOffset - contentOffsetY),
+            overscroll: max(0, contentOffsetY - maximumOffset)
+        )
     }
 
     static func state(
         contentHeight: CGFloat,
-        visibleMaxY: CGFloat,
-        followLatestThreshold: CGFloat,
+        containerHeight: CGFloat,
+        contentOffsetY: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat,
+        settledBottomTolerance: CGFloat,
         visibilityThreshold: CGFloat
     ) -> ChatScrollState {
-        let distance = bottomDistance(contentHeight: contentHeight, visibleMaxY: visibleMaxY)
+        let metrics = bottomMetrics(
+            contentHeight: contentHeight,
+            containerHeight: containerHeight,
+            contentOffsetY: contentOffsetY,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
         return ChatScrollState(
-            isNearBottom: isNearBottom(bottomDistance: distance, threshold: followLatestThreshold),
-            isPastVisibilityThreshold: distance > visibilityThreshold
+            bottomDistance: metrics.distance,
+            bottomOverscroll: metrics.overscroll,
+            isAtBottom: isAtBottom(
+                bottomDistance: metrics.distance,
+                bottomOverscroll: metrics.overscroll,
+                tolerance: settledBottomTolerance
+            ),
+            isPastVisibilityThreshold: metrics.distance > visibilityThreshold
         )
     }
 
-    static func isNearBottom(bottomDistance: CGFloat, threshold: CGFloat) -> Bool {
-        bottomDistance <= threshold
+    static func isAtBottom(
+        bottomDistance: CGFloat,
+        bottomOverscroll: CGFloat,
+        tolerance: CGFloat
+    ) -> Bool {
+        bottomDistance <= tolerance && bottomOverscroll <= tolerance
+    }
+
+    static func interaction(for phase: ScrollPhase) -> ChatScrollInteraction {
+        switch phase {
+        case .idle:
+            .idle
+        case .tracking, .interacting, .decelerating:
+            .userControlled
+        case .animating:
+            .programmatic
+        }
+    }
+
+    static func updatedFollowLatest(
+        currentValue: Bool,
+        interaction: ChatScrollInteraction,
+        isAtBottom: Bool
+    ) -> Bool {
+        if interaction.isUserControlled {
+            return false
+        }
+        if interaction == .idle, isAtBottom {
+            return true
+        }
+        return currentValue
     }
 
     static func shouldAutoFollow(
         isLoading: Bool,
         followLatest: Bool,
+        interaction: ChatScrollInteraction,
+        bottomDistance: CGFloat,
+        bottomOverscroll: CGFloat,
+        settledBottomTolerance: CGFloat,
+        contentVersion: UInt,
+        lastHandledContentVersion: UInt?,
         now: Date,
         lastAutoScrollDate: Date,
         minimumInterval: TimeInterval
     ) -> Bool {
-        guard isLoading, followLatest else { return false }
+        guard isLoading,
+              followLatest,
+              interaction.allowsProgrammaticScroll,
+              (bottomDistance > settledBottomTolerance
+                || bottomOverscroll > settledBottomTolerance),
+              contentVersion != lastHandledContentVersion else { return false }
         return now.timeIntervalSince(lastAutoScrollDate) >= minimumInterval
+    }
+
+    static func shouldLoadEarlierMessages(
+        hasEarlierMessages: Bool,
+        interaction: ChatScrollInteraction,
+        hasPendingRestoration: Bool
+    ) -> Bool {
+        hasEarlierMessages
+            && interaction.allowsProgrammaticScroll
+            && !hasPendingRestoration
+    }
+
+    static func shouldPerformProgrammaticScroll(
+        interaction: ChatScrollInteraction
+    ) -> Bool {
+        interaction.allowsProgrammaticScroll
     }
 
     static func shouldShowScrollToLatest(
