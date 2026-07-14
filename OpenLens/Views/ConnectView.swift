@@ -60,6 +60,7 @@ struct ConnectView: View {
     @Environment(\.connection) private var connection
     @Environment(\.savedConnections) private var savedConnections
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @AppStorage("autoReconnect") private var autoReconnect: Bool = true
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
@@ -228,7 +229,9 @@ struct ConnectView: View {
 
     @ViewBuilder
     private var discoveredServersSection: some View {
-        if discovery.discoveredServers.count == 1,
+        if discovery.localNetworkAccessRequired {
+            localNetworkAccessCard
+        } else if discovery.discoveredServers.count == 1,
            let server = discovery.discoveredServers.first
         {
             Button {
@@ -278,6 +281,65 @@ struct ConnectView: View {
                 .stroke(Color.appSeparator.opacity(0.45), lineWidth: 0.5)
         )
         .frame(maxWidth: .infinity)
+    }
+
+    private var localNetworkAccessCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.appSecondary)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Color.appTertiary))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(AppText.localNetworkAccessRequiredTitle)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+
+                    Text(AppText.localNetworkAccessRequiredBody)
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
+                        .lineSpacing(2)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    openAppSettings()
+                } label: {
+                    Text(AppText.openSettings)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appOnAccent)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(Color.appAccent))
+                }
+
+                Button {
+                    startNearbyDiscovery()
+                } label: {
+                    Text(AppText.tryAgain)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(Color.appTertiary))
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: 340, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.appSurface.opacity(0.76))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.appSeparator.opacity(0.48), lineWidth: 0.7)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: - Manual Connection Section
@@ -726,6 +788,20 @@ struct ConnectView: View {
             Spacer()
 
             VStack(spacing: 10) {
+                if connection.localNetworkAccessRequired {
+                    Button {
+                        openAppSettings()
+                    } label: {
+                        Text(AppText.openSettings)
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .foregroundStyle(Color.appOnAccent)
+                            .background(Color.appAccent)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                }
+
                 Button {
                     retryConnection()
                 } label: {
@@ -737,8 +813,8 @@ struct ConnectView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .foregroundStyle(Color.appOnAccent)
-                    .background(Color.appAccent)
+                    .foregroundStyle(connection.localNetworkAccessRequired ? Color.appPrimary : Color.appOnAccent)
+                    .background(connection.localNetworkAccessRequired ? Color.appTertiary : Color.appAccent)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
 
@@ -761,12 +837,18 @@ struct ConnectView: View {
     // MARK: - Failure Copy
 
     private var failureTitle: String {
-        isAutoReconnect
+        if connection.localNetworkAccessRequired {
+            return AppText.localNetworkAccessRequiredTitle
+        }
+        return isAutoReconnect
             ? AppText.autoReconnectErrorTitle
             : AppText.manualConnectErrorTitle
     }
 
     private var failureMessage: String {
+        if connection.localNetworkAccessRequired {
+            return AppText.localNetworkAccessRequiredBody
+        }
         if isAutoReconnect {
             return AppText.autoReconnectErrorBody
         }
@@ -821,6 +903,11 @@ struct ConnectView: View {
     private func startNearbyDiscovery() {
         focusedManualField = nil
         discovery.startBrowsing()
+    }
+
+    private func openAppSettings() {
+        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(settingsURL)
     }
 
     private func cancelConnection() {

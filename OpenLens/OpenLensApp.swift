@@ -96,6 +96,71 @@ private enum ReviewPromptTrigger {
     }
 }
 
+struct InitialSessionsReadiness: Equatable {
+    enum State: Equatable {
+        case idle
+        case loading
+        case loaded([OCSession])
+        case failed(String)
+    }
+
+    private(set) var state: State
+    private(set) var generation = 0
+
+    init(initialSessions: [OCSession]? = nil) {
+        if let initialSessions {
+            state = .loaded(initialSessions)
+        } else {
+            state = .idle
+        }
+    }
+
+    var isResolved: Bool {
+        switch state {
+        case .loaded, .failed:
+            true
+        case .idle, .loading:
+            false
+        }
+    }
+
+    mutating func beginLoading() -> Int {
+        generation &+= 1
+        state = .loading
+        return generation
+    }
+
+    mutating func succeed(with sessions: [OCSession], generation expectedGeneration: Int) {
+        guard generation == expectedGeneration else { return }
+        state = .loaded(sessions)
+    }
+
+    mutating func fail(with message: String, generation expectedGeneration: Int) {
+        guard generation == expectedGeneration else { return }
+        state = .failed(message)
+    }
+
+    mutating func cancelLoading() {
+        guard case .loading = state else { return }
+        reset()
+    }
+
+    mutating func reset() {
+        generation &+= 1
+        state = .idle
+    }
+}
+
+private enum OpenLensRootDestination {
+    case streamStressPreview(
+        client: ChatClient,
+        connection: ConnectionManager
+    )
+    case onboarding
+    case connected(initialSessions: SessionsListView.InitialState)
+    case connect
+}
+
 func shouldHandleConnectionAsFreshConnect(
     from oldState: ConnectionManager.State,
     to newState: ConnectionManager.State
@@ -149,6 +214,40 @@ struct OpenLensApp: App {
     @State private var showDeepLinkSwitch: Bool = false
     @State private var reviewPromptTask: Task<Void, Never>?
     @State private var showReviewPrePrompt = false
+    @State private var initialSessionsReadiness: InitialSessionsReadiness
+
+    private var resolvedInitialSessions: SessionsListView.InitialState? {
+        switch initialSessionsReadiness.state {
+        case .loaded(let sessions):
+            .loaded(sessions)
+        case .failed(let message):
+            .error(message)
+        case .idle, .loading:
+            nil
+        }
+    }
+
+    private var rootDestination: OpenLensRootDestination {
+        if streamStressModeEnabled,
+           let previewClient = previewChatClient,
+           let previewConnection = previewConnection {
+            return .streamStressPreview(
+                client: previewClient,
+                connection: previewConnection
+            )
+        }
+
+        if !screenshotModeEnabled && !onboardingCompleted {
+            return .onboarding
+        }
+
+        if (connection.isConnected || connection.isReconnecting),
+           let resolvedInitialSessions {
+            return .connected(initialSessions: resolvedInitialSessions)
+        }
+
+        return .connect
+    }
 
     private var startDebugPreviewAction: (() -> Void)? {
 #if DEBUG
@@ -185,8 +284,14 @@ struct OpenLensApp: App {
 #else
         let streamStressModeEnabled = false
 #endif
-        self.screenshotModeEnabled = ScreenshotFixtures.isEnabled
+        let screenshotModeEnabled = ScreenshotFixtures.isEnabled
+        self.screenshotModeEnabled = screenshotModeEnabled
         self.streamStressModeEnabled = streamStressModeEnabled
+        self._initialSessionsReadiness = State(
+            initialValue: InitialSessionsReadiness(
+                initialSessions: screenshotModeEnabled ? ScreenshotFixtures.sessions : nil
+            )
+        )
 
 //        if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
 //            router.selectedTab = launchTab
@@ -281,25 +386,30 @@ struct OpenLensApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if streamStressModeEnabled,
-                   let previewClient = previewChatClient,
-                   let previewConn = previewConnection {
+                switch rootDestination {
+                case .streamStressPreview(let previewClient, let previewConnection):
                     NavigationStack {
                         ChatView(chatClient: previewClient)
-                            .environment(\.connection, previewConn)
+                            .environment(\.connection, previewConnection)
                     }
-                } else if !screenshotModeEnabled && !onboardingCompleted {
+
+                case .onboarding:
                     OnboardingView(onDone: { onboardingCompleted = true })
                         .transition(.opacity)
-                } else if screenshotModeEnabled || connection.isConnected || connection.isReconnecting {
-                    ConnectedRootView(chatClient: chatClient)
+
+                case .connected(let initialSessions):
+                    ConnectedRootView(
+                        chatClient: chatClient,
+                        initialSessions: initialSessions
+                    )
                         .environment(\.connection, connection)
                         .environment(router)
                         .task {
                             openScreenshotPermissionSheetIfNeeded()
                         }
                         .transition(.opacity)
-                } else {
+
+                case .connect:
                     ConnectView(
                         onStartDemo: { startPreview(.builtin(.demo)) },
                         onStartDebug: startDebugPreviewAction,
@@ -331,42 +441,45 @@ struct OpenLensApp: App {
             .environment(\.requestReviewPrompt, {
                 presentReviewPrePrompt()
             })
-            .sheet(isPresented: previewPresentationBinding) {
-                if let previewClient = previewChatClient, let previewConn = previewConnection {
-                    NavigationStack {
-                        ChatView(chatClient: previewClient)
-                            .environment(\.connection, previewConn)
-                            .toolbar {
-                                ToolbarItem(placement: .topBarLeading) {
-                                    Button {
-                                        exitPreview()
-                                    } label: {
-                                        Image(systemName: "xmark")
-                                    }
-                                }
-                            }
-                    }
-                    .interactiveDismissDisabled(true)
-                    .onChange(of: previewConn.state) { _, newState in
-                        if case .disconnected = newState {
-                            exitPreview()
-                        }
-                    }
-                }
+            .task(id: connection.state) {
+                await prepareInitialSessions(for: connection.state)
             }
-            .sheet(isPresented: $showReviewPrePrompt) {
-                ReviewRequestSheet(
-                    onReview: {
-                        presentSystemReviewPrompt()
-                    },
-                    onNotNow: {
-                        showReviewPrePrompt = false
-                    }
-                )
-                .presentationDetents([.fraction(0.7)])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Color.appBackground)
-            }
+//            .sheet(isPresented: previewPresentationBinding) {
+//                if let previewClient = previewChatClient, let previewConn = previewConnection {
+//                    NavigationStack {
+//                        ChatView(chatClient: previewClient)
+//                            .environment(\.connection, previewConn)
+//                            .toolbar {
+//                                ToolbarItem(placement: .topBarLeading) {
+//                                    Button {
+//                                        exitPreview()
+//                                    } label: {
+//                                        Image(systemName: "xmark")
+//                                    }
+//                                }
+//                            }
+//                    }
+//                    .interactiveDismissDisabled(true)
+//                    .onChange(of: previewConn.state) { _, newState in
+//                        if case .disconnected = newState {
+//                            exitPreview()
+//                        }
+//                    }
+//                }
+//            }
+//            .sheet(isPresented: $showReviewPrePrompt) {
+//                ReviewRequestSheet(
+//                    onReview: {
+//                        presentSystemReviewPrompt()
+//                    },
+//                    onNotNow: {
+//                        showReviewPrePrompt = false
+//                    }
+//                )
+//                .presentationDetents([.fraction(0.7)])
+//                .presentationDragIndicator(.visible)
+//                .presentationBackground(Color.appBackground)
+//            }
             .onOpenURL { url in
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
@@ -414,6 +527,36 @@ struct OpenLensApp: App {
     }
 
     // MARK: - Preview Modes
+
+    private func prepareInitialSessions(for connectionState: ConnectionManager.State) async {
+        guard !screenshotModeEnabled else { return }
+
+        switch connectionState {
+        case .connected:
+            guard case .idle = initialSessionsReadiness.state else { return }
+            let generation = initialSessionsReadiness.beginLoading()
+
+            do {
+                let sessions = try await sessionsService.listSessions()
+                guard !Task.isCancelled, connection.isConnected else { return }
+                initialSessionsReadiness.succeed(with: sessions, generation: generation)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, connection.isConnected else { return }
+                initialSessionsReadiness.fail(
+                    with: error.localizedDescription,
+                    generation: generation
+                )
+            }
+
+        case .reconnecting:
+            initialSessionsReadiness.cancelLoading()
+
+        case .disconnected, .connecting, .error:
+            initialSessionsReadiness.reset()
+        }
+    }
 
     private var isPreviewMode: Bool {
         activePreviewSource != nil

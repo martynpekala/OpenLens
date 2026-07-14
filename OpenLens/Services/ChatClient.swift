@@ -24,7 +24,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     ///
     /// Only structural changes (append, remove, reorder) trigger `didSet` / ForEach re-diff.
     var messages: [ChatMessage] = [] {
-        didSet { rebuildDisplayedMessages() }
+        didSet {
+            if !reconcileLiveAssistantMessagesWithLoadedHistory() {
+                rebuildDisplayedMessages()
+            }
+        }
     }
     var inputText: String = ""
     var isLoading: Bool = false
@@ -56,7 +60,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// of `displayedMessages` so the UI shows the growing text bubble.
     /// Committed to `messages` on `finishLoading()`.
     var pendingAssistantMessage: ChatMessage? {
-        didSet { rebuildDisplayedMessages() }
+        didSet {
+            if !reconcileLiveAssistantMessagesWithLoadedHistory() {
+                rebuildDisplayedMessages()
+            }
+        }
     }
 
     /// Session status from SSE.
@@ -435,10 +443,53 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
         // Append the in-flight streaming message so it's visible in the chat.
         if let pending = pendingAssistantMessage {
-            result.append(pending)
+            if let existingIndex = result.lastIndex(where: { $0.id == pending.id }) {
+                result[existingIndex] = pending
+            } else {
+                result.append(pending)
+            }
         }
         displayedMessages = result
         timelineVersion &+= 1
+    }
+
+    /// A foreground refresh can return an assistant message while the same
+    /// local object is still receiving SSE deltas or waiting for worker-side
+    /// finalization. Keep that object identity so a stale history response
+    /// cannot discard locally buffered suffixes.
+    @discardableResult
+    private func reconcileLiveAssistantMessagesWithLoadedHistory() -> Bool {
+        guard !isReconcilingLiveAssistantMessages else { return false }
+
+        if let pending = pendingAssistantMessage,
+           let loaded = messages.last(where: { $0.id == pending.id }),
+           loaded !== pending {
+            pending.absorbHistorySnapshot(loaded)
+        }
+
+        var reconciledMessages = messages
+        var replacedFinalizingMessage = false
+        for (messageID, finalizing) in finalizingAssistantMessages where finalizing.isStreaming {
+            if let loadedIndex = reconciledMessages.lastIndex(where: { $0.id == messageID }) {
+                let loaded = reconciledMessages[loadedIndex]
+                guard loaded !== finalizing else { continue }
+                finalizing.absorbHistorySnapshot(loaded)
+                reconciledMessages[loadedIndex] = finalizing
+                replacedFinalizingMessage = true
+            } else {
+                // The REST snapshot can briefly lag behind a just-finished
+                // stream. Keep the local transcript until its worker result
+                // has been committed instead of making it disappear.
+                reconciledMessages.append(finalizing)
+                replacedFinalizingMessage = true
+            }
+        }
+
+        guard replacedFinalizingMessage else { return false }
+        isReconcilingLiveAssistantMessages = true
+        messages = reconciledMessages
+        isReconcilingLiveAssistantMessages = false
+        return true
     }
 
     // MARK: - Demo Mode
@@ -526,9 +577,15 @@ final class ChatClient: SSEEventHandlerDelegate {
     // The pending message is visible in `displayedMessages` during streaming
     // and committed to `messages` on `finishLoading()`.
 
+    nonisolated private enum BufferedStreamTarget: Sendable, Equatable {
+        case fallbackText
+        case textPart(String)
+        case reasoningPart(String)
+    }
+
     nonisolated private struct BufferedStreamUpdate: Sendable {
         let messageID: String
-        let partID: String?
+        let target: BufferedStreamTarget
         /// A slice advances its start index in O(1). This is important for a
         /// large authoritative snapshot: `Array.removeFirst(8)` would shift
         /// every remaining chunk on each UI tick.
@@ -695,6 +752,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Large completed messages can be materialized concurrently with the next
     /// user turn, so tokens are scoped by message rather than globally.
     @ObservationIgnored private var streamingFinalizationTokens: [String: UUID] = [:]
+    /// Retains the live object while a worker joins it. A history refresh may
+    /// replace the array entry with a stale snapshot, so its identity must be
+    /// restored before the worker callback validates membership.
+    @ObservationIgnored private var finalizingAssistantMessages: [String: ChatMessage] = [:]
+    @ObservationIgnored private var isReconcilingLiveAssistantMessages = false
 
     /// Interval between streaming buffer flushes (seconds).
     private static let flushInterval: TimeInterval = 0.04
@@ -1910,52 +1972,163 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     func appendStreamingText(messageID: String, text: String, chunks: [String]) {
+        appendStreamingText(
+            messageID: messageID,
+            partID: nil,
+            text: text,
+            chunks: chunks
+        )
+    }
+
+    func appendStreamingText(
+        messageID: String,
+        partID: String?,
+        text: String,
+        chunks: [String]
+    ) {
         guard !ignoredAssistantMessageIDs.contains(messageID) else { return }
-        guard let pending = pendingAssistantMessage, pending.id == messageID else { return }
-        enqueueStreamingUpdate(messageID: messageID, partID: nil, text: text, chunks: chunks)
+        let resolvedMessageID = resolvedStreamingMessageID(messageID)
+        let target: BufferedStreamTarget
+        if let partID {
+            guard let message = assistantMessage(withID: resolvedMessageID),
+                  message.isStreaming,
+                  !isStreamingFinalizing(messageID: resolvedMessageID),
+                  message.hasLiveStreamingPart(id: partID, type: .text) else {
+                return
+            }
+            target = .textPart(partID)
+        } else {
+            guard let pending = pendingAssistantMessage,
+                  pending.id == resolvedMessageID,
+                  pending.isStreaming,
+                  !isStreamingFinalizing(messageID: resolvedMessageID),
+                  let fallbackTextPartID = pending.registerStreamingFallbackTextPart() else {
+                return
+            }
+            target = .textPart(fallbackTextPartID)
+        }
+        enqueueStreamingUpdate(messageID: resolvedMessageID, target: target, text: text, chunks: chunks)
         ensureFlushTimer()
     }
 
     func replaceStreamingText(messageID: String, text: String, chunks: [String]) {
+        replaceStreamingText(
+            messageID: messageID,
+            partID: nil,
+            text: text,
+            chunks: chunks
+        )
+    }
+
+    func replaceStreamingText(
+        messageID: String,
+        partID: String?,
+        text: String,
+        chunks: [String]
+    ) {
         guard !ignoredAssistantMessageIDs.contains(messageID) else { return }
-        guard let pending = pendingAssistantMessage, pending.id == messageID else { return }
+        let resolvedMessageID = resolvedStreamingMessageID(messageID)
 
         // An authoritative snapshot supersedes only unrendered text. Clearing
         // the projection and invalidating the old FIFO generation are both
         // O(1); its worker-prepared chunks are then appended through the
         // normal per-tick budget below.
-        invalidateStreamingUpdates(messageID: messageID, partID: nil)
-        pending.streamingTextProjection.clear()
-        enqueueStreamingUpdate(messageID: messageID, partID: nil, text: text, chunks: chunks)
+        let target: BufferedStreamTarget
+        if let partID {
+            guard let message = assistantMessage(withID: resolvedMessageID),
+                  message.isStreaming,
+                  !isStreamingFinalizing(messageID: resolvedMessageID),
+                  message.hasLiveStreamingPart(id: partID, type: .text) else {
+                return
+            }
+            target = .textPart(partID)
+            invalidateStreamingUpdates(messageID: resolvedMessageID, target: target)
+            message.resetStreamingTextProjection(partID: partID)
+        } else {
+            guard let pending = pendingAssistantMessage,
+                  pending.id == resolvedMessageID,
+                  pending.isStreaming,
+                  !isStreamingFinalizing(messageID: resolvedMessageID),
+                  let fallbackTextPartID = pending.registerStreamingFallbackTextPart() else {
+                return
+            }
+            target = .textPart(fallbackTextPartID)
+            invalidateStreamingUpdates(messageID: resolvedMessageID, target: target)
+            pending.resetStreamingTextProjection(partID: fallbackTextPartID)
+        }
+        enqueueStreamingUpdate(messageID: resolvedMessageID, target: target, text: text, chunks: chunks)
         ensureFlushTimer()
     }
 
     func appendStreamingReasoning(messageID: String, partID: String, text: String, chunks: [String]) {
         guard !ignoredAssistantMessageIDs.contains(messageID) else { return }
-        guard assistantMessage(withID: messageID) != nil else { return }
-        enqueueStreamingUpdate(messageID: messageID, partID: partID, text: text, chunks: chunks)
+        let resolvedMessageID = resolvedStreamingMessageID(messageID)
+        guard let message = assistantMessage(withID: resolvedMessageID),
+              message.isStreaming,
+              !isStreamingFinalizing(messageID: resolvedMessageID),
+              message.hasLiveStreamingPart(id: partID, type: .reasoning) else {
+            return
+        }
+        enqueueStreamingUpdate(
+            messageID: resolvedMessageID,
+            target: .reasoningPart(partID),
+            text: text,
+            chunks: chunks
+        )
         ensureFlushTimer()
     }
 
     func replaceStreamingReasoning(messageID: String, partID: String, text: String, chunks: [String]) {
         guard !ignoredAssistantMessageIDs.contains(messageID) else { return }
-        guard let message = assistantMessage(withID: messageID) else { return }
+        let resolvedMessageID = resolvedStreamingMessageID(messageID)
+        guard let message = assistantMessage(withID: resolvedMessageID),
+              message.isStreaming,
+              !isStreamingFinalizing(messageID: resolvedMessageID),
+              message.hasLiveStreamingPart(id: partID, type: .reasoning) else {
+            return
+        }
 
-        invalidateStreamingUpdates(messageID: messageID, partID: partID)
+        invalidateStreamingUpdates(messageID: resolvedMessageID, target: .reasoningPart(partID))
         message.resetStreamingReasoningProjection(partID: partID)
-        enqueueStreamingUpdate(messageID: messageID, partID: partID, text: text, chunks: chunks)
+        enqueueStreamingUpdate(
+            messageID: resolvedMessageID,
+            target: .reasoningPart(partID),
+            text: text,
+            chunks: chunks
+        )
         ensureFlushTimer()
     }
 
     func clearStreamingBuffer(messageID: String) {
         guard !ignoredAssistantMessageIDs.contains(messageID) else { return }
-        guard let pending = pendingAssistantMessage, pending.id == messageID else { return }
-        invalidateStreamingUpdates(messageID: messageID, partID: nil)
+        let resolvedMessageID = resolvedStreamingMessageID(messageID)
+        guard let pending = pendingAssistantMessage, pending.id == resolvedMessageID else { return }
+        let target = pending.activeStreamingFallbackTextPartID
+            .map(BufferedStreamTarget.textPart)
+            ?? .fallbackText
+        invalidateStreamingUpdates(messageID: resolvedMessageID, target: target)
         stopFlushTimerIfIdle()
     }
 
     func clearStreamingReasoningBuffer(messageID: String, partID: String) {
-        invalidateStreamingUpdates(messageID: messageID, partID: partID)
+        invalidateStreamingUpdates(
+            messageID: resolvedStreamingMessageID(messageID),
+            target: .reasoningPart(partID)
+        )
+        stopFlushTimerIfIdle()
+    }
+
+    /// An explicit `message.removed` is stronger than a potentially stale
+    /// foreground history response. Cancel any deferred worker commit before
+    /// removing the row, otherwise reconciliation could restore it.
+    func removeAssistantMessage(messageID: String) {
+        let resolvedMessageID = resolvedStreamingMessageID(messageID)
+        clearStreamingFinalization(messageID: resolvedMessageID)
+        _ = detachBufferedStreamUpdates(for: resolvedMessageID)
+        if pendingAssistantMessage?.id == resolvedMessageID {
+            pendingAssistantMessage = nil
+        }
+        messages.removeAll { $0.id == resolvedMessageID }
         stopFlushTimerIfIdle()
     }
 
@@ -2015,7 +2188,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     private func enqueueStreamingUpdate(
         messageID: String,
-        partID: String?,
+        target: BufferedStreamTarget,
         text: String,
         chunks: [String]
     ) {
@@ -2030,7 +2203,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let mailbox = streamingMailbox(for: resolvedMessageID)
         let update = BufferedStreamUpdate(
             messageID: resolvedMessageID,
-            partID: partID,
+            target: target,
             chunks: retainedChunks[...]
         )
 
@@ -2052,6 +2225,14 @@ final class ChatClient: SSEEventHandlerDelegate {
         return messages.last(where: { $0.id == messageID && $0.role == .assistant })
     }
 
+    /// Once `idle` has detached a stream for worker-side materialization, the
+    /// result is immutable. Rejecting late SSE deltas here prevents a brief
+    /// visible append that the already-captured worker snapshot would later
+    /// overwrite.
+    private func isStreamingFinalizing(messageID: String) -> Bool {
+        streamingFinalizationTokens[messageID] != nil
+    }
+
     private var hasBufferedStreamingUpdates: Bool {
         bufferedStreamingRecordCount > 0
     }
@@ -2070,11 +2251,11 @@ final class ChatClient: SSEEventHandlerDelegate {
         return resolved
     }
 
-    private func invalidateStreamingUpdates(messageID: String, partID: String?) {
+    private func invalidateStreamingUpdates(messageID: String, target: BufferedStreamTarget) {
         let resolvedMessageID = resolvedStreamingMessageID(messageID)
         guard let mailbox = streamingUpdateMailboxes[resolvedMessageID] else { return }
 
-        let removed = mailbox.discard { $0.partID == partID }
+        let removed = mailbox.discard { $0.target == target }
         bufferedStreamingRecordCount -= removed.records
         bufferedStreamingChunkCount -= removed.chunks
         if mailbox.isEmpty {
@@ -2167,6 +2348,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         var changedContent = false
         var requiresTimelineRebuild = false
+        var messagesNeedingDerivedStateRebuild: [ObjectIdentifier: ChatMessage] = [:]
         var remainingChunkBudget = Self.maximumStreamingChunksPerFlush
         var remainingRecordBudget = Self.maximumStreamingRecordsPerFlush
 
@@ -2190,32 +2372,49 @@ final class ChatClient: SSEEventHandlerDelegate {
 
             let resolvedMessageID = resolvedStreamingMessageID(update.messageID)
             let targetMessage: ChatMessage?
-            if update.partID != nil {
+            switch update.target {
+            case .textPart, .reasoningPart:
                 targetMessage = assistantMessage(withID: resolvedMessageID)
-                guard targetMessage != nil else {
-                    if let discarded = mailbox.removeFirst() {
-                        bufferedStreamingRecordCount -= 1
-                        bufferedStreamingChunkCount -= discarded.chunks.count
-                    }
-                    if mailbox.isEmpty {
-                        streamingUpdateMailboxes.removeValue(forKey: mailboxMessageID)
-                    }
-                    continue
-                }
-            } else {
+            case .fallbackText:
                 targetMessage = pendingAssistantMessage?.id == resolvedMessageID
                     ? pendingAssistantMessage
                     : nil
-                guard targetMessage != nil else {
-                    if let discarded = mailbox.removeFirst() {
-                        bufferedStreamingRecordCount -= 1
-                        bufferedStreamingChunkCount -= discarded.chunks.count
-                    }
-                    if mailbox.isEmpty {
-                        streamingUpdateMailboxes.removeValue(forKey: mailboxMessageID)
-                    }
-                    continue
+            }
+            guard let message = targetMessage else {
+                if let discarded = mailbox.removeFirst() {
+                    bufferedStreamingRecordCount -= 1
+                    bufferedStreamingChunkCount -= discarded.chunks.count
                 }
+                if mailbox.isEmpty {
+                    streamingUpdateMailboxes.removeValue(forKey: mailboxMessageID)
+                }
+                continue
+            }
+
+            let acceptsTarget: Bool
+            switch update.target {
+            case .textPart(let partID):
+                acceptsTarget = message.hasLiveStreamingPart(id: partID, type: .text)
+            case .reasoningPart(let partID):
+                acceptsTarget = message.hasLiveStreamingPart(id: partID, type: .reasoning)
+            case .fallbackText:
+                acceptsTarget = true
+            }
+            guard message.isStreaming,
+                  !isStreamingFinalizing(messageID: resolvedMessageID),
+                  acceptsTarget else {
+                // The server can remove a part or finish a message between
+                // enqueue and the next 40 ms render tick. Drop the complete
+                // FIFO record so no invisible work bumps contentVersion or
+                // influences auto-follow.
+                if let discarded = mailbox.removeFirst() {
+                    bufferedStreamingRecordCount -= 1
+                    bufferedStreamingChunkCount -= discarded.chunks.count
+                }
+                if mailbox.isEmpty {
+                    streamingUpdateMailboxes.removeValue(forKey: mailboxMessageID)
+                }
+                continue
             }
 
             let end = update.chunks.index(
@@ -2228,15 +2427,31 @@ final class ChatClient: SSEEventHandlerDelegate {
             update.chunks = update.chunks[end...]
             remainingChunkBudget -= chunkCount
 
-            if let partID = update.partID, let message = targetMessage {
+            switch update.target {
+            case .textPart(let partID):
+                let insertedTextSegment = message.appendStreamingText(
+                    partID: partID,
+                    text: "",
+                    chunks: chunks,
+                    rebuildDerivedStateImmediately: false
+                )
+                if insertedTextSegment {
+                    messagesNeedingDerivedStateRebuild[ObjectIdentifier(message)] = message
+                }
+                changedContent = true
+            case .reasoningPart(let partID):
                 let insertedReasoningSegment = message.appendStreamingReasoning(
                     partID: partID,
                     text: "",
-                    chunks: chunks
+                    chunks: chunks,
+                    rebuildDerivedStateImmediately: false
                 )
-                requiresTimelineRebuild = requiresTimelineRebuild || insertedReasoningSegment
+                if insertedReasoningSegment {
+                    messagesNeedingDerivedStateRebuild[ObjectIdentifier(message)] = message
+                }
                 changedContent = true
-            } else if let pending = targetMessage {
+            case .fallbackText:
+                let pending = message
                 let wasEmpty = pending.streamingTextProjection.hasText
                 pending.appendStreamingText("", chunks: chunks)
                 requiresTimelineRebuild = requiresTimelineRebuild
@@ -2259,6 +2474,13 @@ final class ChatClient: SSEEventHandlerDelegate {
             if mailbox.isEmpty {
                 streamingUpdateMailboxes.removeValue(forKey: mailboxMessageID)
             }
+        }
+
+        if !messagesNeedingDerivedStateRebuild.isEmpty {
+            for message in messagesNeedingDerivedStateRebuild.values {
+                message.rebuildDerivedState()
+            }
+            requiresTimelineRebuild = true
         }
 
         updateStreamingConsumerPressure()
@@ -2284,14 +2506,24 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         var contentChunks = baseSnapshot.contentChunks
+        var textChunksByPartID = baseSnapshot.textChunksByPartID
         var reasoningChunksByPartID = baseSnapshot.reasoningChunksByPartID
         var additionalChunkCount = 0
+        let validTextPartIDs = Set(baseSnapshot.textPartOrder)
+        let validReasoningPartIDs = baseSnapshot.reasoningPartIDs
 
         bufferedUpdates.forEachInFIFO { update in
-            additionalChunkCount += update.chunks.count
-            if let partID = update.partID {
+            switch update.target {
+            case .textPart(let partID):
+                guard validTextPartIDs.contains(partID) else { return }
+                additionalChunkCount += update.chunks.count
+                textChunksByPartID[partID, default: []].append(contentsOf: update.chunks)
+            case .reasoningPart(let partID):
+                guard validReasoningPartIDs.contains(partID) else { return }
+                additionalChunkCount += update.chunks.count
                 reasoningChunksByPartID[partID, default: []].append(contentsOf: update.chunks)
-            } else {
+            case .fallbackText:
+                additionalChunkCount += update.chunks.count
                 contentChunks.append(contentsOf: update.chunks)
             }
         }
@@ -2299,9 +2531,14 @@ final class ChatClient: SSEEventHandlerDelegate {
         return ChatMessage.materialize(
             ChatMessage.StreamingMaterialization(
                 contentChunks: contentChunks,
+                textChunksByPartID: textChunksByPartID,
+                textPartOrder: baseSnapshot.textPartOrder,
+                staticTextByPartID: baseSnapshot.staticTextByPartID,
+                reasoningPartIDs: baseSnapshot.reasoningPartIDs,
                 reasoningChunksByPartID: reasoningChunksByPartID,
                 estimatedCharacterCount: baseSnapshot.estimatedCharacterCount
-                    + additionalChunkCount * 2_400
+                    + additionalChunkCount * 2_400,
+                requiresBackgroundMaterialization: baseSnapshot.requiresBackgroundMaterialization
             )
         )
     }
@@ -2335,6 +2572,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         abortTask?.cancel()
         abortTask = nil
         streamingFinalizationTokens.removeAll()
+        finalizingAssistantMessages.removeAll()
         cancelStoppedStateClear()
         ignoredAssistantMessageIDs.removeAll()
         locallyStoppedSessionID = nil
@@ -2389,6 +2627,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         if bufferedUpdates.isEmpty,
+           !snapshot.requiresBackgroundMaterialization,
            snapshot.estimatedCharacterCount <= Self.asynchronousMaterializationThreshold {
             pending.applyStreamingMaterialization(ChatMessage.materialize(snapshot))
             pending.isStreaming = false
@@ -2396,41 +2635,83 @@ final class ChatClient: SSEEventHandlerDelegate {
             // rebuildDisplayedMessages (messages.append triggers didSet which
             // would still see the pending message).
             pendingAssistantMessage = nil
-            if !messages.contains(where: { $0.id == pending.id }) {
-                messages.append(pending)
-            }
+            upsertAssistantMessage(pending)
             return
         }
 
         // Move the same object into the canonical list immediately. It remains
         // chunked/streaming until the worker returns, so another user turn can
         // start without losing this finished response.
-        let messageID = pending.id
         pendingAssistantMessage = nil
-        if !messages.contains(where: { $0.id == messageID }) {
-            messages.append(pending)
-        }
+        upsertAssistantMessage(pending)
+        scheduleStreamingMaterialization(
+            for: pending,
+            snapshot: snapshot,
+            bufferedUpdates: bufferedUpdates
+        )
+    }
 
+    private func scheduleStreamingMaterialization(
+        for message: ChatMessage,
+        snapshot: ChatMessage.StreamingMaterialization,
+        bufferedUpdates: DetachedStreamingUpdates = .empty
+    ) {
+        let messageID = message.id
+        let materializationRevision = message.streamingMaterializationRevision
         let token = UUID()
         streamingFinalizationTokens[messageID] = token
-        Self.streamingMaterializationQueue.async { [weak self] in
+        finalizingAssistantMessages[messageID] = message
+        Self.streamingMaterializationQueue.async { [weak self, weak message] in
             let materialized = Self.materialize(snapshot, appending: bufferedUpdates)
             DispatchQueue.main.async {
-                guard let self,
-                      self.streamingFinalizationTokens[messageID] == token,
-                      let message = self.messages.first(where: { $0.id == messageID })
-                else {
+                guard let self, self.streamingFinalizationTokens[messageID] == token else {
+                    return
+                }
+
+                guard let message,
+                      self.messages.contains(where: { $0 === message }) else {
+                    self.clearStreamingFinalization(messageID: messageID)
+                    return
+                }
+
+                guard message.isStreaming else {
+                    self.clearStreamingFinalization(messageID: messageID)
+                    return
+                }
+
+                guard message.streamingMaterializationRevision == materializationRevision else {
+                    // A retraction arrived after this worker snapshot was
+                    // captured. Re-snapshot the surviving live state instead
+                    // of restoring text that the server has removed.
+                    self.scheduleStreamingMaterialization(
+                        for: message,
+                        snapshot: message.streamingMaterializationSnapshot(),
+                        bufferedUpdates: bufferedUpdates
+                    )
                     return
                 }
 
                 message.applyStreamingMaterialization(materialized)
                 message.isStreaming = false
-                self.streamingFinalizationTokens.removeValue(forKey: messageID)
+                self.clearStreamingFinalization(messageID: messageID)
                 self.contentVersion &+= 1
                 // The cached timeline switches its row kind from the live
                 // streaming projection to the finalized Markdown message.
                 self.timelineVersion &+= 1
             }
+        }
+    }
+
+    private func clearStreamingFinalization(messageID: String) {
+        streamingFinalizationTokens.removeValue(forKey: messageID)
+        finalizingAssistantMessages.removeValue(forKey: messageID)
+    }
+
+    private func upsertAssistantMessage(_ message: ChatMessage) {
+        if let existingIndex = messages.lastIndex(where: { $0.id == message.id }) {
+            messages[existingIndex] = message
+        } else {
+            messages.append(message)
         }
     }
 

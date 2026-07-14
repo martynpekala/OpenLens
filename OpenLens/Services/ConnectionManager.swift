@@ -19,6 +19,7 @@ final class ConnectionManager: ConnectionProviding {
     private(set) var branch: String?
     private(set) var selectedProjectDirectory: String?
     private(set) var connectionMethod: ConnectionMethod?
+    private(set) var localNetworkAccessRequired: Bool = false
 
     /// Set to `true` when the user explicitly disconnects via Settings.
     /// Prevents auto-reconnect from firing until the user manually connects again.
@@ -39,11 +40,19 @@ final class ConnectionManager: ConnectionProviding {
     private var lastHeartbeat: Date = .distantPast
     private var heartbeatWatchdog: Timer?
 
+    @ObservationIgnored private let localNetworkAccessProbe: any LocalNetworkAccessProbing
+
     /// If no heartbeat arrives within this interval, the connection is considered stale.
     /// OpenCode server typically sends heartbeats every ~30s; 90s allows 3 missed beats.
     private static let heartbeatTimeout: TimeInterval = 90
 
-    init() {}
+    init() {
+        self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+    }
+
+    init(localNetworkAccessProbe: any LocalNetworkAccessProbing) {
+        self.localNetworkAccessProbe = localNetworkAccessProbe
+    }
 
     var isConnected: Bool {
         if case .connected = state { return true }
@@ -70,6 +79,7 @@ final class ConnectionManager: ConnectionProviding {
     ) async {
         didManuallyDisconnect = false
         connectionMethod = method
+        localNetworkAccessRequired = false
 
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -85,6 +95,14 @@ final class ConnectionManager: ConnectionProviding {
         }
 
         state = .connecting
+
+        let localNetworkProbeResult = await localNetworkAccessProbe.probe(baseURL)
+        guard !Task.isCancelled else { return }
+        guard localNetworkProbeResult == .continueConnection else {
+            localNetworkAccessRequired = true
+            state = .error(AppText.localNetworkAccessRequiredBody)
+            return
+        }
 
         var authHeader: String?
         if !password.isEmpty {
@@ -182,6 +200,7 @@ final class ConnectionManager: ConnectionProviding {
                 }
             }
         } catch {
+            guard !Task.isCancelled else { return }
             state = .error(error.localizedDescription)
         }
     }
@@ -212,6 +231,7 @@ final class ConnectionManager: ConnectionProviding {
         branch = nil
         selectedProjectDirectory = nil
         connectionMethod = nil
+        localNetworkAccessRequired = false
         savedConnectionsStore?.clearActiveConnection()
         SharedConnectionStore.clear()
     }

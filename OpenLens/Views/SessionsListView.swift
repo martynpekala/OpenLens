@@ -51,6 +51,11 @@ struct SessionsListView: View {
 
     // MARK: - View State
 
+    enum InitialState {
+        case loaded([OCSession])
+        case error(String)
+    }
+
     enum ViewState {
         case idle
         case loading
@@ -58,9 +63,9 @@ struct SessionsListView: View {
         case error(String)
     }
 
-    @State private var viewState: ViewState = .idle
-    @State private var sessions: [OCSession] = []
-    @State private var sessionStatuses: [String: OCSessionStatus] = [:]
+    @State private var viewState: ViewState
+    @State private var sessions: [OCSession]
+    @State private var sessionStatuses: [String: OCSessionStatus]
 
     @State private var newSessionRequest: NewSessionRequest?
     @State private var sessionToDelete: OCSession?
@@ -70,6 +75,24 @@ struct SessionsListView: View {
     var onSelect: (OCSession) -> Void
 
     @Environment(\.sessionsService) private var sessionsService
+
+    init(
+        initialState: InitialState,
+        onSelect: @escaping (OCSession) -> Void
+    ) {
+        self.onSelect = onSelect
+
+        switch initialState {
+        case .loaded(let sessions):
+            self._viewState = State(initialValue: .loaded)
+            self._sessions = State(initialValue: sessions)
+        case .error(let message):
+            self._viewState = State(initialValue: .error(message))
+            self._sessions = State(initialValue: [])
+        }
+
+        self._sessionStatuses = State(initialValue: [:])
+    }
 
     // MARK: - Convenience
 
@@ -118,6 +141,11 @@ struct SessionsListView: View {
                 ProgressView()
                     .tint(Color.appSecondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let errorMessage, sessions.isEmpty {
+                SessionsLoadErrorView(
+                    message: errorMessage,
+                    retry: retryLoadingSessions
+                )
             } else if sessions.isEmpty {
                 emptyState
             } else {
@@ -159,7 +187,7 @@ struct SessionsListView: View {
             Text(AppText.deleteSessionMessage)
         }
         .task {
-            await loadSessions()
+            await loadSessionStatuses()
         }
     }
 
@@ -362,6 +390,19 @@ struct SessionsListView: View {
         }
     }
 
+    private func loadSessionStatuses() async {
+        guard !sessions.isEmpty, !Task.isCancelled else { return }
+        let statuses = (try? await sessionsService.getSessionStatuses()) ?? [:]
+        guard !Task.isCancelled else { return }
+        sessionStatuses = statuses
+    }
+
+    private func retryLoadingSessions() {
+        Task {
+            await loadSessions()
+        }
+    }
+
     private func presentNewSessionSheet() {
         newSessionRequest = NewSessionRequest()
     }
@@ -449,6 +490,22 @@ struct SessionsListView: View {
         let trimmedDirectory = session.directory?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let trimmedDirectory, !trimmedDirectory.isEmpty else { return nil }
         return trimmedDirectory
+    }
+}
+
+private struct SessionsLoadErrorView: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(AppText.sessionsLoadErrorTitle, systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(message)
+        } actions: {
+            Button(AppText.tryAgain, action: retry)
+                .buttonStyle(.borderedProminent)
+        }
     }
 }
 

@@ -68,7 +68,7 @@ struct MessageBubbleView: View {
         for segment in visibleAssistantSegments {
             switch segment.kind {
             case .text(let text):
-                appendCopyable(text, to: &lines)
+                appendCopyable(segment.streamingText?.copyText() ?? text, to: &lines)
             case .reasoning(let text):
                 if showThinking {
                     appendCopyable(segment.streamingText?.copyText() ?? text, to: &lines)
@@ -179,7 +179,7 @@ struct MessageBubbleView: View {
     private func segmentView(_ segment: ChatMessage.AssistantSegment) -> some View {
         switch segment.kind {
         case .text(let text):
-            assistantTextBubble(text)
+            assistantTextBubble(text, projection: segment.streamingText)
         case .reasoning(let text):
             if showThinking {
                 reasoningSegment(text: text, projection: segment.streamingText)
@@ -193,9 +193,18 @@ struct MessageBubbleView: View {
         }
     }
 
-    private func assistantTextBubble(_ text: String) -> some View {
+    private func assistantTextBubble(
+        _ text: String,
+        projection: ChatMessage.StreamingTextProjection?
+    ) -> some View {
         Group {
-            if message.isStreaming {
+            if let projection, message.isStreaming {
+                StreamingAssistantTextView(
+                    projection: projection,
+                    font: isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16),
+                    color: isRetroChat ? RetroChatStyle.ink : Color.appPrimary
+                )
+            } else if message.isStreaming {
                 Text(text)
                     .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                     .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)

@@ -18,6 +18,9 @@ actor OpenCodeClient {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
+        // iOS can present the Local Network alert after this request starts.
+        // Waiting avoids treating that first, user-authorized connection as a failure.
+        config.waitsForConnectivity = true
         self.session = URLSession(configuration: config)
     }
 

@@ -4,6 +4,11 @@ import Testing
 @testable import OpenLens
 
 struct ChatStreamBehaviorTests {
+    private struct VisibleTranscriptRow: Equatable {
+        let id: String
+        let kind: String
+        let value: String
+    }
 
     @MainActor
     @Test func streamingFlushPublishesBufferedTextProjection() async {
@@ -25,6 +30,1218 @@ struct ChatStreamBehaviorTests {
         #expect(client.pendingAssistantMessage?.content == "")
         #expect(client.pendingAssistantMessage?.streamingTextProjection.copyText() == "Hello")
         #expect(client.contentVersion == 1)
+    }
+
+    @MainActor
+    @Test func laterTextDeltasUpdateTheExistingTextRowWithoutRebuildingTimeline() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let textPartID = "text-part"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        let initialTimelineVersion = client.timelineVersion
+
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                ),
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "First visible text."
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+
+        let timelineVersionAfterFirstVisibleText = client.timelineVersion
+        let contentVersionAfterFirstVisibleText = client.contentVersion
+        let scrollAnchorAfterFirstVisibleText = client.scrollAnchor
+
+        #expect(timelineVersionAfterFirstVisibleText > initialTimelineVersion)
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == [
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(textPartID)",
+                kind: "text",
+                value: "First visible text."
+            )
+        ])
+
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: " More text in the same part."
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(client.timelineVersion == timelineVersionAfterFirstVisibleText)
+        #expect(client.contentVersion > contentVersionAfterFirstVisibleText)
+        #expect(client.scrollAnchor == scrollAnchorAfterFirstVisibleText)
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == [
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(textPartID)",
+                kind: "text",
+                value: "First visible text. More text in the same part."
+            )
+        ])
+    }
+
+    @MainActor
+    @Test func mixedNamedTextAndFallbackTextKeepTheirTranscriptOrderThroughFinalization() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let textPartID = "first-text"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                ),
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "Before tool."
+                ),
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: "grep-tool",
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .tool,
+                    tool: "grep",
+                    state: OCToolState(status: .running)
+                ),
+                textChunks: nil,
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: nil,
+                    field: "text",
+                    text: " After tool."
+                ),
+                rawEvent: nil
+            )
+        )
+
+        await waitForMainQueue(milliseconds: 80)
+
+        let expectedRows = [
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(textPartID)",
+                kind: "text",
+                value: "Before tool."
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-grep-tool",
+                kind: "tool",
+                value: "grep"
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-content-text-\(messageID)",
+                kind: "text",
+                value: " After tool."
+            ),
+        ]
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == expectedRows)
+
+        client.finishLoading()
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(client.messages.last?.content == "Before tool. After tool.")
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == expectedRows)
+    }
+
+    @MainActor
+    @Test func separateFallbackBurstsStayOnOppositeSidesOfAnInterleavedTool() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let firstFallbackID = "content-text-\(messageID)"
+        let secondFallbackID = "content-text-\(messageID)-1"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: nil,
+                    field: "text",
+                    text: "Before tool."
+                ),
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: "grep-tool",
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .tool,
+                    tool: "grep",
+                    state: OCToolState(status: .completed)
+                ),
+                textChunks: nil,
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: nil,
+                    field: "text",
+                    text: "After tool."
+                ),
+                rawEvent: nil
+            )
+        )
+
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == [
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(firstFallbackID)",
+                kind: "text",
+                value: "Before tool."
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-grep-tool",
+                kind: "tool",
+                value: "grep"
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(secondFallbackID)",
+                kind: "text",
+                value: "After tool."
+            ),
+        ])
+
+        client.finishLoading()
+        await waitForFinalization(of: client)
+
+        let finalizedTextParts = client.messages.last?.parts.filter { $0.type == .text } ?? []
+        #expect(client.messages.last?.content == "Before tool.After tool.")
+        #expect(finalizedTextParts.map(\.id) == [firstFallbackID, secondFallbackID])
+        #expect(finalizedTextParts.compactMap(\.text) == ["Before tool.", "After tool."])
+    }
+
+    @MainActor
+    @Test func detachedFallbackChunksMaterializeIntoTheTerminalTextPart() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let textPartID = "first-text"
+        let fallbackText = String(repeating: "fallback fragment ", count: 1_000)
+        let fallbackPayload = SSETextDelta(
+            sessionID: sessionID,
+            messageID: messageID,
+            partID: nil,
+            field: "text",
+            text: fallbackText
+        )
+        #expect(fallbackPayload.textChunks.count > 8)
+
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                ),
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "Before tool."
+                ),
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: "grep-tool",
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .tool,
+                    tool: "grep",
+                    state: OCToolState(status: .completed)
+                ),
+                textChunks: nil,
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(.textDelta(fallbackPayload, rawEvent: nil))
+
+        // `finishLoading()` renders only its bounded prefix and moves the
+        // remainder to the worker. The assertion below proves the detached
+        // chunks retain their terminal per-part identity.
+        client.finishLoading()
+        for _ in 0..<10 where client.messages.last?.isStreaming == true {
+            await waitForMainQueue(milliseconds: 50)
+        }
+
+        let fallbackPartID = "content-text-\(messageID)"
+        #expect(client.messages.last?.content == "Before tool." + fallbackText)
+        #expect(client.messages.last?.parts.first(where: { $0.id == fallbackPartID })?.text == fallbackText)
+        let terminalRow = visibleTranscriptRows(from: client.displayedMessages).last
+        #expect(terminalRow ==
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(fallbackPartID)",
+                kind: "text",
+                value: fallbackText
+            )
+        )
+    }
+
+    @MainActor
+    @Test func workerFinalizationRetriesAfterRemovingOneBufferedTextPart() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let retainedPartID = "retained-text"
+        let removedPartID = "removed-text"
+        let retainedText = String(repeating: "Retained fragment. ", count: 2_000)
+        let removedText = String(repeating: "Removed fragment. ", count: 2_000)
+        let retainedPayload = SSETextDelta(
+            sessionID: sessionID,
+            messageID: messageID,
+            partID: retainedPartID,
+            field: "text",
+            text: retainedText
+        )
+        let removedPayload = SSETextDelta(
+            sessionID: sessionID,
+            messageID: messageID,
+            partID: removedPartID,
+            field: "text",
+            text: removedText
+        )
+        #expect(retainedPayload.textChunks.count > 8)
+        #expect(removedPayload.textChunks.count > 8)
+
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        for (partID, text, chunks) in [
+            (retainedPartID, retainedText, retainedPayload.textChunks),
+            (removedPartID, removedText, removedPayload.textChunks),
+        ] {
+            handler.handleInboundEvent(
+                .partUpdated(
+                    part: OCPart(
+                        id: partID,
+                        sessionID: sessionID,
+                        messageID: messageID,
+                        type: .text,
+                        text: text
+                    ),
+                    textChunks: chunks,
+                    questionPayload: nil,
+                    rawEvent: nil
+                )
+            )
+        }
+
+        #expect(client.pendingAssistantMessage?.parts.map(\.id) == [retainedPartID, removedPartID])
+
+        client.finishLoading()
+        guard let finalizingMessage = client.messages.last else {
+            Issue.record("Expected the finalizing assistant message")
+            return
+        }
+        _ = finalizingMessage.removePart(id: removedPartID)
+        #expect(!finalizingMessage.parts.contains(where: { $0.id == removedPartID }))
+        #expect(finalizingMessage.isStreaming)
+
+        await waitForFinalization(of: client)
+
+        #expect(client.messages.last?.isStreaming == false)
+        #expect(client.messages.last?.content == retainedText)
+        #expect(client.messages.last?.parts.map(\.id) == [retainedPartID])
+        #expect(client.messages.last?.parts.first?.text == retainedText)
+    }
+
+    @MainActor
+    @Test func workerFinalizationDoesNotRestoreRemovedFallbackText() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let fallbackText = String(repeating: "removed fallback fragment ", count: 2_000)
+        let fallbackPayload = SSETextDelta(
+            sessionID: sessionID,
+            messageID: messageID,
+            partID: nil,
+            field: "text",
+            text: fallbackText
+        )
+        #expect(fallbackPayload.textChunks.count > 8)
+
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        handler.handleInboundEvent(.textDelta(fallbackPayload, rawEvent: nil))
+
+        let fallbackPartID = "content-text-\(messageID)"
+        #expect(client.pendingAssistantMessage?.parts.map(\.id) == [fallbackPartID])
+
+        client.finishLoading()
+        guard let finalizingMessage = client.messages.last else {
+            Issue.record("Expected the finalizing assistant message")
+            return
+        }
+        _ = finalizingMessage.removePart(id: fallbackPartID)
+        #expect(!finalizingMessage.parts.contains(where: { $0.id == fallbackPartID }))
+
+        await waitForFinalization(of: client)
+
+        #expect(client.messages.last?.isStreaming == false)
+        #expect(client.messages.last?.content.isEmpty == true)
+        #expect(client.messages.last?.parts.isEmpty == true)
+    }
+
+    @MainActor
+    @Test func completedTextRetractionsClearMaterializedFallbackContent() {
+        let messageID = "assistant-message"
+        let textPart = OCPart(
+            id: "text-part",
+            sessionID: "session-1",
+            messageID: messageID,
+            type: .text,
+            text: "Visible answer"
+        )
+        let removedMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "Visible answer",
+            parts: [textPart]
+        )
+
+        _ = removedMessage.removePart(id: textPart.id)
+
+        #expect(removedMessage.content.isEmpty)
+        #expect(visibleTranscriptRows(from: [removedMessage]).isEmpty)
+
+        let ignoredMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "Visible answer",
+            parts: [textPart]
+        )
+        _ = ignoredMessage.applyPartUpdate(
+            OCPart(
+                id: textPart.id,
+                sessionID: "session-1",
+                messageID: messageID,
+                type: .text,
+                text: "Visible answer",
+                ignored: true
+            )
+        )
+
+        #expect(ignoredMessage.content.isEmpty)
+        #expect(visibleTranscriptRows(from: [ignoredMessage]).isEmpty)
+    }
+
+    @MainActor
+    @Test func historyCanonicalTextAndFallbackKeepBothSlotsWhenTheirProvenanceIsAmbiguous() async {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let serverTextPartID = "canonical-text"
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        client.appendStreamingText(messageID: messageID, text: "A")
+        await waitForMainQueue(milliseconds: 80)
+
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [
+                    OCPart(
+                        id: serverTextPartID,
+                        sessionID: "session-1",
+                        messageID: messageID,
+                        type: .text,
+                        text: "A"
+                    )
+                ]
+            )
+        ]
+
+        client.finishLoading()
+        await waitForFinalization(of: client)
+
+        let finalizedTextParts = client.messages.last?.parts.filter { $0.type == .text } ?? []
+        #expect(client.messages.last?.content == "AA")
+        #expect(finalizedTextParts.map(\.id) == [serverTextPartID, "content-text-\(messageID)"])
+        #expect(finalizedTextParts.compactMap(\.text) == ["A", "A"])
+    }
+
+    @MainActor
+    @Test func historyBeforeTerminalFallbackKeepsBothDistinctTextSlots() async {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let serverTextPartID = "canonical-before"
+        let fallbackTextPartID = "content-text-\(messageID)"
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        let history = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: serverTextPartID,
+                    sessionID: "session-1",
+                    messageID: messageID,
+                    type: .text,
+                    text: "Before"
+                )
+            ]
+        )
+        client.messages = [history]
+        client.appendStreamingText(messageID: messageID, text: " After")
+        await waitForMainQueue(milliseconds: 80)
+
+        // A repeat foreground refresh has only the canonical prefix; it must
+        // not fold the terminal fallback back into that earlier text slot.
+        client.messages = [history]
+        client.finishLoading()
+        await waitForFinalization(of: client)
+
+        let finalizedTextParts = client.messages.last?.parts.filter { $0.type == .text } ?? []
+        #expect(client.messages.last?.content == "Before After")
+        #expect(finalizedTextParts.map(\.id) == [serverTextPartID, fallbackTextPartID])
+        #expect(finalizedTextParts.compactMap(\.text) == ["Before", " After"])
+    }
+
+    @MainActor
+    @Test func oneFlushBatchesDerivedTimelineRebuildsForMultipleNewTextSlots() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+
+        for partID in ["first-text", "second-text"] {
+            handler.handleInboundEvent(
+                .partUpdated(
+                    part: OCPart(
+                        id: partID,
+                        sessionID: sessionID,
+                        messageID: messageID,
+                        type: .text,
+                        text: ""
+                    ),
+                    textChunks: [],
+                    questionPayload: nil,
+                    rawEvent: nil
+                )
+            )
+        }
+        let timelineVersionBeforeDeltas = client.timelineVersion
+        let contentVersionBeforeDeltas = client.contentVersion
+
+        for (partID, text) in [("first-text", "First."), ("second-text", "Second.")] {
+            handler.handleInboundEvent(
+                .textDelta(
+                    SSETextDelta(
+                        sessionID: sessionID,
+                        messageID: messageID,
+                        partID: partID,
+                        field: "text",
+                        text: text
+                    ),
+                    rawEvent: nil
+                )
+            )
+        }
+
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(client.timelineVersion == timelineVersionBeforeDeltas + 1)
+        #expect(client.contentVersion == contentVersionBeforeDeltas + 1)
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == [
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-first-text",
+                kind: "text",
+                value: "First."
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-second-text",
+                kind: "text",
+                value: "Second."
+            ),
+        ])
+    }
+
+    @MainActor
+    @Test func textDeltaBeforeItsSnapshotKeepsTheTextSlotBeforeALaterTool() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let textPartID = "text-before"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "I started before the tool."
+                ),
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: "grep-tool",
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .tool,
+                    tool: "grep",
+                    state: OCToolState(status: .running)
+                ),
+                textChunks: nil,
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: "I started before the tool."
+                ),
+                textChunks: ["I started before the tool."],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == [
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(textPartID)",
+                kind: "text",
+                value: "I started before the tool."
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-grep-tool",
+                kind: "tool",
+                value: "grep"
+            ),
+        ])
+    }
+
+    @MainActor
+    @Test func ignoredTextSnapshotRemovesItsVisibleRowAndDoesNotAccumulateHiddenParts() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let textPartID = "visible-text"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        let message = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        client.pendingAssistantMessage = message
+
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                ),
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "Visible before the server hides it."
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+        #expect(message.assistantSegment(withID: textPartID) != nil)
+
+        let contentVersionBeforeHide = client.contentVersion
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: "Visible before the server hides it.",
+                    ignored: true
+                ),
+                textChunks: nil,
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(message.assistantSegment(withID: textPartID) == nil)
+        #expect(!message.parts.contains(where: { $0.id == textPartID }))
+        #expect(client.contentVersion > contentVersionBeforeHide)
+
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "A delayed delta must stay hidden."
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+        #expect(message.assistantSegment(withID: textPartID) == nil)
+        #expect(!message.parts.contains(where: { $0.id == textPartID }))
+
+        // A later explicit visible snapshot is allowed to reverse the
+        // retraction; the tombstone only rejects unconfirmed late deltas.
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                ),
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "Visible again after confirmation."
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+        #expect(message.assistantSegment(withID: textPartID)?.streamingText?.copyText()
+            == "Visible again after confirmation.")
+
+        for index in 0..<80 {
+            _ = message.applyPartUpdate(
+                OCPart(
+                    id: "ignored-\(index)",
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: "hidden",
+                    synthetic: true
+                )
+            )
+        }
+        let retainedHiddenTextPart = message.parts.contains { part in
+            part.synthetic == true || part.ignored == true
+        }
+        #expect(!retainedHiddenTextPart)
+    }
+
+    @MainActor
+    @Test func foregroundHistoryTextPartContinuesInItsExistingLiveRow() async {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let textPartID = "history-text"
+        let initialText = "Recovered from history"
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [
+                    OCPart(
+                        id: textPartID,
+                        sessionID: "session-1",
+                        messageID: messageID,
+                        type: .text,
+                        text: initialText
+                    )
+                ]
+            )
+        ]
+
+        #expect(client.pendingAssistantMessage?.assistantSegment(withID: textPartID)?.streamingText?.hasText == nil)
+
+        client.appendStreamingText(
+            messageID: messageID,
+            partID: textPartID,
+            text: " continues",
+            chunks: [" continues"]
+        )
+        await waitForMainQueue(milliseconds: 80)
+
+        let segment = client.pendingAssistantMessage?.assistantSegment(withID: textPartID)
+        #expect(segment?.streamingText?.copyText() == "\(initialText) continues")
+        #expect(visibleTranscriptRows(from: client.displayedMessages).contains(
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-\(textPartID)",
+                kind: "text",
+                value: "\(initialText) continues"
+            )
+        ))
+    }
+
+    @MainActor
+    @Test func foregroundHistoryStaticTextForcesWorkerMaterialization() {
+        let message = ChatMessage(
+            id: "assistant-message",
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: "history-text",
+                    sessionID: "session-1",
+                    messageID: "assistant-message",
+                    type: .text,
+                    text: String(repeating: "Recovered history text. ", count: 2_000)
+                )
+            ],
+            isStreaming: true
+        )
+
+        #expect(message.streamingMaterializationSnapshot().requiresBackgroundMaterialization)
+    }
+
+    @MainActor
+    @Test func foregroundHistoryRecoversSuffixMissingFromTheLiveTextProjection() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let textPartID = "history-text"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                ),
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "A"
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+
+        // The next SSE suffix was lost, but a foreground snapshot caught it.
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [
+                    OCPart(
+                        id: textPartID,
+                        sessionID: sessionID,
+                        messageID: messageID,
+                        type: .text,
+                        text: "AB"
+                    )
+                ]
+            )
+        ]
+
+        // A subsequent live delta must extend the recovered server baseline,
+        // not the stale local projection that ended at "A".
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "C"
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(visibleTranscriptRows(from: client.displayedMessages).contains {
+            $0.kind == "text" && $0.value == "ABC"
+        })
+
+        client.finishLoading()
+        for _ in 0..<10 where client.messages.last?.isStreaming == true {
+            await waitForMainQueue(milliseconds: 50)
+        }
+
+        #expect(client.messages.last?.content == "ABC")
+        #expect(client.messages.last?.parts.first(where: { $0.id == textPartID })?.text == "ABC")
+    }
+
+    @MainActor
+    @Test func foregroundHistoryRetractionHidesLocalTextAndRejectsItsLateDelta() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let textPartID = "retracted-text"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: OCPart(
+                    id: textPartID,
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                ),
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "Local text before history catches up."
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+        #expect(client.pendingAssistantMessage?.assistantSegment(withID: textPartID) != nil)
+
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [
+                    OCPart(
+                        id: textPartID,
+                        sessionID: sessionID,
+                        messageID: messageID,
+                        type: .text,
+                        text: "Local text before history catches up.",
+                        ignored: true
+                    )
+                ]
+            )
+        ]
+
+        #expect(client.pendingAssistantMessage?.assistantSegment(withID: textPartID) == nil)
+        #expect(client.pendingAssistantMessage?.streamingTextProjection(forPartID: textPartID)?.hasText == nil)
+
+        // A foreground response started before the retraction can still say
+        // that this part is visible. It must not clear the local tombstone.
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [
+                    OCPart(
+                        id: textPartID,
+                        sessionID: sessionID,
+                        messageID: messageID,
+                        type: .text,
+                        text: "Stale history must not revive this row."
+                    )
+                ]
+            )
+        ]
+        #expect(client.pendingAssistantMessage?.assistantSegment(withID: textPartID) == nil)
+        #expect(client.pendingAssistantMessage?.streamingTextProjection(forPartID: textPartID)?.hasText == nil)
+
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textPartID,
+                    field: "text",
+                    text: "Late text must stay hidden."
+                ),
+                rawEvent: nil
+            )
+        )
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(client.pendingAssistantMessage?.assistantSegment(withID: textPartID) == nil)
+        #expect(client.pendingAssistantMessage?.streamingTextProjection(forPartID: textPartID)?.hasText == nil)
+    }
+
+    @MainActor
+    @Test func queuedDeltaForRemovedTextPartIsDiscardedWithoutAContentUpdate() async {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let textPartID = "removed-text"
+        let message = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        client.pendingAssistantMessage = message
+        _ = message.applyPartUpdate(
+            OCPart(
+                id: textPartID,
+                sessionID: "session-1",
+                messageID: messageID,
+                type: .text,
+                text: ""
+            )
+        )
+
+        client.appendStreamingText(
+            messageID: messageID,
+            partID: textPartID,
+            text: "This must be dropped.",
+            chunks: ["This must be dropped."]
+        )
+        #expect(client.bufferedStreamingMetricsForTesting.records == 1)
+
+        _ = message.removePart(id: textPartID)
+        let contentVersionAfterRemoval = client.contentVersion
+        await waitForMainQueue(milliseconds: 80)
+
+        #expect(client.bufferedStreamingMetricsForTesting.records == 0)
+        #expect(client.contentVersion == contentVersionAfterRemoval)
+        #expect(message.assistantSegment(withID: textPartID) == nil)
     }
 
     @MainActor
@@ -183,12 +1400,17 @@ struct ChatStreamBehaviorTests {
         )
 
         await waitForMainQueue(milliseconds: 80)
-        #expect(message.streamingTextProjection.copyText().hasPrefix("new snapshot"))
-        #expect(!message.streamingTextProjection.copyText().contains("old snapshot"))
+        guard let projection = message.streamingTextProjection(forPartID: "text-part") else {
+            Issue.record("Expected the text-part streaming projection")
+            return
+        }
+        #expect(projection.copyText().hasPrefix("new snapshot"))
+        #expect(!projection.copyText().contains("old snapshot"))
 
         client.finishLoading()
         await waitForMainQueue(milliseconds: 300)
         #expect(client.messages.last?.content == replacement)
+        #expect(client.messages.last?.parts.first(where: { $0.id == "text-part" })?.text == replacement)
     }
 
     @MainActor
@@ -495,12 +1717,163 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func foregroundHistoryRefreshKeepsAsyncFinalizingObjectAndItsLocalText() async {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let text = String(repeating: "final streamed suffix ", count: 2_000)
+        let message = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        message.appendStreamingText(text, chunks: SSETextDelta(
+            sessionID: "session-1",
+            messageID: messageID,
+            partID: nil,
+            field: "text",
+            text: text
+        ).textChunks)
+        client.pendingAssistantMessage = message
+
+        client.finishLoading()
+        #expect(client.messages.count == 1)
+        #expect(client.messages.last === message)
+        #expect(client.messages.last?.isStreaming == true)
+
+        // The server has not yet persisted the local stream's final suffix.
+        // Reconciliation must preserve the finalizing live object rather than
+        // let this stale replacement make the worker discard its result.
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: []
+            )
+        ]
+
+        #expect(client.messages.count == 1)
+        #expect(client.messages.last === message)
+
+        await waitForFinalization(of: client)
+
+        #expect(client.messages.count == 1)
+        #expect(client.messages.last === message)
+        #expect(client.messages.last?.isStreaming == false)
+        #expect(client.messages.last?.content == text)
+    }
+
+    @MainActor
+    @Test func historyRefreshDuringAsyncFinalizationUsesRecoveredServerText() async {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let textPartID = "text-part"
+        let localText = String(repeating: "A", count: 30_000)
+        let recoveredText = localText + "B"
+        let message = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: textPartID,
+                    sessionID: "session-1",
+                    messageID: messageID,
+                    type: .text,
+                    text: ""
+                )
+            ],
+            isStreaming: true
+        )
+        _ = message.appendStreamingText(partID: textPartID, text: localText)
+        client.pendingAssistantMessage = message
+
+        client.finishLoading()
+        #expect(client.messages.last?.isStreaming == true)
+
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [
+                    OCPart(
+                        id: textPartID,
+                        sessionID: "session-1",
+                        messageID: messageID,
+                        type: .text,
+                        text: recoveredText
+                    )
+                ]
+            )
+        ]
+
+        await waitForFinalization(of: client)
+
+        #expect(client.messages.last === message)
+        #expect(client.messages.last?.isStreaming == false)
+        #expect(client.messages.last?.content == recoveredText)
+        #expect(client.messages.last?.parts.first(where: { $0.id == textPartID })?.text == recoveredText)
+    }
+
+    @MainActor
+    @Test func explicitMessageRemovalCancelsAsyncFinalizationWithoutResurrection() async {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let text = String(repeating: "stream awaiting removal ", count: 2_000)
+        let message = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        message.appendStreamingText(text, chunks: SSETextDelta(
+            sessionID: sessionID,
+            messageID: messageID,
+            partID: nil,
+            field: "text",
+            text: text
+        ).textChunks)
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = message
+
+        client.finishLoading()
+        #expect(client.messages.last?.isStreaming == true)
+
+        handler.handleEvent(
+            OCEvent(
+                type: "message.removed",
+                properties: AnyCodable([
+                    "sessionID": sessionID,
+                    "messageID": messageID,
+                ])
+            )
+        )
+
+        #expect(client.messages.isEmpty)
+        await waitForMainQueue(milliseconds: 250)
+        #expect(client.messages.isEmpty)
+    }
+
+    @MainActor
     @Test func workerMaterializationPreservesLargeWhitespaceOnlyContentAndReasoningSemantics() async {
         let whitespace = String(repeating: " \n", count: 50_000)
         let snapshot = ChatMessage.StreamingMaterialization(
             contentChunks: [whitespace],
+            textChunksByPartID: [:],
+            textPartOrder: [],
+            staticTextByPartID: [:],
+            reasoningPartIDs: ["reasoning-part"],
             reasoningChunksByPartID: ["reasoning-part": [whitespace]],
-            estimatedCharacterCount: whitespace.utf8.count * 2
+            estimatedCharacterCount: whitespace.utf8.count * 2,
+            requiresBackgroundMaterialization: false
         )
 
         let materialized = await Task.detached {
@@ -976,6 +2349,122 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func loadedAssistantWithSameIDAsPendingAssistantKeepsOneVisibleMessageAndItsLiveText() async {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let serverToolPart = OCPart(
+            id: "server-tool",
+            sessionID: "session-1",
+            messageID: messageID,
+            type: .tool,
+            tool: "grep",
+            state: OCToolState(status: .completed)
+        )
+
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        client.appendStreamingText(messageID: messageID, text: "Local stream")
+        await waitForMainQueue(milliseconds: 80)
+
+        // This is the state produced when a foreground history refresh returns
+        // an assistant message that is still held as the active local stream.
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [serverToolPart]
+            )
+        ]
+        client.appendStreamingText(messageID: messageID, text: " continues")
+        await waitForMainQueue(milliseconds: 80)
+
+        let displayedIDs = client.displayedMessages.map(\.id)
+        let timelineIDs = ChatTimeline.items(
+            from: client.displayedMessages,
+            showsThinking: true
+        ).map(\.id)
+        let visibleRows = visibleTranscriptRows(from: client.displayedMessages)
+        let keepsLiveText = visibleRows.contains { row in
+            row.kind == "text" && row.value == "Local stream continues"
+        }
+        let keepsServerTool = visibleRows.contains { row in
+            row.kind == "tool" && row.value == "grep"
+        }
+
+        #expect(displayedIDs == [messageID])
+        #expect(Set(timelineIDs).count == timelineIDs.count)
+        #expect(keepsLiveText)
+        #expect(keepsServerTool)
+
+        client.finishLoading()
+        await waitForMainQueue(milliseconds: 80)
+
+        let finalizedRows = visibleTranscriptRows(from: client.displayedMessages)
+        let finalizedKeepsLiveText = finalizedRows.contains { row in
+            row.kind == "text" && row.value == "Local stream continues"
+        }
+        let finalizedKeepsServerTool = finalizedRows.contains { row in
+            row.kind == "tool" && row.value == "grep"
+        }
+        #expect(client.messages.map(\.id) == [messageID])
+        #expect(client.displayedMessages.map(\.id) == [messageID])
+        #expect(client.messages.last?.isStreaming == false)
+        #expect(finalizedKeepsLiveText)
+        #expect(finalizedKeepsServerTool)
+    }
+
+    @MainActor
+    @Test func foregroundHistoryRefreshReplacesMatchingToolStateBeforeFinalization() {
+        let client = ChatClient(demoMode: true)
+        let messageID = "assistant-message"
+        let toolID = "grep-tool"
+        let runningTool = OCPart(
+            id: toolID,
+            sessionID: "session-1",
+            messageID: messageID,
+            type: .tool,
+            tool: "grep",
+            state: OCToolState(status: .running)
+        )
+        let completedTool = OCPart(
+            id: toolID,
+            sessionID: "session-1",
+            messageID: messageID,
+            type: .tool,
+            tool: "grep",
+            state: OCToolState(status: .completed)
+        )
+
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            parts: [runningTool],
+            isStreaming: true
+        )
+        client.messages = [
+            ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: "",
+                parts: [completedTool]
+            )
+        ]
+
+        #expect(client.pendingAssistantMessage?.parts.first?.state?.status == .completed)
+
+        client.finishLoading()
+
+        #expect(client.messages.count == 1)
+        #expect(client.messages.first?.parts.first?.state?.status == .completed)
+    }
+
+    @MainActor
     @Test func finishLoadingReturnsGeneratingResponseToIdle() {
         let client = ChatClient(demoMode: true)
         client.responseState = .generating
@@ -1200,6 +2689,54 @@ struct ChatStreamBehaviorTests {
             now: now,
             lastAutoScrollDate: now.addingTimeInterval(-0.3),
             minimumInterval: 0.18
+        ))
+    }
+
+    @MainActor
+    @Test func textSlotInsertionCoalescesItsImmediateStreamingTailUpdate() {
+        let insertedAt = Date()
+        let interval = 0.18
+
+        #expect(ChatScrollPolicy.shouldAutoFollow(
+            isLoading: true,
+            followLatest: true,
+            interaction: .idle,
+            bottomDistance: 40,
+            bottomOverscroll: 0,
+            settledBottomTolerance: 8,
+            contentVersion: 21,
+            lastHandledContentVersion: 20,
+            now: insertedAt,
+            lastAutoScrollDate: insertedAt.addingTimeInterval(-1),
+            minimumInterval: interval
+        ))
+
+        #expect(!ChatScrollPolicy.shouldAutoFollow(
+            isLoading: true,
+            followLatest: true,
+            interaction: .idle,
+            bottomDistance: 40,
+            bottomOverscroll: 0,
+            settledBottomTolerance: 8,
+            contentVersion: 22,
+            lastHandledContentVersion: 21,
+            now: insertedAt.addingTimeInterval(0.04),
+            lastAutoScrollDate: insertedAt,
+            minimumInterval: interval
+        ))
+
+        #expect(ChatScrollPolicy.shouldAutoFollow(
+            isLoading: true,
+            followLatest: true,
+            interaction: .idle,
+            bottomDistance: 40,
+            bottomOverscroll: 0,
+            settledBottomTolerance: 8,
+            contentVersion: 23,
+            lastHandledContentVersion: 22,
+            now: insertedAt.addingTimeInterval(0.19),
+            lastAutoScrollDate: insertedAt,
+            minimumInterval: interval
         ))
     }
 
@@ -1586,6 +3123,7 @@ struct ChatStreamBehaviorTests {
         )
 
         #expect(delegate.appendedStreamingTexts == ["Hello"])
+        #expect(delegate.appendedStreamingTextPartIDs == ["text-part"])
         #expect(delegate.pendingAssistantMessage?.content == "")
     }
 
@@ -1938,6 +3476,48 @@ struct ChatStreamBehaviorTests {
         }
 
         #expect(step.isActive)
+    }
+
+    @MainActor
+    @Test func finalizingInterleavedTextAndGrepPreservesTextPartOrder() async {
+        let client = makeClientStreamingTextBeforeAndAfterGrep()
+        let messageID = "assistant-message"
+        let expectedRows = [
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-text-before",
+                kind: "text",
+                value: "I will search first. More detail."
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-grep-tool",
+                kind: "tool",
+                value: "grep"
+            ),
+            VisibleTranscriptRow(
+                id: "message-\(messageID)-part-text-after",
+                kind: "text",
+                value: "The search is complete."
+            ),
+        ]
+
+        await waitForMainQueue(milliseconds: 80)
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == expectedRows)
+
+        client.finishLoading()
+        for _ in 0..<10 where client.messages.last?.isStreaming == true {
+            await waitForMainQueue(milliseconds: 50)
+        }
+
+        let displayedIDs = client.displayedMessages.map(\.id)
+        let timelineIDs = ChatTimeline.items(
+            from: client.displayedMessages,
+            showsThinking: true
+        ).map(\.id)
+
+        #expect(displayedIDs == [messageID])
+        #expect(Set(timelineIDs).count == timelineIDs.count)
+        #expect(client.messages.last?.isStreaming == false)
+        #expect(visibleTranscriptRows(from: client.displayedMessages) == expectedRows)
     }
 
     @MainActor
@@ -2587,11 +4167,166 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    private func visibleTranscriptRows(from messages: [ChatMessage]) -> [VisibleTranscriptRow] {
+        ChatTimeline.items(from: messages, showsThinking: true).map { item in
+            switch item.content {
+            case .message(let message):
+                VisibleTranscriptRow(id: item.id, kind: "message", value: message.content)
+            case .streamingAssistantText(_, let projection):
+                VisibleTranscriptRow(id: item.id, kind: "text", value: projection.copyText())
+            case .assistantSegment(_, let segment):
+                switch segment.kind {
+                case .text(let text):
+                    VisibleTranscriptRow(
+                        id: item.id,
+                        kind: "text",
+                        value: segment.streamingText?.copyText() ?? text
+                    )
+                case .reasoning(let text):
+                    VisibleTranscriptRow(
+                        id: item.id,
+                        kind: "reasoning",
+                        value: segment.streamingText?.copyText() ?? text
+                    )
+                case .question(let step):
+                    VisibleTranscriptRow(id: item.id, kind: "question", value: step.id)
+                case .subagent(let step):
+                    VisibleTranscriptRow(id: item.id, kind: "subagent", value: step.title)
+                case .tool(let step):
+                    VisibleTranscriptRow(id: item.id, kind: "tool", value: step.toolName)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func makeClientStreamingTextBeforeAndAfterGrep() -> ChatClient {
+        let client = ChatClient(demoMode: true)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        let handler = makeHandler(delegate: client)
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+        client.pendingAssistantMessage = ChatMessage(
+            id: messageID,
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+
+        let textBefore = OCPart(
+            id: "text-before",
+            sessionID: sessionID,
+            messageID: messageID,
+            type: .text,
+            text: ""
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: textBefore,
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textBefore.id,
+                    field: "text",
+                    text: "I will search first."
+                ),
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textBefore.id,
+                    field: "text",
+                    text: " More detail."
+                ),
+                rawEvent: nil
+            )
+        )
+
+        let grepTool = OCPart(
+            id: "grep-tool",
+            sessionID: sessionID,
+            messageID: messageID,
+            type: .tool,
+            tool: "grep",
+            state: OCToolState(
+                status: .running,
+                input: AnyCodable([
+                    "pattern": "TODO",
+                    "path": "OpenLens"
+                ])
+            )
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: grepTool,
+                textChunks: nil,
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+
+        let textAfter = OCPart(
+            id: "text-after",
+            sessionID: sessionID,
+            messageID: messageID,
+            type: .text,
+            text: ""
+        )
+        handler.handleInboundEvent(
+            .partUpdated(
+                part: textAfter,
+                textChunks: [],
+                questionPayload: nil,
+                rawEvent: nil
+            )
+        )
+        handler.handleInboundEvent(
+            .textDelta(
+                SSETextDelta(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    partID: textAfter.id,
+                    field: "text",
+                    text: "The search is complete."
+                ),
+                rawEvent: nil
+            )
+        )
+
+        return client
+    }
+
+    @MainActor
     private func waitForMainQueue(milliseconds: Int) async {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
                 continuation.resume()
             }
+        }
+    }
+
+    @MainActor
+    private func waitForFinalization(of client: ChatClient) async {
+        for _ in 0..<20 where client.messages.last?.isStreaming == true {
+            await waitForMainQueue(milliseconds: 50)
+        }
+        if client.messages.last?.isStreaming == true {
+            Issue.record("Expected streaming materialization to finish")
         }
     }
 
@@ -2687,6 +4422,7 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
     var todos: [OCTodo] = []
     var hiddenTodoCount: Int = 0
     var appendedStreamingTexts: [String] = []
+    var appendedStreamingTextPartIDs: [String?] = []
     var clearedStreamingBuffers: [String] = []
     var layoutChangeCount = 0
     var contentChangeCount = 0
@@ -2709,6 +4445,16 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
 
     func appendStreamingText(messageID: String, text: String, chunks: [String]) {
         appendedStreamingTexts.append(text)
+    }
+
+    func appendStreamingText(
+        messageID: String,
+        partID: String?,
+        text: String,
+        chunks: [String]
+    ) {
+        appendedStreamingTexts.append(text)
+        appendedStreamingTextPartIDs.append(partID)
     }
 
     func appendStreamingReasoning(messageID: String, partID: String, text: String, chunks: [String]) {

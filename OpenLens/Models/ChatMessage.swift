@@ -104,6 +104,11 @@ private enum ChatStreamLimit {
     /// update; retain a useful recent window without letting that shape grow an
     /// unbounded transcript and index on MainActor.
     static let maximumReasoningParts = 24
+
+    /// Retain just enough recently retracted text IDs to reject a delayed
+    /// delta after an `ignored` or `removed` event. This is metadata only,
+    /// deliberately bounded so malformed streams cannot grow it forever.
+    static let maximumSuppressedTextPartIDs = 96
 }
 
 /// Represents a single chat message for display purposes.
@@ -117,13 +122,19 @@ private enum ChatStreamLimit {
 final class ChatMessage: Identifiable {
     nonisolated struct StreamingMaterialization: Sendable {
         let contentChunks: [String]
+        let textChunksByPartID: [String: [String]]
+        let textPartOrder: [String]
+        let staticTextByPartID: [String: String]
+        let reasoningPartIDs: Set<String>
         let reasoningChunksByPartID: [String: [String]]
         let estimatedCharacterCount: Int
+        let requiresBackgroundMaterialization: Bool
     }
 
     nonisolated struct MaterializedStreamingContent: Sendable {
         let content: String
         let hasVisibleContent: Bool
+        let textByPartID: [String: String]
         let reasoningTextByPartID: [String: String]
         let hasVisibleReasoningByPartID: [String: Bool]
     }
@@ -140,7 +151,7 @@ final class ChatMessage: Identifiable {
         }
 
         struct LiveWindow {
-            let sealedChunks: ArraySlice<Chunk>
+            let sealedChunks: [Chunk]
             let omittedSealedChunkCount: Int
         }
 
@@ -156,10 +167,16 @@ final class ChatMessage: Identifiable {
         let id: String
         private(set) var sealedChunks: [Chunk] = []
         private(set) var tail: String = ""
+        /// A recovered history prefix is retained as one shared String rather
+        /// than synchronously joining and re-chunking a large live response on
+        /// MainActor. New deltas continue in `sealedChunks` / `tail`.
+        private var historyBaseline: String?
+        private var historyBaselineIsLiveVisible = false
+        private var historyBaselineEstimatedCharacterCount = 0
         private var nextChunkID = 0
 
         var hasText: Bool {
-            !sealedChunks.isEmpty || !tail.isEmpty
+            !(historyBaseline?.isEmpty ?? true) || !sealedChunks.isEmpty || !tail.isEmpty
         }
 
         var liveWindow: LiveWindow {
@@ -167,9 +184,21 @@ final class ChatMessage: Identifiable {
                 sealedChunks.count,
                 Self.maximumLiveSealedChunkCount
             )
+            var visibleChunks = Array(sealedChunks.suffix(visibleCount))
+            var omittedChunkCount = sealedChunks.count - visibleCount
+            if let historyBaseline, !historyBaseline.isEmpty {
+                if historyBaselineIsLiveVisible,
+                   visibleChunks.count < Self.maximumLiveSealedChunkCount {
+                    visibleChunks.insert(Chunk(id: -1, text: historyBaseline), at: 0)
+                } else {
+                    // Keep rendering bounded after a large history recovery;
+                    // the full text remains available for Copy/finalization.
+                    omittedChunkCount += 1
+                }
+            }
             return LiveWindow(
-                sealedChunks: sealedChunks.suffix(visibleCount),
-                omittedSealedChunkCount: sealedChunks.count - visibleCount
+                sealedChunks: visibleChunks,
+                omittedSealedChunkCount: omittedChunkCount
             )
         }
 
@@ -190,6 +219,7 @@ final class ChatMessage: Identifiable {
         }
 
         func replace(with text: String) {
+            clearHistoryBaseline()
             sealedChunks = []
             tail = ""
             nextChunkID = 0
@@ -197,6 +227,7 @@ final class ChatMessage: Identifiable {
         }
 
         func replace(withChunks chunks: [String]) {
+            clearHistoryBaseline()
             sealedChunks = []
             tail = ""
             nextChunkID = 0
@@ -204,25 +235,115 @@ final class ChatMessage: Identifiable {
         }
 
         func clear() {
+            clearHistoryBaseline()
             sealedChunks = []
             tail = ""
             nextChunkID = 0
         }
 
+        /// Incorporates a history snapshot without creating a whole joined
+        /// String or re-running the chunker on the UI actor. A shorter server
+        /// prefix is stale and leaves the newer local stream untouched.
+        func synchronizeHistoryBaseline(with serverText: String) {
+            guard !serverText.isEmpty else { return }
+
+            switch historyRelation(to: serverText) {
+            case .equal, .localExtendsServer:
+                return
+            case .serverExtendsLocal, .diverged:
+                historyBaseline = serverText
+                let metadata = Self.historyBaselineMetadata(for: serverText)
+                historyBaselineIsLiveVisible = metadata.isLiveVisible
+                historyBaselineEstimatedCharacterCount = metadata.estimatedCharacterCount
+                sealedChunks = []
+                tail = ""
+                nextChunkID = 0
+            }
+        }
+
         /// This intentionally does work proportional to the full response only
         /// when a person explicitly invokes Copy, never during rendering.
         func copyText() -> String {
-            sealedChunks.map(\.text).joined() + tail
+            (historyBaseline ?? "") + sealedChunks.map(\.text).joined() + tail
         }
 
         /// Copies only the small container and String storage references. The
         /// potentially expensive join is performed on the finalization worker.
         func materializationChunks() -> [String] {
-            sealedChunks.map(\.text) + (tail.isEmpty ? [] : [tail])
+            var chunks: [String] = []
+            chunks.reserveCapacity(sealedChunks.count + (historyBaseline == nil ? 0 : 1) + (tail.isEmpty ? 0 : 1))
+            if let historyBaseline, !historyBaseline.isEmpty {
+                chunks.append(historyBaseline)
+            }
+            chunks.append(contentsOf: sealedChunks.map(\.text))
+            if !tail.isEmpty {
+                chunks.append(tail)
+            }
+            return chunks
         }
 
         var estimatedCharacterCount: Int {
-            sealedChunks.count * Self.targetChunkLength + tail.utf8.count
+            historyBaselineEstimatedCharacterCount
+                + sealedChunks.count * Self.targetChunkLength
+                + tail.utf8.count
+        }
+
+        private enum HistoryRelation {
+            case equal
+            case localExtendsServer
+            case serverExtendsLocal
+            case diverged
+        }
+
+        private func historyRelation(to serverText: String) -> HistoryRelation {
+            var serverIndex = serverText.startIndex
+
+            func compare(_ localText: String) -> HistoryRelation? {
+                var localIndex = localText.startIndex
+                while localIndex != localText.endIndex,
+                      serverIndex != serverText.endIndex {
+                    guard localText[localIndex] == serverText[serverIndex] else {
+                        return .diverged
+                    }
+                    localIndex = localText.index(after: localIndex)
+                    serverIndex = serverText.index(after: serverIndex)
+                }
+                return localIndex == localText.endIndex ? nil : .localExtendsServer
+            }
+
+            if let historyBaseline,
+               let relation = compare(historyBaseline) {
+                return relation
+            }
+            for chunk in sealedChunks {
+                if let relation = compare(chunk.text) {
+                    return relation
+                }
+            }
+            if let relation = compare(tail) {
+                return relation
+            }
+            return serverIndex == serverText.endIndex ? .equal : .serverExtendsLocal
+        }
+
+        private func clearHistoryBaseline() {
+            historyBaseline = nil
+            historyBaselineIsLiveVisible = false
+            historyBaselineEstimatedCharacterCount = 0
+        }
+
+        private static func historyBaselineMetadata(for text: String) -> (
+            isLiveVisible: Bool,
+            estimatedCharacterCount: Int
+        ) {
+            var byteCount = 0
+            for _ in text.utf8 {
+                byteCount += 1
+                if byteCount > targetChunkLength {
+                    return (false, targetChunkLength)
+                }
+            }
+            return (true, byteCount)
         }
 
         private func sealCompletedChunks() {
@@ -317,6 +438,14 @@ final class ChatMessage: Identifiable {
     @ObservationIgnored private var appliesIncrementalPartUpdate = false
     @ObservationIgnored private var appliesStreamingContentUpdate = false
     @ObservationIgnored private var appliesPartRetentionLimits = false
+    /// Each live text part owns a projection so its stable transcript row can
+    /// grow in place without moving behind later tools or rebuilding the list.
+    @ObservationIgnored private var textProjections: [String: StreamingTextProjection] = [:]
+    @ObservationIgnored private var suppressedStreamingTextPartIDs: Set<String> = []
+    @ObservationIgnored private var suppressedStreamingTextPartIDOrder: [String] = []
+    /// Bumped for structural text retractions while a worker may be joining a
+    /// final snapshot. The finalizer retries from current state if it changed.
+    @ObservationIgnored private(set) var streamingMaterializationRevision: UInt = 0
     @ObservationIgnored private var reasoningProjections: [String: StreamingTextProjection] = [:]
     /// Streaming tool updates previously performed repeated linear lookups in
     /// both arrays. These indices are rebuilt only after a bounded structural
@@ -359,8 +488,15 @@ final class ChatMessage: Identifiable {
             guard !appliesIncrementalPartUpdate else { return }
 
             if !appliesPartRetentionLimits {
+                if let fallbackTextPartID,
+                   !parts.contains(where: { $0.id == fallbackTextPartID }) {
+                    discardStreamingTextProjection(partID: fallbackTextPartID)
+                }
                 materializedReasoningHasVisibleText.removeAll()
                 preparedQuestionToolPayloads.removeAll()
+                textProjections.removeAll()
+                suppressedStreamingTextPartIDs.removeAll()
+                suppressedStreamingTextPartIDOrder.removeAll()
                 reasoningProjections.removeAll()
                 omittedActivityPartCount = 0
                 omittedReasoningPartCountsByAnchor.removeAll()
@@ -389,6 +525,9 @@ final class ChatMessage: Identifiable {
                 streamingTextProjection.replace(with: content)
             } else {
                 streamingTextProjection.clear()
+                textProjections.removeAll()
+                suppressedStreamingTextPartIDs.removeAll()
+                suppressedStreamingTextPartIDOrder.removeAll()
                 reasoningProjections.removeAll()
             }
             rebuildDerivedState()
@@ -403,6 +542,10 @@ final class ChatMessage: Identifiable {
     var finish: String?
 
     let streamingTextProjection: StreamingTextProjection
+    /// Compatibility text without a server `partID` is represented as one
+    /// terminal local text part. Keeping its ID separately lets it survive an
+    /// optimistic message-ID remap without confusing it with server parts.
+    @ObservationIgnored private var fallbackTextPartID: String?
     private(set) var hasRenderableTextPart = false
     private(set) var assistantSegments: [AssistantSegment] = [] {
         didSet { rebuildAssistantSegmentIndex() }
@@ -500,12 +643,350 @@ final class ChatMessage: Identifiable {
         id = newID
     }
 
+    /// The active fallback slot is reusable only while it remains the terminal
+    /// part. A later tool or text part starts a new no-partID text run, which
+    /// must receive a fresh slot so it does not jump above that intervening row.
+    var activeStreamingFallbackTextPartID: String? {
+        guard let fallbackTextPartID,
+              let index = partIndexByID[fallbackTextPartID],
+              parts.indices.contains(index),
+              parts[index].isRenderableText,
+              index == parts.index(before: parts.endIndex),
+              textProjections[fallbackTextPartID] != nil
+        else {
+            return nil
+        }
+        return fallbackTextPartID
+    }
+
+    /// Releases one streaming text projection. The first compatibility slot
+    /// may own the legacy shared projection; if that slot is retracted, clear
+    /// it as well so a worker retry cannot re-materialize stale fallback text.
+    private func discardStreamingTextProjection(partID: String) {
+        let projection = textProjections.removeValue(forKey: partID)
+        if projection === streamingTextProjection {
+            streamingTextProjection.clear()
+        }
+        if fallbackTextPartID == partID {
+            fallbackTextPartID = nil
+        }
+    }
+
+    /// Incorporates a foreground history refresh into the same live object.
+    /// Server parts provide the best known order, while locally streamed parts
+    /// and their projections win for matching IDs so a newer delta is never
+    /// discarded by a slightly stale REST response.
+    func absorbHistorySnapshot(_ snapshot: ChatMessage) {
+        guard isStreaming,
+              role == .assistant,
+              snapshot.id == id else {
+            return
+        }
+
+        var localPartsByID: [String: OCPart] = [:]
+        for part in parts {
+            localPartsByID[part.id] = part
+        }
+
+        var merged: [OCPart] = []
+        var includedPartIDs = Set<String>()
+        for serverPart in snapshot.parts {
+            if serverPart.type == .text {
+                // History can lag an SSE retraction. Only a later explicit
+                // visible `part.updated` is allowed to restore this ID.
+                if suppressedStreamingTextPartIDs.contains(serverPart.id) {
+                    includedPartIDs.insert(serverPart.id)
+                    continue
+                }
+                guard serverPart.isRenderableText else {
+                    // A foreground refresh is authoritative for visibility.
+                    // Do not let an older local projection keep a retracted
+                    // row alive, or let a subsequent late delta recreate it.
+                    invalidateStreamingMaterialization()
+                    suppressStreamingTextPart(serverPart.id)
+                    discardStreamingTextProjection(partID: serverPart.id)
+                    includedPartIDs.insert(serverPart.id)
+                    continue
+                }
+            }
+            let selectedPart: OCPart
+            if let localPart = localPartsByID[serverPart.id], localPart.type == serverPart.type {
+                switch localPart.type {
+                case .text:
+                    // A server value extending the local projection is a
+                    // recovered baseline, not an older overwrite. Adopt it
+                    // before later deltas arrive so `A → history AB → C`
+                    // continues as `ABC` in the live row as well as in the
+                    // final transcript. A shorter server prefix leaves the
+                    // newer local suffix intact.
+                    if let projection = textProjections[localPart.id],
+                       let serverText = serverPart.text,
+                       !serverText.isEmpty {
+                        synchronizeStreamingTextProjection(
+                            projection,
+                            withServerText: serverText
+                        )
+                    }
+                    selectedPart = serverPart
+                case .reasoning where reasoningProjections[localPart.id] != nil:
+                    selectedPart = localPart
+                default:
+                    // Tool/subagent state and text without a local projection
+                    // are recoverable server facts. A foreground refresh is
+                    // specifically used to repair a missed SSE transition.
+                    selectedPart = serverPart
+                }
+            } else {
+                selectedPart = serverPart
+            }
+            merged.append(selectedPart)
+            includedPartIDs.insert(serverPart.id)
+        }
+
+        // The refresh can lag behind SSE. Keep any local part it has not seen
+        // yet rather than making a live tool or text slot disappear.
+        merged.append(contentsOf: parts.filter { !includedPartIDs.contains($0.id) })
+
+        mutatePartsWithoutRebuilding {
+            parts = merged
+        }
+        // A finalization worker may have captured the pre-refresh parts and
+        // projections. Even an ordinary visible history update must make it
+        // re-snapshot before committing, or it could overwrite this recovered
+        // server suffix with stale local text.
+        invalidateStreamingMaterialization()
+        rebuildDerivedState()
+
+        cost = snapshot.cost ?? cost
+        tokens = snapshot.tokens ?? tokens
+        modelID = snapshot.modelID ?? modelID
+        providerID = snapshot.providerID ?? providerID
+        finish = snapshot.finish ?? finish
+    }
+
     func replaceStreamingText(with text: String, chunks: [String]? = nil) {
         if let chunks {
             streamingTextProjection.replace(withChunks: chunks)
         } else {
             streamingTextProjection.replace(with: text)
         }
+    }
+
+    /// Registers the ordered placeholder for a streaming text part without
+    /// copying its potentially large snapshot into the derived transcript.
+    /// The text itself is kept in a per-part projection and materialized once
+    /// when the response finishes.
+    @discardableResult
+    func registerStreamingTextPart(_ part: OCPart) -> Bool {
+        guard isStreaming,
+              role == .assistant,
+              part.type == .text else {
+            return false
+        }
+
+        let placeholder = part.replacingText(nil)
+        if let index = partIndexByID[part.id] {
+            guard parts[index].type == .text else { return false }
+            guard part.isRenderableText else {
+                // Hidden server text is not transcript state. Removing an
+                // already-visible slot also releases its projection, so a
+                // delayed delta cannot revive it on the next render tick.
+                mutatePartsWithoutRebuilding {
+                    parts.remove(at: index)
+                }
+                invalidateStreamingMaterialization()
+                suppressStreamingTextPart(part.id)
+                discardStreamingTextProjection(partID: part.id)
+                rebuildDerivedState()
+                return true
+            }
+            restoreStreamingTextPart(part.id)
+            // Repeated snapshots normally differ only in their growing text,
+            // which belongs to the projection rather than `parts`. Avoid an
+            // O(parts) index rebuild for every such snapshot while still
+            // honoring a visibility change from the server.
+            if parts[index].synthetic != placeholder.synthetic
+                || parts[index].ignored != placeholder.ignored {
+                mutatePartsWithoutRebuilding {
+                    parts[index] = placeholder
+                }
+            }
+            return false
+        }
+
+        // Do not retain a potentially unbounded sequence of protocol text
+        // parts the server has explicitly marked as synthetic or ignored.
+        guard part.isRenderableText else {
+            invalidateStreamingMaterialization()
+            suppressStreamingTextPart(part.id)
+            return false
+        }
+        restoreStreamingTextPart(part.id)
+        mutatePartsWithoutRebuilding {
+            parts.append(placeholder)
+        }
+        // The empty placeholder has no row yet. Its first projection flush
+        // performs the one real timeline rebuild, batched with any siblings.
+        return false
+    }
+
+    /// Supports a text delta that arrives before its accompanying part
+    /// snapshot. The placeholder gains its canonical metadata later, while
+    /// its projection and row identity remain stable.
+    func registerStreamingTextPart(
+        id partID: String,
+        sessionID: String,
+        messageID: String
+    ) {
+        guard partIndexByID[partID] == nil,
+              !suppressedStreamingTextPartIDs.contains(partID) else {
+            return
+        }
+        _ = registerStreamingTextPart(
+            OCPart(
+                id: partID,
+                sessionID: sessionID,
+                messageID: messageID,
+                type: .text
+            )
+        )
+    }
+
+    /// Turns each contiguous legacy no-`partID` text run into an ordered
+    /// terminal slot. A tool between two such deltas creates a new projection
+    /// after the tool instead of appending the second delta to the old row.
+    @discardableResult
+    func registerStreamingFallbackTextPart() -> String? {
+        guard isStreaming, role == .assistant else { return nil }
+
+        if let fallbackTextPartID,
+           let index = partIndexByID[fallbackTextPartID],
+           parts.indices.contains(index),
+           parts[index].type == .text,
+           parts[index].isRenderableText,
+           index == parts.index(before: parts.endIndex),
+           textProjections[fallbackTextPartID] != nil {
+            return fallbackTextPartID
+        }
+
+        // The previous fallback remains in the ordered transcript. It simply
+        // stops being the active terminal target for subsequent no-partID
+        // deltas once another visible part follows it.
+        fallbackTextPartID = nil
+        let partID = nextStreamingFallbackTextPartID()
+        let projection: StreamingTextProjection
+        if partID == "content-text-\(id)" {
+            // Keep the original compatibility projection for the first slot,
+            // preserving the cheap legacy path and any pre-existing content.
+            projection = streamingTextProjection
+        } else {
+            projection = StreamingTextProjection(id: partID)
+        }
+
+        mutatePartsWithoutRebuilding {
+            parts.append(
+                OCPart(
+                    id: partID,
+                    sessionID: "",
+                    messageID: id,
+                    type: .text
+                )
+            )
+        }
+        fallbackTextPartID = partID
+        textProjections[partID] = projection
+        return partID
+    }
+
+    private func nextStreamingFallbackTextPartID() -> String {
+        let baseID = "content-text-\(id)"
+        guard partIndexByID[baseID] != nil else { return baseID }
+
+        var suffix = 1
+        while partIndexByID["\(baseID)-\(suffix)"] != nil {
+            suffix += 1
+        }
+        return "\(baseID)-\(suffix)"
+    }
+
+    /// Replaces only one text-part projection before its authoritative
+    /// snapshot is replayed through ChatClient's bounded mailbox.
+    func resetStreamingTextProjection(partID: String) {
+        guard isStreaming,
+              let part = part(withID: partID),
+              part.type == .text else {
+            return
+        }
+        _ = textProjection(
+            for: partID,
+            text: "",
+            chunks: [],
+            synchronizing: true
+        )
+    }
+
+    /// Appends one bounded batch to the projection associated with a text
+    /// part. Returns true only when the row becomes visible for the first
+    /// time and the flattened timeline needs one structural rebuild.
+    @discardableResult
+    func appendStreamingText(
+        partID: String,
+        text: String,
+        chunks: [String]? = nil,
+        rebuildDerivedStateImmediately: Bool = true
+    ) -> Bool {
+        guard isStreaming,
+              let part = part(withID: partID),
+              part.type == .text,
+              part.isRenderableText else {
+            return false
+        }
+
+        let hasChunks = chunks?.isEmpty == false
+        guard hasChunks || !text.isEmpty else { return false }
+
+        let existingText = part.text ?? ""
+        let projection = textProjection(for: partID, text: existingText)
+        if let chunks {
+            projection.append(chunks: chunks)
+        } else {
+            projection.append(text)
+        }
+
+        if let existingSegment = assistantSegment(withID: partID) {
+            // A foreground history refresh may have supplied a static text
+            // row before the next live delta arrives. Swap its payload in
+            // place once so the same row starts observing this projection.
+            if existingSegment.streamingText !== projection {
+                _ = replaceAssistantSegment(for: part)
+            }
+            return false
+        }
+
+        guard rebuildDerivedStateImmediately else { return true }
+        rebuildDerivedState()
+        return assistantSegmentIndexByID[partID] != nil
+    }
+
+    func hasLiveStreamingPart(id partID: String, type: OCPartType) -> Bool {
+        guard isStreaming,
+              let index = partIndexByID[partID],
+              parts.indices.contains(index),
+              parts[index].type == type else {
+            return false
+        }
+        return type != .text || parts[index].isRenderableText
+    }
+
+    func partType(withID partID: String) -> OCPartType? {
+        guard let index = partIndexByID[partID], parts.indices.contains(index) else {
+            return nil
+        }
+        return parts[index].type
+    }
+
+    func streamingTextProjection(forPartID partID: String) -> StreamingTextProjection? {
+        textProjections[partID]
     }
 
     /// Clears only the small projection containers before an authoritative
@@ -541,6 +1022,12 @@ final class ChatMessage: Identifiable {
         // MainActor work.
         guard !shouldDiscardStreamingPart(part) else { return false }
 
+        if isStreaming, role == .assistant, part.type == .text {
+            // Keep only the ordered slot here. Its authoritative snapshot is
+            // replayed through a bounded per-part projection by ChatClient.
+            return registerStreamingTextPart(part)
+        }
+
         if let questionPayload {
             preparedQuestionToolPayloads[part.id] = questionPayload
         } else {
@@ -548,9 +1035,12 @@ final class ChatMessage: Identifiable {
         }
         var trimmedActivityParts = false
         var trimmedReasoningParts = false
+        var replacedTextPartWithAnotherType = false
         mutatePartsWithoutRebuilding {
             if let index = partIndexByID[part.id] {
+                let previousPart = parts[index]
                 let typeChanged = parts[index].type != part.type
+                replacedTextPartWithAnotherType = previousPart.type == .text && part.type != .text
                 parts[index] = part
                 if typeChanged {
                     trimmedActivityParts = trimActivityPartsIfNeeded()
@@ -561,6 +1051,17 @@ final class ChatMessage: Identifiable {
                 trimmedActivityParts = trimActivityPartsIfNeeded()
                 trimmedReasoningParts = trimReasoningPartsIfNeeded()
             }
+        }
+
+        if replacedTextPartWithAnotherType {
+            invalidateStreamingMaterialization()
+            suppressStreamingTextPart(part.id)
+            discardStreamingTextProjection(partID: part.id)
+        }
+
+        if !isStreaming,
+           (part.type == .text || replacedTextPartWithAnotherType) {
+            refreshCompletedContentFromRenderableTextParts()
         }
 
         guard isStreaming, role == .assistant else {
@@ -603,7 +1104,12 @@ final class ChatMessage: Identifiable {
     /// canonical `parts` snapshot is materialized once when streaming ends;
     /// rebuilding its growing String on every tick would defeat the projection.
     @discardableResult
-    func appendStreamingReasoning(partID: String, text: String, chunks: [String]? = nil) -> Bool {
+    func appendStreamingReasoning(
+        partID: String,
+        text: String,
+        chunks: [String]? = nil,
+        rebuildDerivedStateImmediately: Bool = true
+    ) -> Bool {
         guard isStreaming,
               let index = partIndexByID[partID],
               parts[index].type == .reasoning else {
@@ -626,7 +1132,9 @@ final class ChatMessage: Identifiable {
             // visible. The model rebuild is structural but happens only once
             // for that part; it keeps interleaved tools/reasoning in server
             // order.
-            rebuildDerivedState()
+            if rebuildDerivedStateImmediately {
+                rebuildDerivedState()
+            }
             return true
         }
 
@@ -648,10 +1156,60 @@ final class ChatMessage: Identifiable {
     /// chunks on a worker queue.
     func streamingMaterializationSnapshot(
         appendingContentChunks: [String] = [],
+        appendingTextChunksByPartID: [String: [String]] = [:],
         appendingReasoningChunksByPartID: [String: [String]] = [:]
     ) -> StreamingMaterialization {
+        let renderableTextParts = parts.filter { part in
+            part.type == .text && part.isRenderableText
+        }
+        let textPartOrder = renderableTextParts.map(\.id)
+        let reasoningPartIDs = Set(parts.compactMap { part in
+            part.type == .reasoning ? part.id : nil
+        })
+        var staticTextByPartID: [String: String] = [:]
+        for part in renderableTextParts {
+            if let text = part.text {
+                staticTextByPartID[part.id] = text
+            }
+        }
+        // A foreground refresh can contribute an already-complete server text
+        // part. Its size has not passed through the worker chunker, so avoid a
+        // synchronous join on MainActor regardless of its apparent estimate.
+        let requiresBackgroundMaterialization = staticTextByPartID.values.contains {
+            !$0.isEmpty
+        }
+
+        var textChunksByPartID: [String: [String]] = [:]
         var reasoningChunksByPartID: [String: [String]] = [:]
-        var estimatedCharacterCount = streamingTextProjection.estimatedCharacterCount
+        let fallbackTextPartID = activeStreamingFallbackTextPartID
+        let globalProjectionBelongsToTextPart = textProjections.values.contains {
+            $0 === streamingTextProjection
+        }
+        var estimatedCharacterCount = globalProjectionBelongsToTextPart
+            ? 0
+            : streamingTextProjection.estimatedCharacterCount
+
+        for (partID, projection) in textProjections {
+            var chunks = projection.materializationChunks()
+            if let additionalChunks = appendingTextChunksByPartID[partID] {
+                chunks.append(contentsOf: additionalChunks)
+            }
+            textChunksByPartID[partID] = chunks
+            estimatedCharacterCount += projection.estimatedCharacterCount
+        }
+
+        // A final idle event can race the next UI flush. Retain the server
+        // placeholder's pending text chunks even if its projection has not
+        // yet been instantiated on MainActor.
+        for (partID, additionalChunks) in appendingTextChunksByPartID
+        where textChunksByPartID[partID] == nil {
+            var chunks: [String] = []
+            if let existingText = staticTextByPartID[partID], !existingText.isEmpty {
+                chunks.append(existingText)
+            }
+            chunks.append(contentsOf: additionalChunks)
+            textChunksByPartID[partID] = chunks
+        }
 
         for (partID, projection) in reasoningProjections {
             var chunks = projection.materializationChunks()
@@ -681,20 +1239,57 @@ final class ChatMessage: Identifiable {
         // MainActor. The caller forces a worker finalization whenever it adds
         // buffered chunks, so this is diagnostic rather than a cutoff.
         let extraChunkCount = appendingContentChunks.count
+            + appendingTextChunksByPartID.values.reduce(into: 0) { $0 += $1.count }
             + appendingReasoningChunksByPartID.values.reduce(into: 0) { $0 += $1.count }
         estimatedCharacterCount += extraChunkCount * StreamingTextProjection.targetChunkLength
 
+        if let fallbackTextPartID {
+            // The compatibility projection is already present in
+            // `textChunksByPartID` under its terminal local part. Keeping it
+            // out of `contentChunks` avoids both duplicate final content and
+            // an invisible suffix after a preceding named text part.
+            if !appendingContentChunks.isEmpty {
+                textChunksByPartID[fallbackTextPartID, default: []]
+                    .append(contentsOf: appendingContentChunks)
+            }
+        }
+
         return StreamingMaterialization(
-            contentChunks: streamingTextProjection.materializationChunks() + appendingContentChunks,
+            contentChunks: globalProjectionBelongsToTextPart
+                ? []
+                : streamingTextProjection.materializationChunks()
+                    + (fallbackTextPartID == nil ? appendingContentChunks : []),
+            textChunksByPartID: textChunksByPartID,
+            textPartOrder: textPartOrder,
+            staticTextByPartID: staticTextByPartID,
+            reasoningPartIDs: reasoningPartIDs,
             reasoningChunksByPartID: reasoningChunksByPartID,
-            estimatedCharacterCount: estimatedCharacterCount
+            estimatedCharacterCount: estimatedCharacterCount,
+            requiresBackgroundMaterialization: requiresBackgroundMaterialization
         )
     }
 
     nonisolated static func materialize(
         _ snapshot: StreamingMaterialization
     ) -> MaterializedStreamingContent {
-        let content = snapshot.contentChunks.joined()
+        var textByPartID = snapshot.staticTextByPartID
+        for (partID, chunks) in snapshot.textChunksByPartID {
+            let streamedText = chunks.joined()
+            if let serverText = snapshot.staticTextByPartID[partID] {
+                textByPartID[partID] = resolveStreamingText(
+                    serverText: serverText,
+                    streamedText: streamedText
+                )
+            } else {
+                textByPartID[partID] = streamedText
+            }
+        }
+
+        let orderedText = snapshot.textPartOrder
+            .compactMap { textByPartID[$0] }
+            .joined()
+        let fallbackContent = snapshot.contentChunks.joined()
+        let content = orderedText.isEmpty ? fallbackContent : orderedText + fallbackContent
         var reasoningTextByPartID: [String: String] = [:]
         var hasVisibleReasoningByPartID: [String: Bool] = [:]
 
@@ -707,6 +1302,7 @@ final class ChatMessage: Identifiable {
         return MaterializedStreamingContent(
             content: content,
             hasVisibleContent: containsNonWhitespace(content),
+            textByPartID: textByPartID,
             reasoningTextByPartID: reasoningTextByPartID,
             hasVisibleReasoningByPartID: hasVisibleReasoningByPartID
         )
@@ -725,6 +1321,10 @@ final class ChatMessage: Identifiable {
         appliesStreamingContentUpdate = false
 
         mutatePartsWithoutRebuilding {
+            for index in parts.indices where parts[index].type == .text {
+                guard let text = materialized.textByPartID[parts[index].id] else { continue }
+                parts[index] = parts[index].replacingText(text)
+            }
             for index in parts.indices where parts[index].type == .reasoning {
                 guard let text = materialized.reasoningTextByPartID[parts[index].id] else { continue }
                 parts[index] = parts[index].replacingText(text)
@@ -732,11 +1332,42 @@ final class ChatMessage: Identifiable {
         }
     }
 
+    /// A completed assistant message keeps `content` as a convenient canonical
+    /// fallback, but its visible text rows are still governed by `parts`.
+    /// When the server retracts a text part after completion, rebuild that
+    /// canonical value from the remaining renderable text parts so the old
+    /// content cannot reappear as a generic fallback row.
+    private func refreshCompletedContentFromRenderableTextParts() {
+        guard !isStreaming, role == .assistant else { return }
+
+        let refreshedContent = parts
+            .filter { $0.type == .text && $0.isRenderableText }
+            .compactMap(\.text)
+            .joined()
+        guard content != refreshedContent else { return }
+
+        materializedContentHasVisibleText = nil
+        content = refreshedContent
+    }
+
     @discardableResult
     func removePart(id partID: String) -> Bool {
-        guard let index = partIndexByID[partID] else {
+        let cachedIndex = partIndexByID[partID]
+        let index: Int?
+        if let cachedIndex,
+           parts.indices.contains(cachedIndex),
+           parts[cachedIndex].id == partID {
+            index = cachedIndex
+        } else {
+            // A removal is rare, and it must not fail merely because a
+            // foreground reconciliation changed `parts` between incremental
+            // updates. The hot append path still uses the O(1) cache.
+            index = parts.firstIndex(where: { $0.id == partID })
+        }
+        guard let index else {
             return false
         }
+        let removedPart = parts[index]
 
         mutatePartsWithoutRebuilding {
             parts.remove(at: index)
@@ -745,7 +1376,15 @@ final class ChatMessage: Identifiable {
             partID,
             to: parts.indices.contains(index) ? parts[index].id : nil
         )
+        discardStreamingTextProjection(partID: partID)
         reasoningProjections[partID] = nil
+        if removedPart.type == .text {
+            invalidateStreamingMaterialization()
+            suppressStreamingTextPart(partID)
+        }
+        if !isStreaming, removedPart.type == .text {
+            refreshCompletedContentFromRenderableTextParts()
+        }
         materializedReasoningHasVisibleText.removeValue(forKey: partID)
         preparedQuestionToolPayloads.removeValue(forKey: partID)
 
@@ -764,7 +1403,13 @@ final class ChatMessage: Identifiable {
     }
 
     func rebuildDerivedState() {
-        hasRenderableTextPart = parts.contains { BoundedDisplayPreview.hasVisibleText($0.renderableText) }
+        hasRenderableTextPart = parts.contains { part in
+            guard part.type == .text, part.isRenderableText else { return false }
+            if isStreaming, let projection = textProjections[part.id] {
+                return projection.hasText
+            }
+            return BoundedDisplayPreview.hasVisibleText(part.text)
+        }
         assistantSegments = buildAssistantSegments(hasTextPart: hasRenderableTextPart)
     }
 
@@ -831,7 +1476,16 @@ final class ChatMessage: Identifiable {
     private func assistantSegment(for part: OCPart) -> AssistantSegment? {
         switch part.type {
         case .text:
-            guard let text = part.renderableText,
+            guard part.isRenderableText else { return nil }
+            if isStreaming, let projection = textProjections[part.id] {
+                guard projection.hasText else { return nil }
+                return AssistantSegment(
+                    id: part.id,
+                    kind: .text(part.text ?? ""),
+                    streamingText: projection
+                )
+            }
+            guard let text = part.text,
                   BoundedDisplayPreview.hasVisibleText(text) else { return nil }
             return AssistantSegment(id: part.id, kind: .text(text))
 
@@ -896,6 +1550,26 @@ final class ChatMessage: Identifiable {
             return nil
         }
         return parts[index]
+    }
+
+    private func suppressStreamingTextPart(_ partID: String) {
+        guard suppressedStreamingTextPartIDs.insert(partID).inserted else { return }
+
+        suppressedStreamingTextPartIDOrder.append(partID)
+        if suppressedStreamingTextPartIDOrder.count > ChatStreamLimit.maximumSuppressedTextPartIDs {
+            let oldestPartID = suppressedStreamingTextPartIDOrder.removeFirst()
+            suppressedStreamingTextPartIDs.remove(oldestPartID)
+        }
+    }
+
+    private func invalidateStreamingMaterialization() {
+        guard isStreaming else { return }
+        streamingMaterializationRevision &+= 1
+    }
+
+    private func restoreStreamingTextPart(_ partID: String) {
+        guard suppressedStreamingTextPartIDs.remove(partID) != nil else { return }
+        suppressedStreamingTextPartIDOrder.removeAll { $0 == partID }
     }
 
     private func rebuildPartIndex() {
@@ -1078,6 +1752,7 @@ final class ChatMessage: Identifiable {
     private func discardCachedPartState(for partIDs: [String]) {
         for partID in partIDs {
             preparedQuestionToolPayloads.removeValue(forKey: partID)
+            discardStreamingTextProjection(partID: partID)
             reasoningProjections.removeValue(forKey: partID)
             materializedReasoningHasVisibleText.removeValue(forKey: partID)
         }
@@ -1145,6 +1820,60 @@ final class ChatMessage: Identifiable {
         text.unicodeScalars.contains { scalar in
             !CharacterSet.whitespacesAndNewlines.contains(scalar)
         }
+    }
+
+    /// Resolves a foreground history snapshot and a local append-only stream
+    /// off the UI actor. Prefix-compatible values retain the longer source;
+    /// a true divergence is an authoritative server replacement.
+    nonisolated private static func resolveStreamingText(
+        serverText: String,
+        streamedText: String
+    ) -> String {
+        if serverText.hasPrefix(streamedText) {
+            return serverText
+        }
+        if streamedText.hasPrefix(serverText) {
+            return streamedText
+        }
+        return serverText
+    }
+
+    private func textProjection(
+        for partID: String,
+        text: String,
+        chunks: [String]? = nil,
+        synchronizing: Bool = false
+    ) -> StreamingTextProjection {
+        if let projection = textProjections[partID] {
+            if synchronizing {
+                if let chunks {
+                    projection.replace(withChunks: chunks)
+                } else {
+                    projection.replace(with: text)
+                }
+            }
+            return projection
+        }
+
+        let projection = StreamingTextProjection(id: partID)
+        if let chunks {
+            projection.replace(withChunks: chunks)
+        } else {
+            projection.replace(with: text)
+        }
+        textProjections[partID] = projection
+        return projection
+    }
+
+    /// Aligns a live projection with an authoritative history value only when
+    /// that value is not an older prefix of the local stream. The projection
+    /// retains a shared baseline, avoiding a full join and re-chunk on the UI
+    /// actor during this rare recovery path.
+    private func synchronizeStreamingTextProjection(
+        _ projection: StreamingTextProjection,
+        withServerText serverText: String
+    ) {
+        projection.synchronizeHistoryBaseline(with: serverText)
     }
 
     private func reasoningProjection(

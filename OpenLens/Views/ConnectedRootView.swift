@@ -6,6 +6,7 @@ func shouldHideConnectedRootTabBar(selectedTab: AppTab, chatPath: [RouterDestina
 
 struct ConnectedRootView: View {
     @Bindable var chatClient: ChatClient
+    let initialSessions: SessionsListView.InitialState
 
     @Environment(AppRouter.self) private var router
     @State private var permissionSheetDetent = PermissionRequestSheet.defaultPresentationDetent
@@ -122,7 +123,7 @@ struct ConnectedRootView: View {
     private func tabRootView(for tab: AppTab) -> some View {
         switch tab {
         case .chat:
-            SessionsListView { session in
+            SessionsListView(initialState: initialSessions) { session in
                 router.navigate(to: .chatSession(session: session), in: .chat)
             }
         case .review:
@@ -154,21 +155,12 @@ private struct SessionChatDestinationView: View {
     @State private var isReady = false
 
     var body: some View {
-        Group {
-            if isReady {
-                ChatView(chatClient: chatClient)
-            } else {
-                ProgressView()
-                    .tint(Color.appSecondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.appBackground)
+        ChatView(chatClient: chatClient)
+            .task(id: session.id) {
+                if chatClient.currentSession?.id != session.id {
+                    await chatClient.loadSession(session)
+                }
+                isReady = true
             }
-        }
-        .task(id: session.id) {
-            if chatClient.currentSession?.id != session.id {
-                await chatClient.loadSession(session)
-            }
-            isReady = true
-        }
     }
 }

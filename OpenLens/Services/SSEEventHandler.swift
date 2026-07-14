@@ -23,6 +23,9 @@ protocol SSEEventHandlerDelegate: AnyObject {
 
     func finishLoading()
     func beginExternalResponse()
+    /// Applies an explicit server-side message deletion. Implementations can
+    /// cancel deferred finalization before mutating their visible history.
+    func removeAssistantMessage(messageID: String)
 
     /// Returns true when a message event belongs to a locally stopped turn and
     /// should not reopen streaming state.
@@ -38,6 +41,10 @@ protocol SSEEventHandlerDelegate: AnyObject {
     /// Append streamed text to the pending assistant message (not shown in chat yet).
     func appendStreamingText(messageID: String, text: String, chunks: [String])
 
+    /// Append text to one ordered text-part slot. A `nil` part ID keeps the
+    /// compatibility fallback for servers that do not identify text deltas.
+    func appendStreamingText(messageID: String, partID: String?, text: String, chunks: [String])
+
     /// Discard any buffered streaming deltas for a message.
     /// Called when a `message.part.updated` snapshot supersedes pending deltas.
     func clearStreamingBuffer(messageID: String)
@@ -47,6 +54,10 @@ protocol SSEEventHandlerDelegate: AnyObject {
     /// stream buffer. This prevents one 100 KB snapshot from becoming a single
     /// MainActor update.
     func replaceStreamingText(messageID: String, text: String, chunks: [String])
+
+    /// Replaces one authoritative text snapshot without invalidating other
+    /// text slots in the same assistant response.
+    func replaceStreamingText(messageID: String, partID: String?, text: String, chunks: [String])
 
     /// Buffer reasoning independently from final answer text. This keeps a
     /// burst of thinking deltas from rebuilding the parts array on every event.
@@ -76,10 +87,22 @@ protocol SSEEventHandlerDelegate: AnyObject {
 }
 
 extension SSEEventHandlerDelegate {
+    func removeAssistantMessage(messageID: String) {
+        if pendingAssistantMessage?.id == messageID {
+            pendingAssistantMessage = nil
+        }
+        messages.removeAll { $0.id == messageID }
+    }
     func messageLayoutDidChange() {}
     func streamingContentDidChange() {}
     func appendStreamingText(messageID: String, text: String, chunks: [String]) {}
+    func appendStreamingText(messageID: String, partID: String?, text: String, chunks: [String]) {
+        appendStreamingText(messageID: messageID, text: text, chunks: chunks)
+    }
     func replaceStreamingText(messageID: String, text: String, chunks: [String]) {}
+    func replaceStreamingText(messageID: String, partID: String?, text: String, chunks: [String]) {
+        replaceStreamingText(messageID: messageID, text: text, chunks: chunks)
+    }
     func appendStreamingReasoning(messageID: String, partID: String, text: String, chunks: [String]) {}
     func replaceStreamingReasoning(messageID: String, partID: String, text: String, chunks: [String]) {}
     func clearStreamingReasoningBuffer(messageID: String, partID: String) {}
@@ -354,29 +377,32 @@ final class SSEEventHandler {
                 textChunks: [],
                 questionPayload: questionPayload
             )
-        } else if part.type != .text || !message.isStreaming {
+        } else {
             requiresTimelineRebuild = message.applyPartUpdate(
                 part,
                 textChunks: textChunks,
                 questionPayload: questionPayload
             )
-        } else {
-            requiresTimelineRebuild = false
         }
-
         switch part.type {
         case .text:
+            // A server can retract a previously visible text slot by marking
+            // it ignored/synthetic. Unlike a normal delta, that changes the
+            // flattened transcript and must be published immediately.
+            if requiresTimelineRebuild {
+                delegate.messageLayoutDidChange()
+            }
             if let text = part.renderableText {
                 // Full snapshots supersede queued deltas, but a 100 KB snapshot
                 // must not synchronously walk every chunk on MainActor.
                 if message.isStreaming {
                     delegate.replaceStreamingText(
                         messageID: part.messageID,
+                        partID: part.id,
                         text: text,
                         chunks: textChunks ?? []
                     )
                 } else {
-                    message.content = text
                     delegate.messageLayoutDidChange()
                 }
                 haptics.playFirstResponseIfNeeded()
@@ -454,10 +480,8 @@ final class SSEEventHandler {
 
         if let partID = delta.partID,
            let msg = assistantMessage(withID: delta.messageID, delegate: delegate),
-           let partIndex = msg.parts.firstIndex(where: { $0.id == partID }) {
-            let part = msg.parts[partIndex]
-
-            switch part.type {
+           let partType = msg.partType(withID: partID) {
+            switch partType {
             case .reasoning:
                 delegate.appendStreamingReasoning(
                     messageID: delta.messageID,
@@ -469,7 +493,14 @@ final class SSEEventHandler {
                 return
 
             case .text:
-                break
+                delegate.appendStreamingText(
+                    messageID: delta.messageID,
+                    partID: partID,
+                    text: delta.text,
+                    chunks: delta.textChunks
+                )
+                haptics.playFirstResponseIfNeeded()
+                return
 
             case .tool,
                  .file,
@@ -484,6 +515,24 @@ final class SSEEventHandler {
                  .unknown:
                 return
             }
+        } else if let partID = delta.partID,
+                  let message = assistantMessage(withID: delta.messageID, delegate: delegate) {
+            // A delta can arrive one main-delivery batch before its snapshot.
+            // Keep a lightweight ordered placeholder instead of falling back
+            // to the global tail, which would put it after later tool rows.
+            message.registerStreamingTextPart(
+                id: partID,
+                sessionID: delta.sessionID,
+                messageID: delta.messageID
+            )
+            delegate.appendStreamingText(
+                messageID: delta.messageID,
+                partID: partID,
+                text: delta.text,
+                chunks: delta.textChunks
+            )
+            haptics.playFirstResponseIfNeeded()
+            return
         }
 
         delegate.appendStreamingText(
@@ -548,7 +597,7 @@ final class SSEEventHandler {
             return
         }
 
-        delegate.messages.removeAll { $0.id == messageID }
+        delegate.removeAssistantMessage(messageID: messageID)
     }
 
     private func handleSessionUpdated(_ incoming: SSESessionUpdate) {
