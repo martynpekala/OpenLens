@@ -26,7 +26,7 @@ OpenLens connects to an OpenCode server running on your Mac and gives you a nati
 
 - **App Store**: install OpenLens on iPhone or iPad from the App Store using the badge above.
 - **From source**: clone the repo, run `xcodegen generate`, then open the generated `OpenLens.xcodeproj` in Xcode 26 or newer.
-- **Bundled tools**: `openlens-qr`, `openlens-qr-menubar`, and `appstore-shot-studio` are source-first helper tools included in this repository.
+- **Bundled tools**: `openlens-qr`, the `OpenLens Remote` macOS agent (kept in the historical `openlens-qr-menubar` folder), and `appstore-shot-studio` are source-first tools included in this repository.
 
 ## Releases
 
@@ -39,6 +39,7 @@ OpenLens connects to an OpenCode server running on your Mac and gives you a nati
 
 - **Native session chat** — rich Markdown rendering, code blocks, thinking indicators, agent activity cards, permission prompts, and question flows
 - **Flexible connection flows** — QR code scan, Bonjour auto-discovery, manual URL entry, saved servers, auto-reconnect, and `openlens://` deep links
+- **Encrypted access outside your LAN** — connect through your own Cloudflare Tunnel and Access policy without a VPN or an OpenLens-operated backend
 - **Session management** — browse, create, delete, switch, and continue existing OpenCode sessions
 - **Review tab** — inspect session-wide changes or a single agent update, open diffs, and revert one update without discarding the whole session
 - **Workspace tab** — browse files, worktrees, slash commands, and changed files, then request branch switches, pushes, and pull requests through the active session
@@ -48,7 +49,7 @@ OpenLens connects to an OpenCode server running on your Mac and gives you a nati
 - **Demo mode** — try the app without a server to see how it works
 - **Setup wizard & onboarding** — guided first-launch experience
 - **`openlens-qr` CLI tool** — generate a QR code from your terminal for instant phone connection
-- **`openlens-qr-menubar` helper** — launch the QR flow from the macOS menu bar with a remembered workspace folder
+- **OpenLens Remote agent** — run OpenCode and an encrypted, allowlisted gateway from the macOS menu bar, manage trusted devices, and stop remote access locally
 - **`appstore-shot-studio` tool** — turn raw screenshots into App Store-ready promo images
 
 
@@ -85,6 +86,135 @@ This will:
 That's it. You're chatting with your AI coding assistant from your phone.
 
 
+## Remote Access Outside Your LAN
+
+The LAN flow above is still the simplest option when both devices are on the
+same network. OpenLens Remote adds a separate connection type for reaching your
+Mac from cellular data or another Wi-Fi network without exposing the raw
+OpenCode server and without running a VPN.
+
+Remote Access is implemented in source as a production MVP. It is self-hosted:
+you own the Cloudflare account, domain, Tunnel, Access application, and Service
+Token. OpenLens does not operate a relay, user-account service, or central
+backend for Remote connections.
+
+### What it enables
+
+- use OpenLens while away from the Mac's local network
+- chat, review changes, answer questions, approve permissions, and manage
+  sessions through the same native UI as a LAN connection
+- restrict access to workspace folders explicitly approved on the Mac
+- pair multiple iPhones and iPads, each with its own device key
+- revoke one device, revoke all devices, or stop Remote Access from the Mac
+- keep existing LAN profiles unchanged and separate from Remote profiles
+
+Remote v1 does not provide background push notifications or Live Activity
+updates while the iOS app is closed.
+
+### How it works
+
+```mermaid
+flowchart LR
+    I["OpenLens on iPhone or iPad"]
+    A["Cloudflare Access<br/>Service Auth"]
+    T["Your Cloudflare Tunnel"]
+    G["OpenLens Remote gateway<br/>127.0.0.1:49634"]
+    O["OpenCode<br/>127.0.0.1:4096"]
+
+    I -->|"Service Token + WSS"| A
+    A -->|"validated Access JWT"| T
+    T --> G
+    G --> O
+    I -. "end-to-end encrypted HPKE payload" .-> G
+```
+
+The Tunnel is an outbound connection from the Mac, so no router port forwarding
+is required. Cloudflare Access checks the Service Token before traffic reaches
+the Tunnel. The gateway then independently validates Cloudflare's signed JWT
+and performs device authentication before forwarding an allowlisted request to
+OpenCode.
+
+OpenCode and the gateway listen only on loopback. The Remote protocol carries
+REST and event-stream traffic inside one mutually authenticated HPKE channel.
+Cloudflare can observe connection metadata such as the hostname, IP address,
+timing, and frame sizes, but it cannot read the OpenCode payload encrypted
+between the iOS device and the gateway.
+
+### Requirements
+
+- OpenLens built with Remote support on an iPhone or iPad
+- a Mac running macOS 14 or newer with OpenCode installed
+- a Cloudflare account, a domain managed by Cloudflare, and Cloudflare Zero
+  Trust Access
+- a named Cloudflare Tunnel; Quick Tunnels (`trycloudflare.com`) are not
+  supported
+- `tuist` and `cloudflared` for a local development build of OpenLens Remote
+
+### Configure OpenLens Remote
+
+1. Build and launch the development agent:
+
+   ```bash
+   brew tap tuist/tuist
+   brew install --formula tuist
+   brew install cloudflared
+   cd Tools/openlens-qr-menubar
+   ./run-menubar.sh
+   ```
+
+   The menu bar item is named **OpenLens Remote**. A distributed release must
+   bundle the pinned `cloudflared` binary and be signed and notarized; see the
+   release runbook linked below.
+
+2. From the menu, add at least one workspace that the phone may access.
+
+3. In Cloudflare Zero Trust, create a
+   [named Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/)
+   and a public hostname such as `remote.example.com`. Point its origin service to
+   `http://127.0.0.1:49634`. Do not expose port `4096` or `49634` directly.
+
+4. Create a
+   [self-hosted Cloudflare Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)
+   covering the entire hostname. Set its application session duration to 12
+   hours, add a **Service Auth** policy for one
+   [Service Token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
+   dedicated to this Mac, and do not add a Bypass policy. The Service Token's
+   own expiration is configured separately from the 12-hour application
+   session.
+
+5. On the Tunnel route, enable
+   [**Protect with Access**](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/#access)
+   using the Access team name and the application's audience (AUD) tag.
+
+6. Choose **Configure Cloudflare Access…** in OpenLens Remote and enter:
+
+   - the public hostname
+   - the Tunnel connector token
+   - the Access team domain, for example `your-team.cloudflareaccess.com`
+   - the application AUD tag
+   - the Service Token Client ID and Client Secret
+
+   Tunnel and Access credentials are stored in the macOS Keychain. The agent
+   does not request or store a Cloudflare account API token.
+
+7. The agent fetches Cloudflare signing keys and verifies the public route with
+   the Service Token. It also confirms that the same WebSocket handshake is
+   rejected without the token. Remote pairing remains disabled if either check
+   fails.
+
+8. Choose **Pair Device…**, open **Scan QR Code** in OpenLens, and scan the QR
+   while physically near the Mac. Repeat this step for additional devices.
+
+9. Enable **Launch After Login** if the agent should become available after you
+   sign in to the Mac. Select the saved Remote profile in OpenLens whenever you
+   want to reconnect.
+
+There is no manual Remote-profile fallback: pairing must use the QR generated by
+the verified agent. The QR includes a five-minute pairing secret and the
+long-lived Cloudflare Service Token. Do not photograph or archive it. If the QR
+or a paired device may be compromised, use **Lost or Compromised…**, rotate the
+Service Token in Cloudflare, and pair every trusted device again.
+
 ## `openlens-qr` CLI Reference
 
 ```
@@ -117,28 +247,30 @@ openlens-qr 192.168.1.50:4096            # explicit address, QR only
 ```
 
 
-## `openlens-qr-menubar`
+## OpenLens Remote Development
 
-Menubar helper for macOS that launches `openlens-qr --serve` in your default terminal app using a workspace folder you choose once and reuse later.
+The macOS source remains in `Tools/openlens-qr-menubar` for historical reasons,
+but the product and bundle are named `OpenLensRemote`. It runs as a menu bar
+agent; it does not open a terminal or expose the LAN QR helper.
 
 ```bash
 cd Tools/openlens-qr-menubar
 ./run-menubar.sh
 ```
 
-What it does:
+Run its tests with:
 
-1. builds the menubar app with Tuist
-2. opens a menu bar extra named `OpenLens QR`
-3. lets you pick the folder where OpenCode should run
-4. remembers the last selected folder
-5. opens your default terminal app and runs `openlens-qr --serve` from that folder
+```bash
+tuist generate --no-open
+xcodebuild -workspace OpenLensRemote.xcworkspace \
+  -scheme OpenLensRemote \
+  -destination 'platform=macOS' \
+  CODE_SIGNING_ALLOWED=NO test
+```
 
-Requirements:
-
-- `tuist` installed locally for the menubar app build
-- Xcode command line tools for `xcrun swift build`
-- `opencode` installed and available in `PATH`
+Debug builds can use `cloudflared` installed in `/opt/homebrew/bin` or
+`/usr/local/bin`. Release builds use the pinned binaries downloaded and checked
+by `Scripts/embed-cloudflared.sh`.
 
 
 ## `appstore-shot-studio`
@@ -175,7 +307,8 @@ If you want OpenLens to find the server via Bonjour, start OpenCode with `--mdns
 
 - **iOS app**: iPhone or iPad with iOS/iPadOS 26+
 - **Server**: macOS with [OpenCode](https://opencode.ai) installed
-- **Network**: both devices on the same local network for QR, manual, or Bonjour-based setup
+- **Network**: both devices on the same local network for LAN QR, manual, or
+  Bonjour setup; Remote profiles use your Cloudflare Tunnel over the internet
 
 
 ## Project Layout
@@ -184,7 +317,8 @@ If you want OpenLens to find the server via Bonjour, start OpenCode with `--mdns
 - `OpenLensActivityWidget/` — Live Activity widget extension
 - `OpenLensTests/` — unit tests
 - `Tools/openlens-qr/` — Swift CLI for QR-based setup
-- `Tools/openlens-qr-menubar/` — macOS menu bar launcher for the QR flow
+- `Tools/openlens-qr-menubar/` — OpenLens Remote macOS agent, gateway, tests,
+  and release scripts (historical folder name)
 - `Tools/appstore-shot-studio/` — local browser tool for App Store screenshots
 
 
@@ -197,11 +331,11 @@ If you want OpenLens to find the server via Bonjour, start OpenCode with `--mdns
 
 Run the main verification command from the repository root:
 
-If `iPhone 17` is not installed locally, swap the simulator name for any available iOS Simulator from `xcrun simctl list devices`.
+If `iPhone 17 Pro` is not installed locally, swap the simulator name for any available iOS Simulator from `xcrun simctl list devices`.
 
 ```bash
 xcodegen generate
-xcodebuild -project OpenLens.xcodeproj -scheme OpenLens -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO test
+xcodebuild -project OpenLens.xcodeproj -scheme OpenLens -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO test
 ```
 
 Build the bundled QR helper:

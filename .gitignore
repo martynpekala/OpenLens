@@ -3,10 +3,26 @@
 .opencode/
 *.derivedData-appstore
 buildServer.json
+
+# Build and archive products
+build/
 .build/
 DerivedData/
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Local environment and signing material
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.mobileprovision
+
 OpenLens.xcodeproj/
 Config/Signing.local.xcconfig
 xcuserdata/
 *.xcbkptlist
 *.xcuserstate
+Tools/openlens-qr-menubar/Resources/cloudflared-*

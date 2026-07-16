@@ -5,23 +5,22 @@ import os
 /// All methods are async and throw on network/decode errors.
 actor OpenCodeClient {
 
-    private let session: URLSession
+    private let transport: any OpenCodeTransport
     private static let maximumPendingPromptCount = 24
     private var baseURL: URL
     private var authHeader: String?
     private var contextDirectory: String?
 
-    init(baseURL: URL, authHeader: String? = nil, contextDirectory: String? = nil) {
+    init(
+        baseURL: URL,
+        authHeader: String? = nil,
+        contextDirectory: String? = nil,
+        transport: (any OpenCodeTransport)? = nil
+    ) {
         self.baseURL = baseURL
         self.authHeader = authHeader
         self.contextDirectory = contextDirectory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 300
-        // iOS can present the Local Network alert after this request starts.
-        // Waiting avoids treating that first, user-authorized connection as a failure.
-        config.waitsForConnectivity = true
-        self.session = URLSession(configuration: config)
+        self.transport = transport ?? DirectOpenCodeTransport()
     }
 
     func updateConnection(baseURL: URL, authHeader: String?, contextDirectory: String? = nil) {
@@ -131,7 +130,7 @@ actor OpenCodeClient {
     /// Fetch raw JSON from /provider for debugging decode issues.
     func listProvidersRaw() async throws -> Data {
         let request = makeRequest(path: "/provider", method: "GET")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return data
     }
@@ -297,7 +296,7 @@ actor OpenCodeClient {
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let request = makeRequest(path: path, method: "GET")
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }
@@ -306,7 +305,7 @@ actor OpenCodeClient {
         var request = makeRequest(path: path, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }
@@ -315,7 +314,7 @@ actor OpenCodeClient {
         var request = makeRequest(path: path, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         if expect204 {
             guard let result = EmptyResponse() as? T else {
@@ -330,14 +329,14 @@ actor OpenCodeClient {
         var request = makeRequest(path: path, method: "PATCH")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }
 
     private func delete<T: Decodable>(_ path: String) async throws -> T {
         let request = makeRequest(path: path, method: "DELETE")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }

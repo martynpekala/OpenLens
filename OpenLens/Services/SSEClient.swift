@@ -692,6 +692,10 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var bufferedDrainScheduled = false
     private var oversizedRecordCancellationPending = false
     private var pendingTransportCompletion: PendingTransportCompletion?
+    private let transport: any OpenCodeTransport
+    private var eventStream: (any OpenCodeEventStream)?
+    // Retained only by DEBUG lifecycle tests that inject URLSession callbacks
+    // directly; production connections are owned by `eventStream`.
     private var task: URLSessionDataTask?
     private var session: URLSession?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -788,9 +792,14 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     // MARK: - Init
 
-    init(baseURL: URL, authHeader: String? = nil) {
+    init(
+        baseURL: URL,
+        authHeader: String? = nil,
+        transport: (any OpenCodeTransport)? = nil
+    ) {
         self.baseURL = baseURL
         self.authHeader = authHeader
+        self.transport = transport ?? DirectOpenCodeTransport()
         super.init()
     }
 
@@ -841,7 +850,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
 
-            guard state == .disconnected, task == nil, session == nil else { return }
+            guard state == .disconnected, eventStream == nil, task == nil, session == nil else { return }
             shouldReconnect = true
             reconnectDelay = Self.initialReconnectDelay
             startConnection()
@@ -869,7 +878,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private func startConnection() {
         // Both the manual path and the reconnect path converge here. Keep this
         // guard as the final protection against two live URLSession instances.
-        guard task == nil, session == nil else { return }
+        guard eventStream == nil, task == nil, session == nil else { return }
         reconnectWorkItem = nil
 
         stateDeliveryGate.beginConnection()
@@ -890,26 +899,28 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             request.setValue(authHeader, forHTTPHeaderField: "Authorization")
         }
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = .infinity
-        config.timeoutIntervalForResource = .infinity
-
-        // Delegate callbacks are dispatched onto our serial queue for thread safety.
-        let delegateQueue = OperationQueue()
-        delegateQueue.underlyingQueue = queue
-        delegateQueue.maxConcurrentOperationCount = 1
-
-        let newSession = URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
-        self.session = newSession
-
         resetFramingBuffer()
         isTransportPausedForMainBackpressure = false
         transportTaskSuspendedByBackpressure = false
         oversizedRecordCancellationPending = false
         pendingTransportCompletion = nil
-        let dataTask = newSession.dataTask(with: request)
-        self.task = dataTask
-        dataTask.resume()
+        let stream = transport.makeEventStream(
+            request: request,
+            deliveryQueue: queue,
+            callbacks: OpenCodeEventStreamCallbacks(
+                onResponse: { [weak self] response in
+                    self?.receiveTransportResponse(response) ?? false
+                },
+                onData: { [weak self] data in
+                    self?.receiveTransportData(data)
+                },
+                onComplete: { [weak self] error in
+                    self?.completeTransport(error: error)
+                }
+            )
+        )
+        eventStream = stream
+        stream.start()
         // A natural reconnect may occur while the UI is still draining its
         // bounded render ring. Keep that gate closed across the new transport.
         pauseTransportForMainBackpressureIfNeeded()
@@ -938,6 +949,8 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             clearDeferredInboundDeliveries()
             invalidateMainMailbox()
         }
+        eventStream?.cancel()
+        eventStream = nil
         task?.cancel()
         task = nil
         session?.invalidateAndCancel()
@@ -959,14 +972,33 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return
         }
 
+        completionHandler(receiveTransportResponse(response) ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // Already on `queue`.
+        guard isCurrentConnection(session: session, task: dataTask),
+              !oversizedRecordCancellationPending
+        else { return }
+
+        receiveTransportData(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // Already on `queue`.
+        guard isCurrentConnection(session: session, task: task) else { return }
+
+        completeTransport(error: error)
+    }
+
+    private func receiveTransportResponse(_ response: URLResponse) -> Bool {
         if let http = response as? HTTPURLResponse {
             lastResponseStatusCode = http.statusCode
 
             if http.statusCode == 200 {
                 reconnectDelay = Self.initialReconnectDelay
                 updateState(.connected)
-                completionHandler(.allow)
-                return
+                return true
             }
 
             if isTerminalSSEHTTPStatus(http.statusCode) {
@@ -976,20 +1008,15 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
                 DispatchQueue.main.async {
                     callback?(statusCode)
                 }
-                completionHandler(.cancel)
-                return
+                return false
             }
         }
 
-        completionHandler(.allow)
+        return true
     }
 
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        // Already on `queue`.
-        guard isCurrentConnection(session: session, task: dataTask),
-              !oversizedRecordCancellationPending
-        else { return }
-
+    private func receiveTransportData(_ data: Data) {
+        guard !oversizedRecordCancellationPending else { return }
         ChatStreamInstrumentation.recordSSEReceive(byteCount: data.count)
         buffer.append(data)
         if buffer.count - bufferedRecordStartOffset > Self.maximumBufferedTransportBytes {
@@ -1000,10 +1027,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         processBuffer()
     }
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        // Already on `queue`.
-        guard isCurrentConnection(session: session, task: task) else { return }
-
+    private func completeTransport(error: Error?) {
         // A paused stream can still have complete records already received in
         // `buffer`. Drain those records through the same bounded mailbox before
         // tearing down the transport, otherwise a final tool/status/idle event
@@ -1221,6 +1245,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 #endif
         Logger.sse.error("Cancelling SSE stream after \(reason, privacy: .public)")
         resetFramingBuffer()
+        eventStream?.cancel()
         task?.cancel()
     }
 
@@ -2130,7 +2155,10 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         guard needsMainBackpressure, !isTransportPausedForMainBackpressure else { return }
 
         isTransportPausedForMainBackpressure = true
-        if task?.state == .running {
+        if eventStream != nil {
+            transportTaskSuspendedByBackpressure = true
+            eventStream?.suspend()
+        } else if task?.state == .running {
             transportTaskSuspendedByBackpressure = true
             task?.suspend()
         }
@@ -2152,7 +2180,11 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         isTransportPausedForMainBackpressure = false
         if transportTaskSuspendedByBackpressure {
             transportTaskSuspendedByBackpressure = false
-            task?.resume()
+            if let eventStream {
+                eventStream.resume()
+            } else {
+                task?.resume()
+            }
         }
 
         processBuffer()
@@ -2172,7 +2204,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     // MARK: - Reconnect (called on `queue`)
 
     private func scheduleReconnect() {
-        guard shouldReconnect, task == nil, session == nil else { return }
+        guard shouldReconnect, eventStream == nil, task == nil, session == nil else { return }
 
         reconnectWorkItem?.cancel()
 
@@ -2183,6 +2215,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             guard let self,
                   self.shouldReconnect,
                   self.state == .disconnected,
+                  self.eventStream == nil,
                   self.task == nil,
                   self.session == nil
             else { return }

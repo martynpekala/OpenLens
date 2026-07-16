@@ -29,7 +29,7 @@ struct SavedConnectionsStoreTests {
     }
 
     @Test func capsHistoryToMostRecentConnections() {
-        let connections = (0..<7).map { index in
+        let connections = (0..<23).map { index in
             SavedConnection(
                 id: "\(index)",
                 serverURL: "http://192.168.1.\(index):4096",
@@ -41,7 +41,7 @@ struct SavedConnectionsStoreTests {
 
         let store = SavedConnectionsStore(initialConnections: connections)
 
-        #expect(store.connections.map(\.id) == ["6", "5", "4", "3", "2"])
+        #expect(store.connections.map(\.id) == (3..<23).reversed().map(String.init))
     }
 
     @Test func reusingSavedConnectionMovesItToFront() {

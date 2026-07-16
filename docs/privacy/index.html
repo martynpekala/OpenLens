@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#fbfaf7">
+    <meta name="description" content="Privacy Policy for OpenLens, the native iPhone and iPad companion for OpenCode.">
+    <meta property="og:title" content="OpenLens Privacy Policy">
+    <meta property="og:description" content="How OpenLens handles local data, OpenCode connections, and optional Remote Access.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://martynpekala.github.io/OpenLens/privacy/">
+    <link rel="canonical" href="https://martynpekala.github.io/OpenLens/privacy/">
+    <link rel="icon" href="../assets/app-icon.png">
+    <link rel="stylesheet" href="../assets/styles.css">
+    <title>Privacy Policy — OpenLens</title>
+  </head>
+  <body class="legal-page">
+    <a class="skip-link" href="#policy">Skip to policy</a>
+
+    <header class="site-header">
+      <nav class="nav-shell" aria-label="Primary navigation">
+        <a class="brand" href="../" aria-label="OpenLens home">
+          <img src="../assets/app-icon.png" width="42" height="42" alt="">
+          <span>OpenLens</span>
+        </a>
+        <div class="nav-links">
+          <a href="../#features">Features</a>
+          <a href="../#remote">Remote Access</a>
+          <a href="./" aria-current="page">Privacy</a>
+          <a href="../#support">Support</a>
+        </div>
+        <a class="nav-cta" href="../">Back to OpenLens</a>
+      </nav>
+    </header>
+
+    <main id="policy">
+      <header class="legal-hero">
+        <span class="legal-meta">Effective July 16, 2026</span>
+        <h1>Privacy Policy</h1>
+        <p>How information is handled by OpenLens for iPhone and iPad, the optional OpenLens Remote companion for macOS, and this website.</p>
+      </header>
+
+      <div class="legal-layout">
+        <aside class="legal-toc" aria-label="Policy sections">
+          <strong>On this page</strong>
+          <a href="#summary">Summary</a>
+          <a href="#local-data">Local information</a>
+          <a href="#permissions">Camera and network</a>
+          <a href="#providers">OpenCode and AI</a>
+          <a href="#remote-access">Remote Access</a>
+          <a href="#website">Website hosting</a>
+          <a href="#support-data">Support communication</a>
+          <a href="#third-parties">Third parties</a>
+          <a href="#retention">Retention and deletion</a>
+          <a href="#rights">Your rights</a>
+          <a href="#security">Security</a>
+          <a href="#contact">Contact</a>
+        </aside>
+
+        <article class="legal-content">
+          <section id="summary">
+            <h2>Who we are and what this policy covers</h2>
+            <p>Martyn Pękala, an independent developer based in Poland (“we”, “us”), provides OpenLens, including the OpenLens app for iPhone and iPad and the optional OpenLens Remote companion for macOS.</p>
+            <p>OpenLens does not operate a user account service, central application backend, analytics platform, advertising network, or remote-access relay.</p>
+            <p>During normal use, we do not receive or have access to your:</p>
+            <ul>
+              <li>OpenCode conversations or prompts;</li>
+              <li>source code, files, diffs, or workspace contents;</li>
+              <li>server or Cloudflare credentials;</li>
+              <li>saved connection profiles;</li>
+              <li>Cloudflare account or Access logs;</li>
+              <li>app usage or precise location.</li>
+            </ul>
+            <div class="legal-callout">
+              <strong>In short</strong>
+              <p>Information required for OpenLens to function is stored locally or transmitted to systems selected and controlled by you.</p>
+            </div>
+          </section>
+
+          <section id="local-data">
+            <h2>Information stored locally</h2>
+            <p>OpenLens may store the following information on your iPhone or iPad:</p>
+            <ul>
+              <li>OpenCode server addresses and connection names;</li>
+              <li>selected providers, models, workspaces, and recent connection information;</li>
+              <li>server credentials;</li>
+              <li>Remote Access Service Tokens;</li>
+              <li>device keys and gateway identifiers.</li>
+            </ul>
+            <p>Sensitive credentials and private keys are stored using Apple Keychain.</p>
+            <p>OpenLens Remote may store the following information locally on your Mac:</p>
+            <ul>
+              <li>Cloudflare Tunnel and Access configuration;</li>
+              <li>approved workspace paths;</li>
+              <li>names and public keys of paired devices;</li>
+              <li>pairing and last-connection timestamps;</li>
+              <li>local configuration and security state;</li>
+              <li>bounded, redacted diagnostic events such as agent startup, tunnel state, or the presence of an error.</li>
+            </ul>
+            <p>Diagnostic events do not intentionally include prompts, source code, workspace contents, credentials, file paths, or raw error messages.</p>
+          </section>
+
+          <section id="permissions">
+            <h2>Camera and local network access</h2>
+            <p>OpenLens uses the camera only when you choose to scan a connection QR code. Camera images are processed for QR recognition and are not stored or uploaded by OpenLens.</p>
+            <p>Local network access is used to discover and connect to OpenCode servers on your network. OpenLens does not request or collect your device’s geographic location.</p>
+          </section>
+
+          <section id="providers">
+            <h2>OpenCode and AI providers</h2>
+            <p>OpenLens connects to an OpenCode server selected and controlled by you. Content you submit may include prompts, messages, source code, file paths, diffs, permission responses, and other workspace information.</p>
+            <p>Depending on your OpenCode configuration, this content may be sent by OpenCode to an AI provider selected by you. Processing performed by OpenCode or an AI provider is governed by their respective configuration, terms, and privacy policies.</p>
+            <p>We do not select these providers for you and do not receive the content transmitted to them.</p>
+          </section>
+
+          <section id="remote-access">
+            <h2>Optional Remote Access and Cloudflare</h2>
+            <p>Remote Access is optional and requires a Cloudflare account, domain, Tunnel, Access application, and Service Token controlled by you.</p>
+            <p>When Remote Access is used, the OpenLens app connects to your Cloudflare-protected hostname. Cloudflare may process connection and authentication metadata, including:</p>
+            <ul>
+              <li>IP address and country derived from the IP address;</li>
+              <li>requested hostname;</li>
+              <li>authentication time and result;</li>
+              <li>Cloudflare Ray ID;</li>
+              <li>Service Token identity;</li>
+              <li>connection duration and traffic volume.</li>
+            </ul>
+            <p>The OpenLens application payload is encrypted end-to-end between the iPhone or iPad and OpenLens Remote on the Mac. It is not available to the OpenLens developer and is designed not to be readable by Cloudflare.</p>
+            <p>Cloudflare determines its own processing and retention according to your Cloudflare plan, configuration, and agreements. The OpenLens developer cannot view or delete data in your Cloudflare account.</p>
+            <p>See the <a href="https://www.cloudflare.com/policies/privacy/">Cloudflare Privacy Policy</a> and <a href="https://www.cloudflare.com/cloudflare-customer-dpa/">Cloudflare Data Processing Addendum</a>.</p>
+          </section>
+
+          <section id="website">
+            <h2>Website hosting</h2>
+            <p>The OpenLens website is hosted using GitHub Pages. We do not add analytics, advertisements, tracking scripts, or marketing cookies to the website.</p>
+            <p>GitHub may process technical request information required to host and secure the website according to the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a>.</p>
+          </section>
+
+          <section id="support-data">
+            <h2>Support communication</h2>
+            <p>If you contact us by email, we receive your email address, the content of your message, and any information you voluntarily include.</p>
+            <p>We use this information only to respond to your request, investigate a reported problem, or handle a privacy or security issue. We do not use support messages for advertising.</p>
+          </section>
+
+          <section id="third-parties">
+            <h2>Third-party services</h2>
+            <p>OpenLens does not include third-party analytics, advertising, payment, or tracking SDKs.</p>
+            <p>Depending on the features you choose, information may be processed independently by:</p>
+            <ul>
+              <li>your OpenCode server;</li>
+              <li>an AI provider configured in OpenCode;</li>
+              <li>Cloudflare for optional Remote Access;</li>
+              <li>GitHub when visiting this website or the public repository;</li>
+              <li>Apple when downloading or interacting with OpenLens through Apple services.</li>
+            </ul>
+            <p>These services operate under their respective terms and privacy policies.</p>
+          </section>
+
+          <section id="retention">
+            <h2>Data retention and deletion</h2>
+            <p>Connection profiles remain on your device until you remove them. Using <strong>Forget Connection</strong> removes the selected OpenLens connection and its associated Remote credentials from the app’s local storage.</p>
+            <p>On the Mac, you can revoke paired devices and remove approved workspaces through OpenLens Remote. Local diagnostic files rotate automatically and have a bounded size.</p>
+            <p>Cloudflare data must be managed through your Cloudflare account. Data held by an AI provider must be managed according to that provider’s controls and privacy policy.</p>
+            <p>Support emails are retained only for as long as reasonably necessary to respond, investigate the reported issue, protect the project, or meet applicable legal obligations.</p>
+            <p>To request deletion of information you provided directly through support, contact <a href="mailto:openlens.app@icloud.com">openlens.app@icloud.com</a>.</p>
+          </section>
+
+          <section id="international-processing">
+            <h2>International processing</h2>
+            <p>Cloudflare, GitHub, Apple, OpenCode services, or an AI provider selected by you may process information outside your country. Their respective terms and privacy policies describe the safeguards they apply to international transfers.</p>
+          </section>
+
+          <section id="rights">
+            <h2>Your rights</h2>
+            <p>Depending on where you live, you may have rights to access, correct, delete, restrict, object to processing, or receive a copy of personal data you provided directly to us.</p>
+            <p>Residents of the European Economic Area may have rights under GDPR/RODO and may lodge a complaint with their local data protection authority. California residents may have rights under CCPA/CPRA.</p>
+            <p>We do not sell personal information or share it for cross-context behavioral advertising.</p>
+            <p>To exercise applicable rights, contact <a href="mailto:openlens.app@icloud.com">openlens.app@icloud.com</a>.</p>
+          </section>
+
+          <section id="security">
+            <h2>Security</h2>
+            <p>OpenLens uses measures such as Apple Keychain, device-specific keys, local network isolation, Cloudflare Access, and end-to-end encryption for Remote application traffic.</p>
+            <p>No electronic storage or transmission method is completely secure. Users are responsible for protecting their devices, OpenCode server, Cloudflare account, Service Tokens, QR pairing codes, and configured AI provider accounts.</p>
+          </section>
+
+          <section id="changes">
+            <h2>Changes to this policy</h2>
+            <p>We may update this Privacy Policy when OpenLens functionality or data-handling practices change. Updates will be published on this page with a revised effective date.</p>
+          </section>
+
+          <section id="contact">
+            <h2>Contact and support</h2>
+            <p>For support, privacy questions, security concerns, or data requests:</p>
+            <ul>
+              <li><strong>Email:</strong> <a href="mailto:openlens.app@icloud.com">openlens.app@icloud.com</a></li>
+              <li><strong>Source code:</strong> <a href="https://github.com/martynpekala/OpenLens">github.com/martynpekala/OpenLens</a></li>
+            </ul>
+          </section>
+        </article>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-row">
+        <p>© 2026 Martyn Pękala. OpenLens is an independent open-source project.</p>
+        <div class="footer-links">
+          <a href="../">OpenLens</a>
+          <a href="mailto:openlens.app@icloud.com">Support</a>
+          <a href="https://github.com/martynpekala/OpenLens">GitHub</a>
+          <a href="https://apps.apple.com/pl/app/openlens-opencode-client/id6759910797">App Store</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
