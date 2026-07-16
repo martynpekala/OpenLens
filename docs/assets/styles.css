@@ -156,6 +156,12 @@ a {
   color: var(--ink);
 }
 
+.button-android {
+  border-color: rgba(47, 166, 84, 0.25);
+  background: rgba(189, 240, 199, 0.72);
+  color: #155b2f;
+}
+
 .nav-cta:hover,
 .button:hover {
   transform: translateY(-2px);
@@ -890,6 +896,143 @@ p {
   font-size: 14px;
 }
 
+.beta-page {
+  background:
+    radial-gradient(circle at 76% 34%, rgba(189, 240, 199, 0.72), transparent 23rem),
+    radial-gradient(circle at 18% 14%, rgba(255, 217, 182, 0.62), transparent 26rem),
+    var(--paper);
+}
+
+.beta-hero {
+  display: grid;
+  width: var(--page);
+  min-height: calc(100vh - 185px);
+  grid-template-columns: minmax(0, 0.9fr) minmax(340px, 0.72fr);
+  align-items: center;
+  gap: clamp(42px, 8vw, 124px);
+  margin: 0 auto;
+  padding: 82px 0 100px;
+}
+
+.beta-copy {
+  max-width: 640px;
+}
+
+.beta-copy h1 {
+  margin-bottom: 26px;
+  font-size: clamp(50px, 6.2vw, 82px);
+  font-weight: 900;
+  letter-spacing: -0.065em;
+  line-height: 0.98;
+}
+
+.beta-copy h1 span {
+  background: linear-gradient(110deg, #277947, #4bae6a 48%, #d77558);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.beta-lede {
+  max-width: 580px;
+  margin-bottom: 14px;
+  color: #39343e;
+  font-size: clamp(21px, 2.3vw, 28px);
+  font-weight: 720;
+  letter-spacing: -0.025em;
+  line-height: 1.27;
+}
+
+.beta-note {
+  max-width: 500px;
+  margin-bottom: 30px;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.beta-art {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  isolation: isolate;
+}
+
+.beta-flower-frame {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 460px);
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 34px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.22) 50%, transparent 50%) 0 0 / 24px 24px,
+    linear-gradient(rgba(255, 255, 255, 0.22) 50%, transparent 50%) 0 0 / 24px 24px,
+    rgba(255, 255, 255, 0.68);
+  box-shadow: 0 28px 70px rgba(35, 92, 57, 0.18);
+}
+
+.beta-flower-frame img {
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 18px 12px rgba(23, 21, 29, 0.14));
+  image-rendering: pixelated;
+}
+
+.beta-status {
+  display: inline-flex;
+  position: relative;
+  z-index: 1;
+  align-items: center;
+  gap: 9px;
+  margin: 18px 0 0;
+  padding: 9px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 10px 24px rgba(36, 90, 55, 0.1);
+  color: #39714d;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.beta-status span {
+  width: 9px;
+  height: 9px;
+  background: #4bae6a;
+  box-shadow: 0 0 0 5px rgba(75, 174, 106, 0.16);
+}
+
+.pixel {
+  position: absolute;
+  z-index: 0;
+  width: 24px;
+  height: 24px;
+  background: var(--violet);
+  box-shadow: 24px 0 0 var(--lilac), 0 24px 0 var(--lilac), 24px 24px 0 var(--violet);
+}
+
+.pixel-one {
+  top: 14%;
+  right: 0;
+}
+
+.pixel-two {
+  bottom: 12%;
+  left: -14px;
+  background: #e28163;
+  box-shadow: 24px 0 0 var(--peach), 0 24px 0 var(--peach), 24px 24px 0 #e28163;
+}
+
+.pixel-three {
+  top: 48%;
+  left: -48px;
+  width: 16px;
+  height: 16px;
+  background: #4bae6a;
+  box-shadow: 16px 0 0 var(--green), 0 16px 0 var(--green), 16px 16px 0 #4bae6a;
+}
+
 @media (max-width: 980px) {
   .nav-links {
     display: none;
@@ -957,6 +1100,21 @@ p {
   .legal-toc {
     position: static;
     display: none;
+  }
+
+  .beta-hero {
+    min-height: auto;
+    grid-template-columns: 1fr;
+    padding: 78px 0;
+  }
+
+  .beta-copy {
+    max-width: 680px;
+    text-align: center;
+  }
+
+  .beta-copy .button {
+    margin: 0 auto;
   }
 }
 
@@ -1087,6 +1245,37 @@ p {
   .legal-content {
     padding: 36px 22px;
     border-radius: 24px;
+  }
+
+  .beta-hero {
+    gap: 48px;
+    padding: 68px 0 72px;
+  }
+
+  .beta-copy h1 {
+    font-size: clamp(44px, 13vw, 56px);
+  }
+
+  .beta-lede {
+    font-size: 21px;
+  }
+
+  .beta-flower-frame {
+    width: min(100%, 380px);
+    padding: 16px;
+    border-radius: 26px;
+  }
+
+  .pixel-one {
+    right: 2px;
+  }
+
+  .pixel-two {
+    left: 2px;
+  }
+
+  .pixel-three {
+    left: 0;
   }
 }
 
