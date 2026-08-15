@@ -29,7 +29,7 @@ struct SavedConnectionsStoreTests {
     }
 
     @Test func capsHistoryToMostRecentConnections() {
-        let connections = (0..<7).map { index in
+        let connections = (0..<23).map { index in
             SavedConnection(
                 id: "\(index)",
                 serverURL: "http://192.168.1.\(index):4096",
@@ -41,7 +41,7 @@ struct SavedConnectionsStoreTests {
 
         let store = SavedConnectionsStore(initialConnections: connections)
 
-        #expect(store.connections.map(\.id) == ["6", "5", "4", "3", "2"])
+        #expect(store.connections.map(\.id) == (3..<23).reversed().map(String.init))
     }
 
     @Test func reusingSavedConnectionMovesItToFront() {
@@ -118,5 +118,86 @@ struct SavedConnectionsStoreTests {
         #expect(restored.first?.password == "secret")
         #expect(restored.first?.selectedProjectDirectory == "/Users/me/project")
         #expect(restored.first?.lastConnectedAt == Date(timeIntervalSince1970: 15))
+    }
+
+    @Test func remembersRecentProjectDirectoriesNewestFirst() throws {
+        let store = SavedConnectionsStore(initialConnections: [])
+        let connection = store.saveConnection(
+            serverURL: "http://192.168.1.50:4096",
+            username: "opencode",
+            password: ""
+        )
+
+        store.updateProjectSelection(connectionID: connection.id, directory: "/Users/me/Alpha")
+        store.updateProjectSelection(connectionID: connection.id, directory: "/Users/me/Beta")
+        store.updateProjectSelection(connectionID: connection.id, directory: "/Users/me/Alpha")
+
+        #expect(store.savedProjectSelection(connectionID: connection.id) == "/Users/me/Alpha")
+        #expect(store.recentProjectSelections(connectionID: connection.id) == [
+            "/Users/me/Alpha",
+            "/Users/me/Beta",
+        ])
+    }
+
+    @Test func publicSnapshotFallbackRestoresRecentProjectDirectories() {
+        let snapshots = [
+            SavedConnectionPublicSnapshot(connection: SavedConnection(
+                id: "workspace-history",
+                serverURL: "http://192.168.1.50:4096",
+                username: "opencode",
+                password: "secret",
+                selectedProjectDirectory: "/Users/me/Alpha",
+                recentProjectDirectories: ["/Users/me/Alpha", "/Users/me/Beta"],
+                lastConnectedAt: Date(timeIntervalSince1970: 10)
+            )),
+        ]
+
+        let restored = SavedConnectionsStore.mergeKeychainConnections([], withPublicSnapshots: snapshots)
+
+        #expect(restored.first?.selectedProjectDirectory == "/Users/me/Alpha")
+        #expect(restored.first?.recentProjectDirectories == ["/Users/me/Alpha", "/Users/me/Beta"])
+    }
+
+    @Test func updatesAndClearsDefaultModelSelection() {
+        let store = SavedConnectionsStore(initialConnections: [])
+        let connection = store.saveConnection(
+            serverURL: "http://192.168.1.50:4096",
+            username: "opencode",
+            password: ""
+        )
+
+        store.updateDefaultModelSelection(
+            connectionID: connection.id,
+            providerID: "anthropic",
+            modelID: "claude-sonnet-4-20250514"
+        )
+
+        #expect(store.defaultModelSelection(connectionID: connection.id)?.providerID == "anthropic")
+        #expect(store.defaultModelSelection(connectionID: connection.id)?.modelID == "claude-sonnet-4-20250514")
+
+        store.clearDefaultModelSelection(connectionID: connection.id)
+
+        #expect(store.defaultModelSelection(connectionID: connection.id) == nil)
+    }
+
+    @Test func publicSnapshotFallbackRestoresDefaultModelSelection() {
+        var connection = SavedConnection(
+            id: "default-model",
+            serverURL: "http://192.168.1.50:4096",
+            username: "opencode",
+            password: "secret",
+            lastConnectedAt: Date(timeIntervalSince1970: 10)
+        )
+        connection.defaultProviderID = "anthropic"
+        connection.defaultModelID = "claude-sonnet-4-20250514"
+
+        let snapshots = [
+            SavedConnectionPublicSnapshot(connection: connection),
+        ]
+
+        let restored = SavedConnectionsStore.mergeKeychainConnections([], withPublicSnapshots: snapshots)
+
+        #expect(restored.first?.defaultProviderID == "anthropic")
+        #expect(restored.first?.defaultModelID == "claude-sonnet-4-20250514")
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RecordedReplayListView: View {
     enum ViewState {
@@ -12,6 +13,9 @@ struct RecordedReplayListView: View {
 
     @State private var viewState: ViewState = .idle
     @State private var descriptors: [RecordedChatReplay.Descriptor] = []
+    @State private var exportDocument: RecordedReplayExportDocument?
+    @State private var exportFilename: String?
+    @State private var isExportingReplay = false
 
     @Environment(\.recordedReplayStore) private var recordedReplayStore
 
@@ -50,6 +54,18 @@ struct RecordedReplayListView: View {
         .refreshable {
             await loadReplays()
         }
+        .fileExporter(
+            isPresented: $isExportingReplay,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: exportFilename
+        ) { result in
+            if case .failure(let error) = result, !error.isUserCancelled {
+                viewState = .error(AppText.recordedCaptureExportFailed(error.localizedDescription))
+            }
+            exportDocument = nil
+            exportFilename = nil
+        }
     }
 
     private var replayList: some View {
@@ -75,6 +91,11 @@ struct RecordedReplayListView: View {
                         }
                         Button(AppText.playFast) {
                             play(descriptor, mode: .fast)
+                        }
+                        Button {
+                            export(descriptor)
+                        } label: {
+                            Label(AppText.exportCapture, systemImage: "square.and.arrow.up")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -229,5 +250,24 @@ struct RecordedReplayListView: View {
         } catch {
             viewState = .error(AppText.recordedCaptureDeleteFailed(error.localizedDescription))
         }
+    }
+
+    private func export(_ descriptor: RecordedChatReplay.Descriptor) {
+        do {
+            let export = try recordedReplayStore.exportReplay(descriptor)
+            exportDocument = RecordedReplayExportDocument(data: export.data)
+            exportFilename = export.filename
+            isExportingReplay = true
+            viewState = .loaded
+        } catch {
+            viewState = .error(AppText.recordedCaptureExportFailed(error.localizedDescription))
+        }
+    }
+}
+
+private extension Error {
+    var isUserCancelled: Bool {
+        let nsError = self as NSError
+        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError
     }
 }

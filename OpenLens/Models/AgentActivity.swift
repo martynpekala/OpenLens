@@ -5,27 +5,115 @@ import Foundation
 /// Tracks the agent's current turn activity for shimmer + activity card display.
 @Observable
 final class AgentActivity: Identifiable {
+    /// Keeps the visible activity card bounded even for long-running tool-heavy turns.
+    static let maximumStepCount = 80
+
     let id = UUID()
     var currentLabel: String = ""
     var thinkingText: String = ""
-    var steps: [ActivityStep] = [] {
-        didSet { rebuildCompletedSteps() }
-    }
+    private(set) var steps: [ActivityStep] = []
 
-    /// Cached completed steps — rebuilt only when the completed subset actually changes.
-    /// Views reading `completedSteps` are only invalidated when this array mutates,
-    /// not when unrelated steps are appended or non-completed fields change.
+    /// Cached completed steps maintained incrementally so a tool update never
+    /// rebuilds a growing filtered copy of the entire activity history.
     private(set) var completedSteps: [ActivityStep] = []
 
-    /// Track the last known completed count to avoid unnecessary array rebuilds.
-    @ObservationIgnored private var lastCompletedCount: Int = 0
+    @discardableResult
+    func recordToolCallIfNeeded(
+        label: String,
+        detail: String,
+        toolCategory: ToolCategory
+    ) -> Bool {
+        guard !steps.contains(where: { $0.label == label && $0.type == .toolCall }) else {
+            return false
+        }
 
-    private func rebuildCompletedSteps() {
-        let filtered = steps.filter { $0.isCompleted }
-        // Only assign (triggering observation) when the completed set actually changed.
-        if filtered.count != lastCompletedCount {
-            lastCompletedCount = filtered.count
-            completedSteps = filtered
+        append(ActivityStep(
+            type: .toolCall,
+            label: label,
+            detail: detail,
+            toolCategory: toolCategory
+        ))
+        return true
+    }
+
+    func recordCompletedToolResult(label: String, toolCategory: ToolCategory) {
+        append(ActivityStep(
+            type: .toolResult,
+            label: label,
+            toolCategory: toolCategory,
+            isCompleted: true
+        ))
+    }
+
+    /// Completes the same candidate selected by the former SSE array lookup:
+    /// the matching label when present, otherwise the latest unfinished tool call.
+    @discardableResult
+    func completeToolCall(matching label: String) -> Bool {
+        guard let index = steps.lastIndex(where: {
+            $0.label == label || ($0.type == .toolCall && !$0.isCompleted)
+        }) else {
+            return false
+        }
+
+        markCompleted(at: index)
+        return true
+    }
+
+    @discardableResult
+    func completeMostRecentIncompleteStep() -> Bool {
+        guard let index = steps.lastIndex(where: { !$0.isCompleted }) else {
+            return false
+        }
+
+        markCompleted(at: index)
+        return true
+    }
+
+    /// Exact-label completion used by the deterministic demo player.
+    @discardableResult
+    func completeStep(labeled label: String) -> Bool {
+        guard let index = steps.lastIndex(where: { $0.label == label }) else {
+            return false
+        }
+
+        markCompleted(at: index)
+        return true
+    }
+
+    private func append(_ step: ActivityStep) {
+        steps.append(step)
+        if step.isCompleted {
+            completedSteps.append(step)
+        }
+        trimStepsIfNeeded()
+    }
+
+    private func markCompleted(at index: Int) {
+        guard !steps[index].isCompleted else { return }
+
+        steps[index].isCompleted = true
+        let insertionIndex = steps[..<index].reduce(into: 0) { count, step in
+            if step.isCompleted {
+                count += 1
+            }
+        }
+        completedSteps.insert(steps[index], at: insertionIndex)
+    }
+
+    private func trimStepsIfNeeded() {
+        let excess = steps.count - Self.maximumStepCount
+        guard excess > 0 else { return }
+
+        let removedCompletedIDs = Set(
+            steps.prefix(excess)
+                .lazy
+                .filter(\.isCompleted)
+                .map(\.id)
+        )
+        steps.removeFirst(excess)
+
+        if !removedCompletedIDs.isEmpty {
+            completedSteps.removeAll { removedCompletedIDs.contains($0.id) }
         }
     }
 }
@@ -92,7 +180,11 @@ enum ToolCategory: String {
     }
 
     static func from(toolName: String) -> ToolCategory {
-        let lower = toolName.lowercased()
+        // Categorization runs for every streamed tool update. Never normalize
+        // an arbitrary-length server identifier here: the first characters are
+        // sufficient for known tool names and keep this display-only path
+        // bounded even if a malformed payload is enormous.
+        let lower = String(toolName.prefix(96)).lowercased()
         if lower.contains("read") || lower.contains("glob") || lower.contains("grep") {
             return .read
         } else if lower.contains("write") || lower.contains("create") {

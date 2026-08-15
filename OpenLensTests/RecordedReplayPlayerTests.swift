@@ -33,6 +33,67 @@ struct RecordedReplayPlayerTests {
         #expect(client.isLoading == false)
     }
 
+    @MainActor
+    @Test func fastReplayBurstWaitsForRenderMailboxCapacity() async {
+        let sessionID = "session-replay-burst"
+        let messageID = "assistant-replay-burst"
+        let deltas = (0..<128).map { "chunk-\($0) " }
+        let events = [
+            RecordedChatReplay.EventEnvelope(
+                id: 0,
+                offset: 0,
+                event: sessionStatusEvent(sessionID: sessionID, status: .busy)
+            ),
+            RecordedChatReplay.EventEnvelope(
+                id: 1,
+                offset: 0,
+                event: messageUpdatedEvent(sessionID: sessionID, messageID: messageID)
+            ),
+        ] + deltas.enumerated().map { index, delta in
+            RecordedChatReplay.EventEnvelope(
+                id: index + 2,
+                offset: 0,
+                event: textDeltaEvent(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    text: delta
+                )
+            )
+        } + [
+            RecordedChatReplay.EventEnvelope(
+                id: deltas.count + 2,
+                offset: 0,
+                event: sessionStatusEvent(sessionID: sessionID, status: .idle)
+            ),
+        ]
+        let replay = RecordedChatReplay(
+            sessionID: sessionID,
+            sessionTitle: "Burst Replay",
+            projectName: "OpenLens",
+            branch: "main",
+            createdAt: Date(timeIntervalSince1970: 1_730_200_000),
+            events: events
+        )
+        let client = ChatClient(recordedReplay: replay, playbackMode: .fast)
+
+        await client.ensureSession()
+
+        for _ in 0..<200 {
+            if client.pendingAssistantMessage == nil,
+               client.messages.last?.content == deltas.joined(),
+               client.messages.last?.isStreaming == false {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(client.messages.last?.content == deltas.joined())
+        #expect(client.messages.last?.isStreaming == false)
+        #expect(client.bufferedStreamingMetricsForTesting.records == 0)
+        #expect(client.bufferedStreamingMetricsForTesting.chunks == 0)
+        #expect(!client.bufferedStreamingMetricsForTesting.isBackpressured)
+    }
+
     private func sessionStatusEvent(sessionID: String, status: OCSessionStatusType) -> OCEvent {
         OCEvent(
             type: "session.status",
@@ -67,6 +128,18 @@ struct RecordedReplayPlayerTests {
                     "type": "text",
                     "text": text
                 ]
+            ])
+        )
+    }
+
+    private func textDeltaEvent(sessionID: String, messageID: String, text: String) -> OCEvent {
+        OCEvent(
+            type: "message.part.delta",
+            properties: AnyCodable([
+                "sessionID": sessionID,
+                "messageID": messageID,
+                "field": "text",
+                "delta": text
             ])
         )
     }

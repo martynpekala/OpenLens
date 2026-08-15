@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#fbfaf7">
+    <meta name="description" content="OpenLens is a native iPhone and iPad companion for OpenCode. Continue sessions, review changes, and connect to your Mac from anywhere.">
+    <meta property="og:title" content="OpenLens — OpenCode in your pocket">
+    <meta property="og:description" content="A native iPhone and iPad companion for OpenCode, built around your own infrastructure.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://martynpekala.github.io/OpenLens/">
+    <meta property="og:image" content="https://martynpekala.github.io/OpenLens/assets/chat.jpg">
+    <link rel="canonical" href="https://martynpekala.github.io/OpenLens/">
+    <link rel="icon" href="assets/app-icon.png">
+    <link rel="stylesheet" href="assets/styles.css">
+    <title>OpenLens — OpenCode in your pocket</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <nav class="nav-shell" aria-label="Primary navigation">
+        <a class="brand" href="./" aria-label="OpenLens home">
+          <img src="assets/app-icon.png" width="42" height="42" alt="">
+          <span>OpenLens</span>
+        </a>
+        <div class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#remote">Remote Access</a>
+          <a href="privacy/">Privacy</a>
+          <a href="#support">Support</a>
+        </div>
+        <a class="nav-cta" href="https://apps.apple.com/pl/app/openlens-opencode-client/id6759910797">App Store</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Native OpenCode companion</p>
+          <h1 id="hero-title">Your OpenCode session. <span>Now in your pocket.</span></h1>
+          <p class="hero-lede">Continue coding sessions, review changes, answer agent questions, and stay in control from your iPhone or iPad.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://apps.apple.com/pl/app/openlens-opencode-client/id6759910797">Download on the App Store</a>
+            <a class="button button-android" href="android-beta/">Sign up for Android beta</a>
+            <a class="button button-secondary" href="https://github.com/martynpekala/OpenLens">View source on GitHub</a>
+          </div>
+          <div class="trust-row" aria-label="OpenLens highlights">
+            <span>No OpenLens account</span>
+            <span>No central relay</span>
+            <span>Open source</span>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-label="OpenLens app previews">
+          <div class="hero-orbit" aria-hidden="true"></div>
+          <figure class="device-shot device-shot-side">
+            <img src="assets/review.jpg" width="416" height="900" alt="OpenLens session review screen" loading="eager">
+          </figure>
+          <figure class="device-shot device-shot-main">
+            <img src="assets/chat.jpg" width="416" height="900" alt="OpenLens chat screen showing a coding session" loading="eager">
+          </figure>
+          <div class="floating-note note-online">OpenCode connected</div>
+          <div class="floating-note note-private">Your infrastructure</div>
+        </div>
+      </section>
+
+      <section class="section" id="features" aria-labelledby="features-title">
+        <div class="section-shell">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Built for real workflows</p>
+              <h2 id="features-title">Leave the desk, not the session.</h2>
+            </div>
+            <p>OpenLens keeps the important parts of your OpenCode workflow close without pretending your phone is a tiny laptop.</p>
+          </div>
+
+          <div class="feature-grid">
+            <article class="feature-card">
+              <span class="feature-index">01</span>
+              <h3>Continue every session</h3>
+              <p>Chat with your coding agent, follow streaming progress, switch models, and manage sessions from iPhone or iPad.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-index">02</span>
+              <h3>Review before you approve</h3>
+              <p>Inspect diffs, answer interactive questions, and handle permission requests without returning to your Mac.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-index">03</span>
+              <h3>Connect your way</h3>
+              <p>Use QR setup, Bonjour discovery, a manual LAN address, or encrypted Remote Access when you are away.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-index">04</span>
+              <h3>Self-hosted by design</h3>
+              <p>OpenLens runs no account system, application backend, or central relay. You choose and control the systems involved.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section gallery-section" aria-label="OpenLens screenshots">
+        <div class="section-shell">
+          <div class="gallery">
+            <figure class="gallery-card"><img src="assets/chat.jpg" width="416" height="900" alt="Chat with an OpenCode agent" loading="lazy"></figure>
+            <figure class="gallery-card"><img src="assets/sessions.jpg" width="416" height="900" alt="Browse OpenCode sessions" loading="lazy"></figure>
+            <figure class="gallery-card"><img src="assets/review.jpg" width="416" height="900" alt="Review session changes" loading="lazy"></figure>
+            <figure class="gallery-card"><img src="assets/workspace.jpg" width="416" height="900" alt="Browse workspace context" loading="lazy"></figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="remote" aria-labelledby="remote-title">
+        <div class="section-shell">
+          <div class="remote-panel">
+            <div class="remote-copy">
+              <p class="eyebrow">Optional Remote Access</p>
+              <h2 id="remote-title">Reach your Mac without running a VPN.</h2>
+              <p class="remote-lede">Connect through your own Cloudflare Tunnel and Access configuration. OpenCode stays on your Mac, and the application payload is encrypted end-to-end between OpenLens and OpenLens Remote.</p>
+            </div>
+            <div class="connection-flow" aria-label="Remote connection architecture">
+              <div class="flow-node"><small>Device</small><strong>OpenLens on iPhone or iPad</strong></div>
+              <div class="flow-node"><small>Access</small><strong>Your Cloudflare configuration</strong></div>
+              <div class="flow-node"><small>Gateway</small><strong>OpenLens Remote on your Mac</strong></div>
+              <div class="flow-node"><small>Agent</small><strong>OpenCode on loopback</strong></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="privacy" aria-labelledby="privacy-title">
+        <div class="section-shell">
+          <div class="privacy-panel">
+            <div>
+              <p class="eyebrow">Privacy by architecture</p>
+              <h2 id="privacy-title">Your code stays in systems you choose.</h2>
+              <p>Connection profiles and credentials remain on your devices. The OpenLens developer cannot access your Cloudflare account, coding sessions, files, or saved server details.</p>
+              <a class="button button-primary" href="privacy/">Read the Privacy Policy</a>
+            </div>
+            <ul class="privacy-list">
+              <li>No developer-operated backend</li>
+              <li>No analytics or advertising SDKs</li>
+              <li>Secrets stored in Apple Keychain</li>
+              <li>End-to-end encrypted Remote payload</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="setup-title">
+        <div class="section-shell">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Three steps</p>
+              <h2 id="setup-title">From Mac to pocket.</h2>
+            </div>
+            <p>Start locally in seconds. Add Remote Access only when you want it.</p>
+          </div>
+          <div class="steps-grid">
+            <article class="step">
+              <h3>Run OpenCode</h3>
+              <p>Start your OpenCode server on the Mac where your projects live.</p>
+            </article>
+            <article class="step">
+              <h3>Connect OpenLens</h3>
+              <p>Scan a QR code, discover the server on your LAN, or pair through OpenLens Remote.</p>
+            </article>
+            <article class="step">
+              <h3>Keep momentum</h3>
+              <p>Continue the same session from your phone while OpenCode keeps running on the Mac.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="support" aria-labelledby="support-title">
+        <div class="section-shell">
+          <div class="support-panel">
+            <div>
+              <p class="eyebrow">Support</p>
+              <h2 id="support-title">Need a hand?</h2>
+              <p>For product help, privacy requests, security concerns, or App Store review questions, contact the developer directly.</p>
+            </div>
+            <div class="support-actions">
+              <a class="button button-primary" href="mailto:openlens.app@icloud.com">openlens.app@icloud.com</a>
+              <a class="button button-secondary" href="https://github.com/martynpekala/OpenLens/issues">Open a GitHub issue</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-row">
+        <p>© 2026 Martyn Pękala. OpenLens is an independent open-source project.</p>
+        <div class="footer-links">
+          <a href="privacy/">Privacy</a>
+          <a href="mailto:openlens.app@icloud.com">Support</a>
+          <a href="https://github.com/martynpekala/OpenLens">GitHub</a>
+          <a href="https://apps.apple.com/pl/app/openlens-opencode-client/id6759910797">App Store</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

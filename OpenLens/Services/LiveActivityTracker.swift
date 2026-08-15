@@ -4,6 +4,9 @@ import Foundation
 /// Pure value tracking — delegates actual ActivityKit calls to `LiveActivityManager`.
 final class LiveActivityTracker {
 
+    private static let maximumDetailCharacters = 180
+    private static let maximumInspectedDetailCharacters = 512
+
     // MARK: - State
 
     private(set) var stepNumber: Int = 0
@@ -40,7 +43,11 @@ final class LiveActivityTracker {
     /// Start the Live Activity for a new turn.
     func start(agentName: String, userTask: String) {
         reset()
-        liveActivity.startActivity(agentName: agentName, userTask: userTask, subject: nil)
+        liveActivity.startActivity(
+            agentName: boundedDetail(agentName) ?? "OpenCode",
+            userTask: boundedDetail(userTask) ?? "",
+            subject: nil
+        )
     }
 
     /// Push a new intent, shifting the history.
@@ -56,8 +63,9 @@ final class LiveActivityTracker {
 
     /// Update the subject (e.g. from reasoning text or session title).
     func updateSubject(_ newSubject: String) {
+        guard let boundedSubject = boundedDetail(newSubject) else { return }
         if subject == nil || subject?.isEmpty == true {
-            subject = newSubject
+            subject = boundedSubject
             pushCurrentState()
         }
     }
@@ -114,8 +122,8 @@ final class LiveActivityTracker {
     }
 
     private func permissionLiveActivityDetail(_ permission: OCPermissionRequest) -> String {
-        let title = permission.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-        let description = permission.description?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        let title = boundedDetail(permission.title)
+        let description = boundedDetail(permission.description)
 
         switch (title, description) {
         case let (title?, description?) where title.caseInsensitiveCompare(description) != .orderedSame:
@@ -130,18 +138,53 @@ final class LiveActivityTracker {
     }
 
     private func questionLiveActivityDetail(_ question: OCQuestionRequest) -> String {
-        if let prompt = question.questions.first?.question
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfBlank {
+        if let prompt = boundedDetail(question.questions.first?.question) {
             return prompt
         }
 
-        if let header = question.questions.first?.header
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfBlank {
+        if let header = boundedDetail(question.questions.first?.header) {
             return header
         }
 
         return OpenLensActivityAttributes.PendingUserResponse.Kind.question.fallbackDetail
+    }
+
+    /// Builds a short value without scanning or trimming an unbounded server
+    /// string on the UI actor. This is used defensively even though streamed
+    /// prompts are admitted through bounded payload preparation.
+    private func boundedDetail(_ text: String?) -> String? {
+        guard let text else { return nil }
+
+        var preview = ""
+        preview.reserveCapacity(Self.maximumDetailCharacters + 1)
+        var inspected = 0
+        var started = false
+        var truncated = false
+
+        for character in text {
+            guard inspected < Self.maximumInspectedDetailCharacters else {
+                truncated = true
+                break
+            }
+            inspected += 1
+
+            if !started {
+                guard !character.isWhitespace else { continue }
+                started = true
+            }
+
+            guard preview.count < Self.maximumDetailCharacters else {
+                truncated = true
+                break
+            }
+            preview.append(character)
+        }
+
+        while let last = preview.last, last.isWhitespace {
+            preview.removeLast()
+        }
+
+        guard !preview.isEmpty else { return nil }
+        return truncated ? preview + "…" : preview
     }
 }

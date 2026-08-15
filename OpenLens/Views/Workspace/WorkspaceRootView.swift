@@ -325,6 +325,7 @@ struct WorkspaceRootView: View {
                 WorkspaceActivityHeatmap(
                     projectID: snapshot.currentProject?.id,
                     projectDirectory: snapshot.currentProject?.worktree ?? connection.selectedProjectDirectory,
+                    projectName: currentProjectName,
                     refreshToken: activityRefreshToken
                 )
             }
@@ -1381,6 +1382,7 @@ private struct WorkspaceActivityHeatmap: View {
     private struct TaskKey: Hashable {
         let projectID: String?
         let projectDirectory: String?
+        let projectName: String
         let refreshToken: Int
     }
 
@@ -1388,6 +1390,7 @@ private struct WorkspaceActivityHeatmap: View {
 
     let projectID: String?
     let projectDirectory: String?
+    let projectName: String
     let refreshToken: Int
 
     private let weekCount = 12
@@ -1402,6 +1405,7 @@ private struct WorkspaceActivityHeatmap: View {
         TaskKey(
             projectID: projectID,
             projectDirectory: projectDirectory,
+            projectName: projectName,
             refreshToken: refreshToken
         )
     }
@@ -1460,7 +1464,7 @@ private struct WorkspaceActivityHeatmap: View {
             }
 
             if hasLoaded && activeDayCount == 0 {
-                Text("No session activity yet for this project.")
+                Text("No message activity yet for this project.")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.appSecondary)
             }
@@ -1522,7 +1526,7 @@ private struct WorkspaceActivityHeatmap: View {
     private func makeCells(from activityDays: [WorkspaceActivityDay], calendar: Calendar) -> [[Int]] {
         let firstWeekStart = firstWeekStart(calendar: calendar)
         let countsByDate = Dictionary(uniqueKeysWithValues: activityDays.map {
-            (calendar.startOfDay(for: $0.date), $0.sessionCount)
+            (calendar.startOfDay(for: $0.date), $0.turnCount)
         })
         let maxCount = countsByDate.values.max() ?? 0
 

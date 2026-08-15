@@ -33,6 +33,8 @@ struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
     var onStartDebug: (() -> Void)?
+    var onStartHeavyLoad: (() -> Void)?
+    var onStartConcurrentSend: (() -> Void)?
     var onStartRecordedReplay: ((RecordedChatReplay, RecordedReplayPlayer.PlaybackMode) -> Void)?
 
     /// Deep link received from `openlens://connect` URL or QR scan.
@@ -51,6 +53,8 @@ struct ConnectView: View {
     @State private var connectionTask: Task<Void, Never>?
     @State private var isAutoReconnect: Bool = false
     @State private var currentConnectionMethod: ConnectionMethod = .manual
+    @State private var pendingRemoteOffer: RemotePairingOffer?
+    @State private var pendingRemoteCredential: RemoteDeviceCredential?
 
     @State private var showQRScanner: Bool = false
     @FocusState private var focusedManualField: ManualConnectionField?
@@ -58,6 +62,7 @@ struct ConnectView: View {
     @Environment(\.connection) private var connection
     @Environment(\.savedConnections) private var savedConnections
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @AppStorage("autoReconnect") private var autoReconnect: Bool = true
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
@@ -88,6 +93,19 @@ struct ConnectView: View {
             .scrollDismissesKeyboard(.interactively)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        startNearbyDiscovery()
+                    } label: {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
+                            .symbolEffect(.breathe, isActive: discovery.isSearching)
+                    }
+                    .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
+                    .accessibilityHint("Searches for nearby OpenCode servers on your local network")
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showOnboarding = true
@@ -124,10 +142,15 @@ struct ConnectView: View {
         }
         .fullScreenCover(isPresented: $showQRScanner) {
             QRScannerView(
-                onScanned: { deepLink in
+                onScanned: { code in
                     showQRScanner = false
                     currentConnectionMethod = .qr
-                    applyDeepLink(deepLink)
+                    switch code {
+                    case .direct(let deepLink):
+                        applyDeepLink(deepLink)
+                    case .remote(let offer):
+                        startRemotePairing(offer)
+                    }
                 },
                 onDismiss: { showQRScanner = false }
             )
@@ -135,7 +158,6 @@ struct ConnectView: View {
         .onAppear {
             guard !consumePendingDeepLinkIfNeeded() else { return }
             prefillFromMostRecentConnectionIfNeeded()
-            startNearbyDiscoveryIfNeeded()
         }
         .onDisappear {
             discovery.stopBrowsing()
@@ -177,15 +199,15 @@ struct ConnectView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 18)
             .padding(.vertical, 22)
-            .background(
+            .background {
+                connectionSectionBackground(cornerRadius: 20)
+            }
+            .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.appSurface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.appSeparator.opacity(0.55), lineWidth: 0.5)
-            )
-            .surfaceShadow()
+                    .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
         }
         .buttonStyle(.plain)
         .frame(maxWidth: 300)
@@ -214,7 +236,9 @@ struct ConnectView: View {
 
     @ViewBuilder
     private var discoveredServersSection: some View {
-        if discovery.discoveredServers.count == 1,
+        if discovery.localNetworkAccessRequired {
+            localNetworkAccessCard
+        } else if discovery.discoveredServers.count == 1,
            let server = discovery.discoveredServers.first
         {
             Button {
@@ -264,6 +288,65 @@ struct ConnectView: View {
                 .stroke(Color.appSeparator.opacity(0.45), lineWidth: 0.5)
         )
         .frame(maxWidth: .infinity)
+    }
+
+    private var localNetworkAccessCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.appSecondary)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Color.appTertiary))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(AppText.localNetworkAccessRequiredTitle)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+
+                    Text(AppText.localNetworkAccessRequiredBody)
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
+                        .lineSpacing(2)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    openAppSettings()
+                } label: {
+                    Text(AppText.openSettings)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appOnAccent)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(Color.appAccent))
+                }
+
+                Button {
+                    startNearbyDiscovery()
+                } label: {
+                    Text(AppText.tryAgain)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(Color.appTertiary))
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: 340, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.appSurface.opacity(0.76))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.appSeparator.opacity(0.48), lineWidth: 0.7)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: - Manual Connection Section
@@ -355,41 +438,7 @@ struct ConnectView: View {
         }
         .padding(20)
         .background {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.appSurface.opacity(0.20),
-                            Color.appTertiary.opacity(0.08),
-                            Color.appSurface.opacity(0.16)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(alignment: .topTrailing) {
-                    LinearGradient(
-                        colors: [
-                            Color.cyan.opacity(0.010),
-                            Color.blue.opacity(0.006),
-                            Color.clear
-                        ],
-                        startPoint: .topTrailing,
-                        endPoint: .bottomLeading
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-                }
-                .overlay(alignment: .bottomLeading) {
-                    LinearGradient(
-                        colors: [
-                            Color.purple.opacity(0.007),
-                            Color.clear
-                        ],
-                        startPoint: .bottomLeading,
-                        endPoint: .center
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-                }
+            connectionSectionBackground(cornerRadius: 36)
         }
         .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 36, style: .continuous))
         .overlay {
@@ -397,6 +446,44 @@ struct ConnectView: View {
                 .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
+    }
+
+    private func connectionSectionBackground(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color.appSurface.opacity(0.20),
+                        Color.appTertiary.opacity(0.08),
+                        Color.appSurface.opacity(0.16)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay(alignment: .topTrailing) {
+                LinearGradient(
+                    colors: [
+                        Color.cyan.opacity(0.010),
+                        Color.blue.opacity(0.006),
+                        Color.clear
+                    ],
+                    startPoint: .topTrailing,
+                    endPoint: .bottomLeading
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
+            .overlay(alignment: .bottomLeading) {
+                LinearGradient(
+                    colors: [
+                        Color.purple.opacity(0.007),
+                        Color.clear
+                    ],
+                    startPoint: .bottomLeading,
+                    endPoint: .center
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
     }
 
     @ViewBuilder
@@ -445,6 +532,7 @@ struct ConnectView: View {
         let currentURL = normalizedServerSuggestionKey(query)
 
         return savedConnections.suggestions(for: query)
+            .filter { !$0.isRemote }
             .filter { normalizedServerSuggestionKey($0.serverURL) != currentURL || query.isEmpty }
             .prefix(4)
             .map { $0 }
@@ -509,7 +597,12 @@ struct ConnectView: View {
 
     private var showsPreviewModesSection: Bool {
 #if DEBUG
-        onStartDemo != nil || (debugFeaturesEnabled && (onStartDebug != nil || onStartRecordedReplay != nil))
+        onStartDemo != nil || (debugFeaturesEnabled && (
+            onStartDebug != nil
+                || onStartHeavyLoad != nil
+                || onStartConcurrentSend != nil
+                || onStartRecordedReplay != nil
+        ))
 #else
         onStartDemo != nil
 #endif
@@ -538,6 +631,24 @@ struct ConnectView: View {
                     subtitle: AppText.tryDebugChatSubtitle,
                     systemImage: "ladybug.fill",
                     action: onStartDebug
+                )
+            }
+
+            if debugFeaturesEnabled, let onStartHeavyLoad {
+                previewButton(
+                    title: AppText.tryHeavyLoadChat,
+                    subtitle: AppText.tryHeavyLoadChatSubtitle,
+                    systemImage: "gauge.with.dots.needle.67percent",
+                    action: onStartHeavyLoad
+                )
+            }
+
+            if debugFeaturesEnabled, let onStartConcurrentSend {
+                previewButton(
+                    title: AppText.tryConcurrentSendChat,
+                    subtitle: AppText.tryConcurrentSendChatSubtitle,
+                    systemImage: "arrow.up.message.fill",
+                    action: onStartConcurrentSend
                 )
             }
 #endif
@@ -685,6 +796,20 @@ struct ConnectView: View {
             Spacer()
 
             VStack(spacing: 10) {
+                if connection.localNetworkAccessRequired {
+                    Button {
+                        openAppSettings()
+                    } label: {
+                        Text(AppText.openSettings)
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .foregroundStyle(Color.appOnAccent)
+                            .background(Color.appAccent)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                }
+
                 Button {
                     retryConnection()
                 } label: {
@@ -696,8 +821,8 @@ struct ConnectView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .foregroundStyle(Color.appOnAccent)
-                    .background(Color.appAccent)
+                    .foregroundStyle(connection.localNetworkAccessRequired ? Color.appPrimary : Color.appOnAccent)
+                    .background(connection.localNetworkAccessRequired ? Color.appTertiary : Color.appAccent)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
 
@@ -720,12 +845,18 @@ struct ConnectView: View {
     // MARK: - Failure Copy
 
     private var failureTitle: String {
-        isAutoReconnect
+        if connection.localNetworkAccessRequired {
+            return AppText.localNetworkAccessRequiredTitle
+        }
+        return isAutoReconnect
             ? AppText.autoReconnectErrorTitle
             : AppText.manualConnectErrorTitle
     }
 
     private var failureMessage: String {
+        if connection.localNetworkAccessRequired {
+            return AppText.localNetworkAccessRequiredBody
+        }
         if isAutoReconnect {
             return AppText.autoReconnectErrorBody
         }
@@ -736,6 +867,8 @@ struct ConnectView: View {
     // MARK: - Connection Actions
 
     private func startConnect(auto: Bool) {
+        pendingRemoteOffer = nil
+        pendingRemoteCredential = nil
         if auto {
             guard let saved = savedConnections.mostRecent, saved.isConfigured else { return }
             manualURL = saved.serverURL
@@ -771,22 +904,89 @@ struct ConnectView: View {
         }
     }
 
+    private func startRemotePairing(_ offer: RemotePairingOffer) {
+        pendingRemoteOffer = offer
+        pendingRemoteCredential = nil
+        connectionTask?.cancel()
+        isAutoReconnect = false
+        connectionFailed = false
+        connectionError = nil
+        showConnectionSheet = true
+
+        connectionTask = Task {
+            do {
+                let credential = try await RemotePairingClient().pair(using: offer)
+                guard !Task.isCancelled else { return }
+                pendingRemoteCredential = credential
+                pendingRemoteOffer = nil
+                await completeRemoteConnection(credential)
+            } catch {
+                guard !Task.isCancelled else { return }
+                connectionError = error.localizedDescription
+                connectionFailed = true
+            }
+        }
+    }
+
     private func retryConnection() {
         connectionFailed = false
         connectionError = nil
+        if let pendingRemoteCredential {
+            connectionTask?.cancel()
+            connectionTask = Task {
+                await completeRemoteConnection(pendingRemoteCredential)
+            }
+            return
+        }
+        if let pendingRemoteOffer {
+            startRemotePairing(pendingRemoteOffer)
+            return
+        }
         startConnect(auto: isAutoReconnect)
     }
 
-    private func startNearbyDiscoveryIfNeeded() {
-        guard !discovery.isSearching, discovery.discoveredServers.isEmpty else { return }
+    private func startNearbyDiscovery() {
+        focusedManualField = nil
         discovery.startBrowsing()
+    }
+
+    private func openAppSettings() {
+        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(settingsURL)
     }
 
     private func cancelConnection() {
         connectionTask?.cancel()
         connectionTask = nil
+        pendingRemoteOffer = nil
+        pendingRemoteCredential = nil
         if case .connecting = connection.state {
             connection.disconnect()
+        }
+    }
+
+    private func completeRemoteConnection(_ credential: RemoteDeviceCredential) async {
+        do {
+            guard RemoteConnectionSecretStore.save(credential) else {
+                throw RemoteProtocolError.remoteError("keychain_write_failed")
+            }
+            savedConnections.saveRemoteConnection(credential)
+            await connection.connect(remoteCredential: credential, method: .qr)
+            guard !Task.isCancelled else { return }
+
+            if connection.isConnected {
+                pendingRemoteCredential = nil
+                showConnectionSheet = false
+            } else {
+                if case .error(let message) = connection.state {
+                    connectionError = message
+                }
+                connectionFailed = true
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            connectionError = error.localizedDescription
+            connectionFailed = true
         }
     }
 
@@ -833,7 +1033,8 @@ struct ConnectView: View {
 
     private func prefillFromMostRecentConnectionIfNeeded() {
         guard manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let saved = savedConnections.mostRecent else { return }
+              let saved = savedConnections.mostRecent,
+              !saved.isRemote else { return }
 
         manualURL = saved.serverURL
         username = saved.username
@@ -945,5 +1146,26 @@ private extension UIView {
         }
 
         return false
+    }
+}
+
+#Preview("Connect") {
+    ConnectViewPreviewHost()
+}
+
+private struct ConnectViewPreviewHost: View {
+    @State private var connection = ConnectionManager()
+    @State private var savedConnections = SavedConnectionsStore(initialConnections: [])
+    @State private var pendingDeepLink: DeepLinkConnection?
+    @State private var pendingSessionNavigationID: String?
+
+    var body: some View {
+        ConnectView(
+            onStartDemo: {},
+            pendingDeepLink: $pendingDeepLink,
+            pendingSessionNavigationID: $pendingSessionNavigationID
+        )
+        .environment(\.connection, connection)
+        .environment(\.savedConnections, savedConnections)
     }
 }

@@ -4,10 +4,14 @@ enum ScreenshotFixtures {
     static let launchArgument = "SCREENSHOT_MODE"
     static let tabArgumentPrefix = "SCREENSHOT_TAB="
     static let chatSessionArgument = "SCREENSHOT_CHAT_SESSION"
+    static let permissionSheetArgument = "SCREENSHOT_PERMISSION_SHEET"
+    static let permissionAllowAllConfirmationArgument = "SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let settingsSectionArgumentPrefix = "SCREENSHOT_SETTINGS_SECTION="
     static let environmentKey = "OPENLENS_SCREENSHOT_MODE"
     static let tabEnvironmentKey = "OPENLENS_SCREENSHOT_TAB"
     static let chatSessionEnvironmentKey = "OPENLENS_SCREENSHOT_CHAT_SESSION"
+    static let permissionSheetEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_SHEET"
+    static let permissionAllowAllConfirmationEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let settingsSectionEnvironmentKey = "OPENLENS_SCREENSHOT_SETTINGS_SECTION"
 
     static var isEnabled: Bool {
@@ -33,6 +37,17 @@ enum ScreenshotFixtures {
     static var opensDefaultChatSession: Bool {
         let processInfo = ProcessInfo.processInfo
         return processInfo.arguments.contains(chatSessionArgument) || processInfo.environment[chatSessionEnvironmentKey] == "1"
+    }
+
+    static var opensPermissionSheet: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains(permissionSheetArgument) || processInfo.environment[permissionSheetEnvironmentKey] == "1"
+    }
+
+    static var opensPermissionAllowAllConfirmation: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains(permissionAllowAllConfirmationArgument)
+            || processInfo.environment[permissionAllowAllConfirmationEnvironmentKey] == "1"
     }
 
     static var settingsSection: String? {
@@ -91,17 +106,22 @@ enum ScreenshotFixtures {
         "session-screenshot-3": OCSessionStatus(type: .idle, attempt: nil, message: nil, next: nil)
     ]
 
-    static let savedConnection = SavedConnection(
-        id: "saved-screenshot-connection",
-        serverURL: "demo.openlens.local:4096",
-        username: "developer",
-        password: "demo-token",
-        selectedProviderID: "anthropic",
-        selectedModelID: "claude-sonnet-4-20250514",
-        selectedVariant: "high",
-        selectedProjectDirectory: projectPath,
-        lastConnectedAt: Date()
-    )
+    static let savedConnection: SavedConnection = {
+        var connection = SavedConnection(
+            id: "saved-screenshot-connection",
+            serverURL: "demo.openlens.local:4096",
+            username: "developer",
+            password: "demo-token",
+            selectedProviderID: "anthropic",
+            selectedModelID: "claude-sonnet-4-20250514",
+            selectedVariant: "high",
+            selectedProjectDirectory: projectPath,
+            lastConnectedAt: Date()
+        )
+        connection.defaultProviderID = "anthropic"
+        connection.defaultModelID = "claude-sonnet-4-20250514"
+        return connection
+    }()
 
     static let providersResult = ProvidersService.ProvidersResult(
         providers: [
@@ -158,7 +178,7 @@ enum ScreenshotFixtures {
                 sessionID: defaultSessionID,
                 permission: "bash",
                 patterns: ["git push origin feature/app-store-assets"],
-                always: [],
+                always: ["*"],
                 description: "Push the screenshot branch to origin.",
                 title: "Permission required",
                 toolName: "bash"
@@ -255,7 +275,7 @@ enum ScreenshotFixtures {
                 return nil
             }
 
-            return WorkspaceActivityDay(date: normalizedDate, sessionCount: count)
+            return WorkspaceActivityDay(date: normalizedDate, turnCount: count)
         }
         .sorted { $0.date < $1.date }
     }
@@ -386,15 +406,5 @@ enum ScreenshotFixtures {
         default:
             return []
         }
-    }
-}
-
-extension OCProject {
-    init(id: String, worktree: String?, vcsDir: String? = nil, vcs: String? = nil, time: OCProjectTime? = nil) {
-        self.id = id
-        self.worktree = worktree
-        self.vcsDir = vcsDir
-        self.vcs = vcs
-        self.time = time
     }
 }

@@ -25,9 +25,12 @@ enum ChatStreamInstrumentation {
         os_signpost(.event, log: log, name: "SSE Text Delta Batch", "chars %d", characterCount)
     }
 
-    static func beginStreamingFlush(characterCount: Int) -> OSSignpostID {
+    /// The UI flush consumes a fixed number of pre-chunked strings. Counting
+    /// the characters here would itself walk an untrusted payload on MainActor,
+    /// so the trace records the bounded work unit instead.
+    static func beginStreamingFlush(chunkCount: Int) -> OSSignpostID {
         let signpostID = OSSignpostID(log: log)
-        os_signpost(.begin, log: log, name: "Streaming Flush", signpostID: signpostID, "chars %d", characterCount)
+        os_signpost(.begin, log: log, name: "Streaming Flush", signpostID: signpostID, "chunks %d", chunkCount)
         return signpostID
     }
 

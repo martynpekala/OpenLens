@@ -2,7 +2,7 @@ import Foundation
 
 struct WorkspaceActivityDay: Hashable, Sendable {
     let date: Date
-    let sessionCount: Int
+    let turnCount: Int
 }
 
 /// Pure service for session CRUD operations.
@@ -46,14 +46,18 @@ final class SessionsService {
 
     // MARK: - Create
 
-    /// Create a new session, optionally with a title.
-    func createSession(title: String? = nil) async throws -> OCSession {
+    /// Create a new session, optionally with a title and workspace context.
+    func createSession(
+        title: String? = nil,
+        workspaceDirectory: String? = nil,
+        clearsWorkspaceContext: Bool = false
+    ) async throws -> OCSession {
         if ScreenshotFixtures.isEnabled {
             let now = Date().timeIntervalSince1970 * 1000
             return OCSession(
                 id: UUID().uuidString,
                 projectID: ScreenshotFixtures.projectID,
-                directory: ScreenshotFixtures.projectPath,
+                directory: workspaceDirectory?.nilIfBlank ?? ScreenshotFixtures.projectPath,
                 title: title?.nilIfBlank ?? "Screenshot ideation",
                 version: "v1",
                 time: OCSessionTime(created: now, updated: now)
@@ -62,6 +66,10 @@ final class SessionsService {
 
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
+        }
+
+        if workspaceDirectory?.nilIfBlank != nil || clearsWorkspaceContext {
+            await connection.setProjectContext(directory: workspaceDirectory)
         }
 
         return try await client.createSession(title: title)
@@ -161,7 +169,7 @@ final class SessionsService {
 
     // MARK: - Activity
 
-    /// Returns per-day session activity for the selected project/worktree.
+    /// Returns per-day turn activity for the selected project/worktree.
     func loadActivityDays(
         projectID: String?,
         directory: String?,
@@ -180,23 +188,53 @@ final class SessionsService {
         let startOfDay = calendar.startOfDay(for: startDate)
         let matchingSessions = sessions.filter {
             matchesProjectScope($0, projectID: projectID, directory: directory)
+                && mayContainActivitySince($0, startOfDay: startOfDay)
         }
 
+        let messagesBySession = try await loadMessages(for: matchingSessions, client: client)
+        return Self.turnActivityDays(from: messagesBySession, since: startOfDay, calendar: calendar)
+    }
+
+    static func turnActivityDays(
+        from messagesBySession: [[OCMessageWithParts]],
+        since startDate: Date,
+        calendar: Calendar = .current
+    ) -> [WorkspaceActivityDay] {
         var countsByDay: [Date: Int] = [:]
 
-        for session in matchingSessions {
-            guard session.updatedAt > 0 else { continue }
+        let startOfDay = calendar.startOfDay(for: startDate)
+        for message in messagesBySession.flatMap({ $0 }) {
+            // A user message starts one conversational turn; assistant/tool messages are part of that turn.
+            guard message.info.role == .user,
+                  let createdTimestamp = message.info.createdTimestamp else {
+                continue
+            }
 
-            let updatedDate = Date(timeIntervalSince1970: session.updatedAt)
-            let bucket = calendar.startOfDay(for: updatedDate)
+            let createdDate = Date(timeIntervalSince1970: createdTimestamp)
+            let bucket = calendar.startOfDay(for: createdDate)
             guard bucket >= startOfDay else { continue }
-
             countsByDay[bucket, default: 0] += 1
         }
 
         return countsByDay
-            .map { WorkspaceActivityDay(date: $0.key, sessionCount: $0.value) }
+            .map { WorkspaceActivityDay(date: $0.key, turnCount: $0.value) }
             .sorted { $0.date < $1.date }
+    }
+
+    private func loadMessages(for sessions: [OCSession], client: OpenCodeClient) async throws -> [[OCMessageWithParts]] {
+        var messagesBySession: [[OCMessageWithParts]] = []
+        messagesBySession.reserveCapacity(sessions.count)
+
+        for session in sessions {
+            messagesBySession.append(try await client.listMessages(sessionID: session.id))
+        }
+
+        return messagesBySession
+    }
+
+    private func mayContainActivitySince(_ session: OCSession, startOfDay: Date) -> Bool {
+        guard session.updatedAt > 0 else { return true }
+        return Date(timeIntervalSince1970: session.updatedAt) >= startOfDay
     }
 
     private func matchesProjectScope(_ session: OCSession, projectID: String?, directory: String?) -> Bool {

@@ -112,7 +112,7 @@ This override affects endpoints such as `/project`, `/project/current`, `/path`,
 | Method | Path | Request | Response | Description |
 |--------|------|---------|----------|-------------|
 | GET | `/permission` | — | `[OCPermissionRequest]` | List pending permission requests |
-| POST | `/permission/:id/reply` | `{ response, remember? }` | `Bool` | Approve or deny a permission request |
+| POST | `/permission/:id/reply` | `{ reply: "once" \| "always" \| "reject" }` | `Bool` | Approve, always approve, or deny a permission request |
 
 ## Questions
 

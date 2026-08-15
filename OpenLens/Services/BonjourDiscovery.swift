@@ -7,6 +7,7 @@ import Network
 final class BonjourDiscovery {
     var discoveredServers: [DiscoveredServer] = []
     var isSearching: Bool = false
+    var localNetworkAccessRequired: Bool = false
     var lastErrorMessage: String?
     private(set) var hasSearched: Bool = false
 
@@ -46,6 +47,7 @@ final class BonjourDiscovery {
         hasSearched = true
         isSearching = true
         discoveredServers = []
+        localNetworkAccessRequired = false
         lastErrorMessage = nil
 
         let params = NWParameters()
@@ -54,18 +56,30 @@ final class BonjourDiscovery {
         let browser = NWBrowser(for: .bonjour(type: "_http._tcp.", domain: "local."), using: params)
 
         browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 switch state {
                 case .ready:
-                    self?.isSearching = true
+                    self.isSearching = true
+                case .waiting(let error):
+                    if Self.isLocalNetworkPolicyDenied(error) {
+                        self.localNetworkAccessRequired = true
+                        self.lastErrorMessage = AppText.localNetworkAccessRequiredBody
+                        self.stopBrowsing()
+                    }
                 case .failed(let error):
-                    self?.lastErrorMessage = "mDNS discovery failed: \(error.localizedDescription)"
+                    if Self.isLocalNetworkPolicyDenied(error) {
+                        self.localNetworkAccessRequired = true
+                        self.lastErrorMessage = AppText.localNetworkAccessRequiredBody
+                    } else {
+                        self.lastErrorMessage = "mDNS discovery failed: \(error.localizedDescription)"
+                    }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                        self?.isSearching = false
+                        self.isSearching = false
                     }
                 case .cancelled:
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                        self?.isSearching = false
+                        self.isSearching = false
                     }
                 default:
                     break
@@ -74,7 +88,7 @@ final class BonjourDiscovery {
         }
 
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.handleResults(results)
             }
         }
@@ -143,9 +157,10 @@ final class BonjourDiscovery {
                         port: Int(port.rawValue)
                     )
 
-                    Task { @MainActor in
-                        if !(self?.discoveredServers.contains(where: { $0.id == server.id }) ?? true) {
-                            self?.discoveredServers.append(server)
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if !self.discoveredServers.contains(where: { $0.id == server.id }) {
+                            self.discoveredServers.append(server)
                         }
                     }
                 }
@@ -161,6 +176,17 @@ final class BonjourDiscovery {
         }
 
         connection.start(queue: .global())
+    }
+
+    /// `kDNSServiceErr_PolicyDenied` from dns_sd.h. Keeping the integer mapping
+    /// separate makes the Bonjour-specific policy path straightforward to test.
+    nonisolated static func isLocalNetworkPolicyDeniedDNSCode(_ code: Int) -> Bool {
+        code == -65570
+    }
+
+    nonisolated private static func isLocalNetworkPolicyDenied(_ error: NWError) -> Bool {
+        guard case .dns(let code) = error else { return false }
+        return isLocalNetworkPolicyDeniedDNSCode(Int(code))
     }
 
     nonisolated private static func sanitizeHost(_ host: String) -> String {

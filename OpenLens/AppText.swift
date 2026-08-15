@@ -4,6 +4,8 @@ enum AppText {
     static let activityEmpty = "No activity recorded yet."
     static let activityThinking = "Thinking"
     static let activityTitle = "Agent Activity"
+    static let allowAll = "Allow all"
+    static let allowOnce = "Allow once"
     static let approve = "Approve"
     static let appearance = "Appearance"
     static let appearanceSubtitle = "Choose the app look"
@@ -20,6 +22,7 @@ enum AppText {
     static let connectingSubtitle = "Establishing connection to the server"
     static let connectionSection = "Connection"
     static let copyCode = "Copy Code"
+    static let copyMessage = "Copy Message"
     static let captureBrowserEmptySubtitle = "Start recording in a live chat, then return here to replay the saved turn."
     static let captureBrowserEmptyTitle = "No Captures"
     static let captureBrowserErrorTitle = "Couldn't Load Captures"
@@ -42,6 +45,7 @@ enum AppText {
     static let emptyModelsTitle = "No Models Available"
     static let emptySessionsSubtitle = "Create a session to start chatting with OpenCode."
     static let emptySessionsTitle = "No Sessions"
+    static let exportCapture = "Export Capture"
     static let files = "Files"
     static let forget = "Forget"
     static let forgetConnection = "Forget Connection"
@@ -49,20 +53,28 @@ enum AppText {
     static let forgetThisConnection = "Forget This Connection"
     static let help = "Help"
     static let loadingModels = "Loading models..."
+    static let localNetworkAccessRequiredBody = "Allow Local Network access for OpenLens in Settings, then return here and try again."
+    static let localNetworkAccessRequiredTitle = "Local Network Access Needed"
     static let manualConnection = "Manual Connection"
     static let manualConnectErrorBody = "Check the server address and make sure the server is running."
     static let manualConnectErrorTitle = "Could not connect to server"
     static let messagePlaceholder = "Ask anything or use /command"
     static let model = "Model"
+    static let defaultModel = "Default Model"
+    static let setAsDefaultModel = "Set as default model"
+    static let clearDefaultModel = "Clear default model"
     static let multipleSelection = "Select multiple options"
     static let nearby = "Nearby"
     static let newSession = "New Session"
     static let newSessionMessage = "Create a new chat session."
     static let newSessionPlaceholder = "Title (optional)"
+    static let newSessionWorkspaceSourceNote = "OpenLens learns these workspace choices from the connected OpenCode server plus your recent selections for this server. It may not include every project on this Mac."
+    static let newSessionWorkspaceUnavailable = "Your last workspace is not available on this server right now."
     static let noProviders = "No providers available"
     static let none = "None"
     static let openCodeServer = "OpenCode Server"
     static let optional = "Optional"
+    static let openSettings = "Open Settings"
     static let pass = "Pass"
     static let playFast = "Play Fast"
     static let playRealtime = "Play Realtime"
@@ -77,6 +89,11 @@ enum AppText {
     static let qrInvalid = "Invalid QR code — use openlens-qr to generate"
     static let qrScan = "Scan QR Code"
     static let qrScanSubtitle = "Quick connect via openlens-qr CLI"
+    static let questionTranscriptAnswer = "Answer"
+    static let questionTranscriptAnswered = "Answered"
+    static let questionTranscriptAsking = "Asking questions..."
+    static let questionTranscriptTitle = "Agent Question"
+    static let questionTranscriptWaiting = "Waiting for answer"
     static let recordedReplayReadOnly = "Recorded replays are read-only previews."
     static let recordingAlreadyInProgress = "A stream capture is already in progress."
     static let recordingDebugFeaturesDisabled = "Enable debug features in Settings to use stream recording."
@@ -86,10 +103,18 @@ enum AppText {
     static let recordingStop = "Stop Recording"
     static let recordingStorageUnavailable = "Recorded capture storage is unavailable."
     static let recordingWaitForIdle = "Wait for the current assistant turn to finish before starting a capture."
+    static let responseFailed = "Failed"
+    static let responseGenerating = "Generating"
+    static let responseStopped = "Stopped"
+    static let responseStopping = "Stopping..."
     static let reasoning = "Reasoning"
     static let reconnecting = "Reconnecting..."
     static let reconnectingSubtitle = "Reconnecting to your saved server"
     static let refreshProviders = "Refresh Providers"
+    static let reviewRequestBody = "I build this app with a lot of care in my spare time. \nIf OpenLens makes your OpenCode flow better, an App Store rating with even a one-line review like “works really well” would help a lot."
+    static let reviewRequestLater = "Maybe Later"
+    static let reviewRequestPrimaryAction = "Write a Short Review"
+    static let reviewRequestSubtitle = "Hey, Martyn here, the solo developer behind OpenLens."
     static let scanPrompt = "Scan for nearby servers"
     static let searchingServers = "Searching for servers..."
     static let server = "Server"
@@ -100,12 +125,14 @@ enum AppText {
     static let serverCheckYes = "Yes, it's running"
     static let serverCheckYesSubtitle = "Choose how to connect"
     static let sessions = "Sessions"
+    static let sessionsLoadErrorTitle = "Couldn't Load Sessions"
     static let settings = "Settings"
     static let settingsDebugFeatures = "Show Debug Features"
     static let settingsDebugFeaturesSubtitle = "Keep debug-only tools visible in development builds. Turn this off to match the release app."
     static let settingsForgetDialogTitle = "Forget Connection"
     static let settingsSupportBody = "OpenLens is open source. If the app helps you, visiting the GitHub repo and leaving a star is a simple way to support development."
     static let settingsSupportGitHubCTA = "View and Star on GitHub"
+    static let settingsSupportReviewCTA = "Review on the App Store"
     static let settingsSupportRepository = "martynpekala/OpenLens"
     static let settingsSupportTitle = "Support OpenLens"
     static let settingsAboutSupport = "About & Support"
@@ -151,6 +178,10 @@ enum AppText {
     static let switchServerTitle = "Switch Server?"
     static let tryDebugChat = "Open Debug Chat"
     static let tryDebugChatSubtitle = "Replay a heavy streaming scenario for chat comparison"
+    static let tryHeavyLoadChat = "Open Heavy Load Chat"
+    static let tryHeavyLoadChatSubtitle = "Load a large message history and stream a 100 KB response"
+    static let tryConcurrentSendChat = "Send During Stream"
+    static let tryConcurrentSendChatSubtitle = "Inject another message while the first response is streaming"
     static let thinking = "Thinking"
     static let thinkingDefault = "Default"
     static let titleUntitled = "Untitled"
@@ -162,6 +193,13 @@ enum AppText {
     static let user = "User"
     static let version = "Version"
     static let working = "Working..."
+    static let workspace = "Workspace"
+    static let workspaceCurrent = "Current"
+    static let workspaceRecent = "Recent"
+    static let workspaceServerDefault = "Server default"
+    static let workspaceServerDefaultSubtitle = "No workspace was reported by the server."
+    static let workspaceSuggested = "Suggested"
+    static let workspaceUnavailable = "Unavailable"
     static let wizardConnectBody = "Choose the quickest way to connect your iPhone to the OpenCode server."
     static let wizardConnectBonjour = "Auto-detect on network"
     static let wizardConnectBonjourSubtitle = "Requires --mdns flag on server"
@@ -252,6 +290,10 @@ enum AppText {
         "Failed to delete capture: \(description)"
     }
 
+    static func recordedCaptureExportFailed(_ description: String) -> String {
+        "Failed to export capture: \(description)"
+    }
+
     static func recordedCaptureLoadFailed(_ description: String) -> String {
         "Failed to load captures: \(description)"
     }
@@ -262,6 +304,10 @@ enum AppText {
 
     static func recordedCaptureSaveFailed(_ description: String) -> String {
         "Failed to save capture: \(description)"
+    }
+
+    static func defaultModelUnavailable(_ modelName: String) -> String {
+        "Your default model \(modelName) is no longer available."
     }
 
     static func activitySteps(_ count: Int) -> String {
@@ -278,6 +324,10 @@ enum AppText {
 
     static func markdownShowMore(_ remainingCount: Int) -> String {
         "Show more (\(remainingCount) blocks)"
+    }
+
+    static func streamingEarlierTextHidden(_ chunkCount: Int) -> String {
+        "Earlier text is retained for the final response (\(chunkCount) chunks)"
     }
 
     static func groupedProjectCount(_ count: Int) -> String {

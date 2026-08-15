@@ -27,7 +27,10 @@ struct ChatView: View {
     @State private var showContextStatus = false
     @State private var showTodoList = false
     @State private var availableSlashActions: [WorkspaceSlashActionItem] = []
+    @State private var selectedSlashAction: WorkspaceSlashActionItem?
     @State private var isLoadingCommands = false
+    @State private var displayedResponseState: ChatResponseState = .idle
+    @State private var isComposerExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,7 +48,7 @@ struct ChatView: View {
                         .foregroundStyle(secondaryTextColor)
                     Spacer()
                     Button(AppText.dismiss) {
-                        chatClient.errorMessage = nil
+                        chatClient.dismissError()
                     }
                     .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
                     .foregroundStyle(primaryTextColor)
@@ -63,6 +66,10 @@ struct ChatView: View {
             chatBackground
                 .ignoresSafeArea()
         }
+        .overlay(alignment: .top) {
+            responseStatusOverlay
+                .padding(.top, 8)
+        }
         .safeAreaInset(edge: .bottom) {
             if chatClient.showsComposer {
                 chatComposerInset
@@ -75,7 +82,7 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ChatHeaderToolbar(
-                projectName: connection.projectName,
+                projectName: chatClient.currentSession?.workspaceDisplayName ?? connection.projectName,
                 branch: connection.branch,
                 connectionState: connection.state,
                 sessionTitle: chatClient.currentSession?.title,
@@ -93,6 +100,7 @@ struct ChatView: View {
         }
         .onAppear {
             updateShakeMonitoring(for: scenePhase)
+            displayedResponseState = chatClient.responseState
         }
         .onDisappear {
             chatEasterEgg.stopShakeMonitoring()
@@ -102,6 +110,8 @@ struct ChatView: View {
             chatClient.setupSSEHandlers()
             await loadCommands(force: true)
             await chatClient.ensureSession()
+            await chatClient.recoverPendingPermission()
+            await chatClient.recoverPendingQuestions()
         }
 
         // Foreground recovery: refresh messages and questions when app becomes active
@@ -112,6 +122,7 @@ struct ChatView: View {
                 chatClient.setupSSEHandlers()
                 Task {
                     await loadCommands(force: true)
+                    await chatClient.refreshCurrentSessionStatus()
                     await chatClient.loadMessages()
                     await chatClient.recoverPendingPermission()
                     await chatClient.recoverPendingQuestions()
@@ -133,10 +144,13 @@ struct ChatView: View {
                 selectedProviderID: chatClient.selectedProviderID,
                 selectedModelID: chatClient.selectedModelID,
                 isLoading: chatClient.isLoadingProviders,
+                defaultModelSelection: chatClient.defaultModelSelection,
                 visualMode: visualMode
             ) { model in
                 chatClient.selectModel(model)
                 showModelPicker = false
+            } onToggleDefault: { model in
+                chatClient.toggleDefaultModel(model)
             }
             .presentationDetents([.medium])
         }
@@ -146,24 +160,6 @@ struct ChatView: View {
                     .presentationDetents([.fraction(0.34), .medium])
                     .presentationDragIndicator(.visible)
             }
-        }
-        .alert(
-            AppText.permissionRequired,
-            isPresented: $chatClient.showPermissionAlert,
-            presenting: chatClient.pendingPermission
-        ) { permission in
-            Button(AppText.approve, role: .none) {
-                Task {
-                    await chatClient.respondToPermission(requestID: permission.id, approve: true)
-                }
-            }
-            Button(AppText.deny, role: .destructive) {
-                Task {
-                    await chatClient.respondToPermission(requestID: permission.id, approve: false)
-                }
-            }
-        } message: { permission in
-            Text(permissionMessage(permission))
         }
         .sheet(isPresented: $chatClient.showQuestionSheet, onDismiss: {
             // Handle swipe-dismiss: reject the question and clear state.
@@ -185,17 +181,19 @@ struct ChatView: View {
             }
         }
         .onChange(of: chatClient.inputText) { _, newValue in
-            guard newValue.hasPrefix("/"),
-                  !newValue.dropFirst().contains(where: { $0.isWhitespace || $0.isNewline }),
-                  availableSlashActions.isEmpty,
-                  !isLoadingCommands
-            else {
-                return
-            }
-
-            Task {
-                await loadCommands(force: true)
-            }
+            handleComposerTextChange(newValue)
+        }
+        .onChange(of: chatClient.responseState) { _, newState in
+            updateDisplayedResponseState(newState)
+        }
+        .onChange(of: isInputFocused) { _, focused in
+            setComposerExpanded(focused)
+        }
+        .onChange(of: chatClient.currentSession?.id) { _, _ in
+            clearSelectedSlashAction()
+        }
+        .onChange(of: connection.selectedProjectDirectory) { _, _ in
+            clearSelectedSlashAction()
         }
     }
 
@@ -223,7 +221,7 @@ struct ChatView: View {
                 gradient: Gradient(
                     colors: [
                         .clear,
-                        RetroChatStyle.screenBottom.opacity(0.7),
+                        RetroChatStyle.screenBottom.opacity(0.7)
                     ],
                 ),
                 startPoint: .top,
@@ -234,7 +232,7 @@ struct ChatView: View {
                 gradient: Gradient(
                     colors: [
                         .clear,
-                        Color.appBackground.opacity(0.7),
+                        Color.appBackground.opacity(0.7)
                     ]
                 ),
                 startPoint: .top,
@@ -249,6 +247,41 @@ struct ChatView: View {
 
     private var secondaryTextColor: Color {
         isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary
+    }
+
+    @ViewBuilder
+    private var responseStatusOverlay: some View {
+        if let label = responseStatusLabel(for: displayedResponseState) {
+            ResponseStatusSiriIndicator(
+                state: displayedResponseState,
+                label: label,
+                icon: responseStatusIcon(for: displayedResponseState),
+                color: responseStatusColor(for: displayedResponseState),
+                isRetroChat: isRetroChat
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .allowsHitTesting(false)
+            .transition(
+                .asymmetric(
+                    insertion: .move(edge: .top)
+                        .combined(with: .opacity)
+                        .combined(with: .scale(scale: 0.92)),
+                    removal: .opacity
+                        .combined(with: .scale(scale: 0.86))
+                )
+            )
+        }
+    }
+
+    private func updateDisplayedResponseState(_ state: ChatResponseState) {
+        let animation: Animation = state == .idle
+            ? .easeInOut(duration: 0.24)
+            : .spring(response: 0.32, dampingFraction: 0.78)
+
+        withAnimation(animation) {
+            displayedResponseState = state
+        }
     }
 
     private func updateShakeMonitoring(for phase: ScenePhase) {
@@ -288,19 +321,26 @@ struct ChatView: View {
 
     private var todoChipLabel: String {
         let completed = chatClient.todos.filter { $0.status == "completed" }.count
-        let total = chatClient.todos.count
-        return "\(completed)/\(total)"
+        let visible = chatClient.todos.count
+        guard chatClient.hiddenTodoCount > 0 else {
+            return "\(completed)/\(visible)"
+        }
+        return "\(completed)/\(visible) +\(chatClient.hiddenTodoCount)"
     }
 
     private var todoChipIcon: String {
-        let allDone = chatClient.todos.allSatisfy { $0.status == "completed" }
+        let allDone = chatClient.hiddenTodoCount == 0
+            && !chatClient.todos.isEmpty
+            && chatClient.todos.allSatisfy { $0.status == "completed" }
         if allDone { return "checkmark.circle.fill" }
         let hasInProgress = chatClient.todos.contains { $0.status == "in_progress" }
         return hasInProgress ? "circle.dashed" : "checklist"
     }
 
     private var todoChipColor: Color {
-        let allDone = chatClient.todos.allSatisfy { $0.status == "completed" }
+        let allDone = chatClient.hiddenTodoCount == 0
+            && !chatClient.todos.isEmpty
+            && chatClient.todos.allSatisfy { $0.status == "completed" }
         if allDone { return isRetroChat ? RetroChatStyle.blueAccent : .green }
         let hasInProgress = chatClient.todos.contains { $0.status == "in_progress" }
         if hasInProgress { return isRetroChat ? RetroChatStyle.magentaAccent : .orange }
@@ -323,6 +363,13 @@ struct ChatView: View {
                         .lineLimit(1)
                 }
                 .padding(.vertical, 4)
+            }
+
+            if chatClient.hiddenTodoCount > 0 {
+                Text("Showing the first \(chatClient.todos.count) of \(chatClient.todos.count + chatClient.hiddenTodoCount) tasks")
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .medium))
+                    .foregroundStyle(secondaryTextColor)
+                    .padding(.top, 4)
             }
         }
         .padding(.vertical, 8)
@@ -355,9 +402,9 @@ struct ChatView: View {
             }
             inputBar
         }
-        .padding(.bottom, isInputFocused ? 12 : 0)
-        .padding(.horizontal, isInputFocused ? 0 : 16)
-        .animation(.easeOut(duration: 0.4), value: isInputFocused)
+        .padding(.horizontal, isComposerExpanded ? 0 : 16)
+        .padding(.bottom, isComposerExpanded ? 12 : 0)
+        .animation(.easeOut(duration: 0.4), value: isComposerExpanded)
     }
 
     // MARK: - Model Selector
@@ -447,7 +494,7 @@ struct ChatView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Image(systemName: "brain")
                     .font(.system(size: 11, weight: .medium))
                 Text(chatClient.selectedVariantDisplayName)
@@ -475,8 +522,15 @@ struct ChatView: View {
 
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .center, spacing: 8) {
-                    TextField(AppText.messagePlaceholder, text: $chatClient.inputText, axis: .vertical)
+                    if let selectedSlashAction {
+                        selectedSlashActionChip(selectedSlashAction)
+                    }
+
+                    TextField(composerPlaceholder, text: $chatClient.inputText, axis: .vertical)
                         .focused($isInputFocused)
+                        .onTapGesture {
+                            setComposerExpanded(true)
+                        }
                         .lineLimit(1 ... 5)
                         .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                         .foregroundStyle(primaryTextColor)
@@ -496,36 +550,203 @@ struct ChatView: View {
     }
 
     private var composerActionButton: some View {
-        Group {
-            if chatClient.isLoading {
-                Button {
-                    chatClient.abort()
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(isRetroChat ? RetroChatStyle.danger : Color.red)
-                            .frame(width: 32, height: 32)
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(isRetroChat ? RetroChatStyle.paper : .white)
-                    }
-                }
-            } else {
-                Button {
-                    isInputFocused = false
-                    chatClient.send()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: isRetroChat ? 28 : 30, weight: isRetroChat ? .bold : .regular))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(
-                            isRetroChat ? RetroChatStyle.paper : Color.appOnAccent,
-                            isRetroChat ? RetroChatStyle.ink : Color.appAccent
-                        )
-                        .contentShape(Circle())
-                }
-                .disabled(!canSend)
+        Button {
+            performComposerAction()
+        } label: {
+            composerActionButtonLabel
+                .animation(.spring(duration: 0.25), value: chatClient.isLoading)
+        }
+        .disabled(isComposerActionDisabled)
+        .accessibilityLabel(composerActionAccessibilityLabel)
+    }
+
+    private var composerPlaceholder: String {
+        selectedSlashAction == nil ? AppText.messagePlaceholder : "Add arguments..."
+    }
+
+    private var selectedSlashActionTint: Color {
+        isRetroChat ? RetroChatStyle.magentaAccent : .purple
+    }
+
+    private func selectedSlashActionChip(_ action: WorkspaceSlashActionItem) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol(for: action))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(selectedSlashActionTint)
+
+            Text(action.prompt)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(selectedSlashActionTint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Button {
+                removeSelectedSlashAction()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(selectedSlashActionTint.opacity(0.75))
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove slash command")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            selectedSlashActionTint.opacity(isRetroChat ? 0.18 : 0.12),
+            in: Capsule()
+        )
+        .overlay {
+            Capsule()
+                .stroke(selectedSlashActionTint.opacity(isRetroChat ? 0.75 : 0.32), lineWidth: isRetroChat ? 1.5 : 1)
+        }
+        .frame(maxWidth: 180, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var composerActionButtonLabel: some View {
+        if chatClient.isLoading {
+            ZStack {
+                Circle()
+                    .fill(isRetroChat ? RetroChatStyle.danger : Color.red)
+
+                if chatClient.isStoppingResponse {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(isRetroChat ? RetroChatStyle.paper : .white)
+                } else {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.paper : .white)
+                }
+            }
+            .frame(width: 32, height: 32)
+            .contentShape(Circle())
+            .transition(.scale(scale: 0.7).combined(with: .opacity))
+        } else {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: isRetroChat ? 28 : 30, weight: isRetroChat ? .bold : .regular))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(
+                    isRetroChat ? RetroChatStyle.paper : Color.appOnAccent,
+                    isRetroChat ? RetroChatStyle.ink : Color.appAccent
+                )
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
+                .transition(.scale(scale: 0.7).combined(with: .opacity))
+        }
+    }
+
+    private var isComposerActionDisabled: Bool {
+        chatClient.isLoading ? chatClient.isStoppingResponse : !canSend
+    }
+
+    private var composerActionAccessibilityLabel: String {
+        if chatClient.isStoppingResponse {
+            return AppText.responseStopping
+        }
+
+        return chatClient.isLoading ? "Stop" : "Send"
+    }
+
+    private func performComposerAction() {
+        collapseComposerFocus()
+
+        if chatClient.isLoading {
+            chatClient.abort()
+        } else {
+            sendComposerInput()
+        }
+    }
+
+    private func sendComposerInput() {
+        guard let selectedSlashAction else {
+            chatClient.send()
+            return
+        }
+
+        let composedText = composedSlashActionText(for: selectedSlashAction)
+        guard !composedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        chatClient.inputText = composedText
+        self.selectedSlashAction = nil
+        chatClient.send()
+    }
+
+    private func composedSlashActionText(for action: WorkspaceSlashActionItem) -> String {
+        let prompt = action.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = chatClient.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !arguments.isEmpty else { return prompt }
+        guard !prompt.isEmpty else { return arguments }
+        return "\(prompt) \(arguments)"
+    }
+
+    private func removeSelectedSlashAction() {
+        clearSelectedSlashAction()
+        isInputFocused = true
+    }
+
+    private func clearSelectedSlashAction() {
+        selectedSlashAction = nil
+    }
+
+    private func collapseComposerFocus() {
+        withAnimation(.easeOut(duration: 0.4)) {
+            isComposerExpanded = false
+            isInputFocused = false
+        }
+    }
+
+    private func setComposerExpanded(_ isExpanded: Bool) {
+        withAnimation(.easeOut(duration: 0.4)) {
+            isComposerExpanded = isExpanded
+        }
+    }
+
+    private func responseStatusLabel(for state: ChatResponseState) -> String? {
+        switch state {
+        case .idle:
+            nil
+        case .generating:
+            AppText.responseGenerating
+        case .stopping:
+            AppText.responseStopping
+        case .stopped:
+            AppText.responseStopped
+        case .failed:
+            AppText.responseFailed
+        }
+    }
+
+    private func responseStatusIcon(for state: ChatResponseState) -> String {
+        switch state {
+        case .idle:
+            "circle"
+        case .generating:
+            "sparkles"
+        case .stopping:
+            "stopwatch"
+        case .stopped:
+            "stop.circle"
+        case .failed:
+            "exclamationmark.triangle"
+        }
+    }
+
+    private func responseStatusColor(for state: ChatResponseState) -> Color {
+        switch state {
+        case .idle:
+            secondaryTextColor
+        case .generating:
+            isRetroChat ? RetroChatStyle.blueAccent : Color.appAccent
+        case .stopping:
+            isRetroChat ? RetroChatStyle.danger : Color.orange
+        case .stopped:
+            secondaryTextColor
+        case .failed:
+            isRetroChat ? RetroChatStyle.danger : Color.red
         }
     }
 
@@ -616,14 +837,23 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !chatClient.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !composerSendText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !chatClient.isLoading &&
             chatClient.currentSession != nil &&
             chatClient.pendingQuestion == nil &&
             chatClient.canCompose
     }
 
+    private var composerSendText: String {
+        guard let selectedSlashAction else {
+            return chatClient.inputText
+        }
+
+        return composedSlashActionText(for: selectedSlashAction)
+    }
+
     private var slashQuery: String? {
+        guard selectedSlashAction == nil else { return nil }
         let text = chatClient.inputText
         guard text.hasPrefix("/") else { return nil }
 
@@ -648,7 +878,7 @@ struct ChatView: View {
     }
 
     private var showsCommandPicker: Bool {
-        slashQuery != nil && chatClient.currentSession != nil
+        selectedSlashAction == nil && slashQuery != nil && chatClient.currentSession != nil
     }
 
     @MainActor
@@ -667,8 +897,34 @@ struct ChatView: View {
     }
 
     private func applySlashAction(_ action: WorkspaceSlashActionItem) {
-        chatClient.inputText = action.prompt + " "
+        selectedSlashAction = action
+        chatClient.inputText = ""
         isInputFocused = true
+    }
+
+    private func handleComposerTextChange(_ newValue: String) {
+        if shouldClearSelectedSlashAction(forComposerText: newValue) {
+            clearSelectedSlashAction()
+        }
+
+        guard selectedSlashAction == nil,
+              newValue.hasPrefix("/"),
+              !newValue.dropFirst().contains(where: { $0.isWhitespace || $0.isNewline }),
+              availableSlashActions.isEmpty,
+              !isLoadingCommands
+        else {
+            return
+        }
+
+        Task {
+            await loadCommands(force: true)
+        }
+    }
+
+    private func shouldClearSelectedSlashAction(forComposerText newValue: String) -> Bool {
+        selectedSlashAction != nil &&
+            !isInputFocused &&
+            !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func commandDisplayTitle(_ title: String) -> String {
@@ -694,21 +950,644 @@ struct ChatView: View {
         }
     }
 
-    private func permissionMessage(_ permission: OCPermissionRequest) -> String {
-        var parts: [String] = []
-        if let title = permission.title, !title.isEmpty {
-            parts.append(title)
+}
+
+struct PermissionRequestSheet: View {
+    static let defaultPresentationDetent: PresentationDetent = .height(390)
+
+    let permission: OCPermissionRequest
+    @Binding var selectedDetent: PresentationDetent
+    private let initiallyConfirmsAllowAll: Bool
+    let onRespond: (OCPermissionReply) async -> Bool
+
+    @State private var pendingReply: OCPermissionReply?
+    @State private var confirmsAllowAll: Bool
+
+    init(
+        permission: OCPermissionRequest,
+        selectedDetent: Binding<PresentationDetent>,
+        initiallyConfirmsAllowAll: Bool = false,
+        onRespond: @escaping (OCPermissionReply) async -> Bool
+    ) {
+        let safePermission = Self.safeDisplayPermission(permission)
+        let canOfferAllowAll = !safePermission.displayScopeWasTruncated
+
+        self.permission = safePermission
+        self._selectedDetent = selectedDetent
+        self.initiallyConfirmsAllowAll = initiallyConfirmsAllowAll && canOfferAllowAll
+        self.onRespond = onRespond
+        self._confirmsAllowAll = State(initialValue: initiallyConfirmsAllowAll && canOfferAllowAll)
+    }
+
+    static func presentationDetents(for permission: OCPermissionRequest) -> Set<PresentationDetent> {
+        let safePermission = safeDisplayPermission(permission)
+        var detents: Set<PresentationDetent> = [
+            defaultPresentationDetent,
+            .medium
+        ]
+
+        if !safePermission.displayScopeWasTruncated {
+            detents.insert(.height(allowAllPresentationHeight(for: safePermission)))
         }
-        if let tool = permission.toolDisplayName, !tool.isEmpty {
-            parts.append("Tool: \(tool)")
+
+        return detents
+    }
+
+    static func offersAlwaysApproval(for permission: OCPermissionRequest) -> Bool {
+        !safeDisplayPermission(permission).displayScopeWasTruncated
+    }
+
+    private static func safeDisplayPermission(_ permission: OCPermissionRequest) -> OCPermissionRequest {
+        PermissionRequestDisplaySafety.sanitize(permission)
+            ?? OCPermissionRequest(
+                id: "invalid-permission",
+                displayScopeWasTruncated: true
+            )
+    }
+
+    private static func allowAllPresentationHeight(for permission: OCPermissionRequest) -> CGFloat {
+        let visiblePatternCount = min(allowAllPatterns(for: permission).count, 4)
+        let usesWildcardScope = allowAllPatterns(for: permission).contains("*")
+        let patternListHeight: CGFloat = visiblePatternCount == 0
+            ? 0
+            : CGFloat(visiblePatternCount) * 41 + 24
+
+        let baseHeight: CGFloat = usesWildcardScope ? 492 : 360
+        return min(max(baseHeight + patternListHeight, usesWildcardScope ? 540 : 430), 620)
+    }
+
+    private static func allowAllDetent(for permission: OCPermissionRequest) -> PresentationDetent {
+        .height(allowAllPresentationHeight(for: permission))
+    }
+
+    private static func allowAllPatterns(for permission: OCPermissionRequest) -> [String] {
+        let candidates = [
+            permission.save,
+            permission.always,
+            permission.resources,
+            permission.patterns
+        ]
+
+        return candidates
+            .first(where: { !$0.cleanedForDisplay.isEmpty })?
+            .cleanedForDisplay ?? []
+    }
+
+    private var isResponding: Bool {
+        pendingReply != nil
+    }
+
+    private var title: String {
+        permission.title?.nilIfBlank ?? AppText.permissionRequired
+    }
+
+    private var detail: String {
+        permission.description?.nilIfBlank ?? AppText.permissionFallback
+    }
+
+    private var toolName: String? {
+        guard let tool = permission.toolDisplayName?.nilIfBlank, tool != title else { return nil }
+        return tool
+    }
+
+    private var resourceSummary: String? {
+        compactList(permission.resources, fallback: permission.patterns)
+    }
+
+    private var allowAllPatterns: [String] {
+        Self.allowAllPatterns(for: permission)
+    }
+
+    private var hasWildcardAllowAllScope: Bool {
+        allowAllPatterns.contains("*")
+    }
+
+    private var canOfferAllowAll: Bool {
+        !permission.displayScopeWasTruncated
+    }
+
+    private var rawAllowAllPermissionKind: String? {
+        toolName ?? permission.permission?.nilIfBlank ?? permission.action?.nilIfBlank
+    }
+
+    private var allowAllPermissionKind: String? {
+        rawAllowAllPermissionKind.map { rawKind in
+            let keepsOriginalCasing = rawKind.contains(" ") || rawKind.rangeOfCharacter(from: .uppercaseLetters) != nil
+            return keepsOriginalCasing ? rawKind : rawKind.capitalized
         }
-        if let desc = permission.description, !desc.isEmpty {
-            parts.append(desc)
+    }
+
+    private var allowAllScopeTitle: String {
+        if hasWildcardAllowAllScope {
+            if let allowAllPermissionKind {
+                return "Every future \(allowAllPermissionKind) permission prompt"
+            }
+            return "Every future permission prompt of this type"
         }
-        if parts.isEmpty {
-            return AppText.permissionFallback
+
+        if allowAllPatterns.isEmpty {
+            return "Future matching permission requests"
         }
-        return parts.joined(separator: "\n")
+
+        return "Only requests matching these rules"
+    }
+
+    private var allowAllScopeDetail: String {
+        if hasWildcardAllowAllScope {
+            if let allowAllPermissionKind {
+                return "OpenCode sent a wildcard rule. Future \(allowAllPermissionKind) permission prompts can be approved automatically until OpenCode is restarted."
+            }
+            return "OpenCode sent a wildcard rule. Future prompts of this type can be approved automatically until OpenCode is restarted."
+        }
+
+        return "OpenLens will auto-approve future permission prompts only when they match this scope, until OpenCode is restarted."
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SurfaceCard(padding: 0, cornerRadius: 24) {
+                VStack(alignment: .leading, spacing: 18) {
+                    if confirmsAllowAll && canOfferAllowAll {
+                        allowAllConfirmation
+                    } else {
+                        permissionRequest
+                    }
+                }
+                .padding(20)
+                .animation(.snappy(duration: 0.2), value: confirmsAllowAll)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 8)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.appBackground)
+        .onAppear {
+            if initiallyConfirmsAllowAll && canOfferAllowAll {
+                selectedDetent = Self.allowAllDetent(for: permission)
+            }
+        }
+    }
+
+    private var permissionRequest: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+
+            if detail != title {
+                Text(detail)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.appSecondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            metadata
+            actions
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            SurfaceIconTile(
+                icon: "lock.shield",
+                fill: Color.appWarning.opacity(0.14),
+                foreground: Color.appWarning
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Permission")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.appWarning)
+                    .textCase(.uppercase)
+
+                Text(title)
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.appPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var allowAllConfirmation: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 12) {
+                SurfaceIconTile(
+                    icon: "checkmark.shield",
+                    fill: Color.appWarning.opacity(0.14),
+                    foreground: Color.appWarning
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Always Allow")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.appWarning)
+                        .textCase(.uppercase)
+
+                    Text(AppText.allowAll)
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                }
+            }
+
+            Text(allowAllExplanation)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.appSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            allowAllScopeCard
+
+            HStack(spacing: 10) {
+                permissionControlButton(
+                    title: AppText.cancel,
+                    systemImage: "chevron.left",
+                    fill: Color.appTertiary,
+                    foreground: Color.appPrimary
+                ) {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        confirmsAllowAll = false
+                        selectedDetent = Self.defaultPresentationDetent
+                    }
+                }
+
+                permissionReplyButton(
+                    title: AppText.allowAll,
+                    systemImage: "checkmark.shield",
+                    fill: Color.appWarning,
+                    foreground: Color.appBackground,
+                    reply: .always
+                )
+            }
+        }
+    }
+
+    private var allowAllExplanation: String {
+        if hasWildcardAllowAllScope {
+            return "Use this only if you trust this agent to continue with this kind of action without asking again."
+        }
+        return "This keeps the current run moving without approving unrelated future actions."
+    }
+
+    private var allowAllScopeCard: some View {
+        VStack(spacing: 0) {
+            allowAllScopeRow(
+                icon: hasWildcardAllowAllScope ? "exclamationmark.triangle" : "scope",
+                title: allowAllScopeTitle,
+                detail: allowAllScopeDetail,
+                emphasis: hasWildcardAllowAllScope
+            )
+
+            if hasWildcardAllowAllScope {
+                SurfaceDivider(leadingPadding: 28)
+                allowAllScopeRow(
+                    icon: "asterisk",
+                    title: "Wildcard rule from OpenCode",
+                    detail: "The raw rule is *, meaning all future prompts of this same type.",
+                    emphasis: false
+                )
+            } else {
+                ForEach(Array(allowAllPatterns.prefix(4).enumerated()), id: \.offset) { index, pattern in
+                    SurfaceDivider(leadingPadding: 28)
+                    allowAllScopeRow(
+                        icon: "scope",
+                        title: pattern,
+                        detail: nil,
+                        emphasis: false
+                    )
+
+                    if index == 3, allowAllPatterns.count > 4 {
+                        SurfaceDivider(leadingPadding: 28)
+                        allowAllScopeRow(
+                            icon: "ellipsis",
+                            title: "\(allowAllPatterns.count - 4) more matching rules",
+                            detail: nil,
+                            emphasis: false
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .background(Color.appTertiary.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func allowAllScopeRow(icon: String, title: String, detail: String?, emphasis: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(emphasis ? Color.appWarning : Color.appSecondary)
+                .frame(width: 18)
+                .padding(.top, detail == nil ? 0 : 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.appPrimary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.appSecondary)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var metadata: some View {
+        let rows = metadataRows
+
+        if !rows.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    HStack(spacing: 10) {
+                        Image(systemName: row.icon)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.appSecondary)
+                            .frame(width: 18)
+
+                        Text(row.value)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.appPrimary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.vertical, 10)
+
+                    if index < rows.count - 1 {
+                        SurfaceDivider(leadingPadding: 28)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(Color.appTertiary.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    private var metadataRows: [(icon: String, value: String)] {
+        var rows: [(icon: String, value: String)] = []
+
+        if let toolName {
+            rows.append((icon: "wrench.and.screwdriver", value: toolName))
+        }
+
+        if let resourceSummary, resourceSummary != detail {
+            rows.append((icon: "scope", value: resourceSummary))
+        }
+
+        return rows
+    }
+
+    private var actions: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                permissionReplyButton(
+                    title: AppText.deny,
+                    systemImage: "xmark",
+                    fill: Color.appTertiary,
+                    foreground: Color.appPrimary,
+                    reply: .reject
+                )
+
+                permissionReplyButton(
+                    title: AppText.allowOnce,
+                    systemImage: "checkmark",
+                    fill: Color.appAccent,
+                    foreground: Color.appOnAccent,
+                    reply: .once
+                )
+            }
+
+            if canOfferAllowAll {
+                permissionControlButton(
+                    title: AppText.allowAll,
+                    systemImage: "checkmark.shield",
+                    fill: Color.appWarning.opacity(0.14),
+                    foreground: Color.appWarning
+                ) {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        confirmsAllowAll = true
+                        selectedDetent = Self.allowAllDetent(for: permission)
+                    }
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func permissionReplyButton(
+        title: String,
+        systemImage: String,
+        fill: Color,
+        foreground: Color,
+        reply: OCPermissionReply
+    ) -> some View {
+        permissionControlButton(
+            title: title,
+            systemImage: systemImage,
+            fill: fill,
+            foreground: foreground,
+            isLoading: pendingReply == reply
+        ) {
+            Task {
+                pendingReply = reply
+                let didMovePastCurrentRequest = await onRespond(reply)
+                if !didMovePastCurrentRequest {
+                    pendingReply = nil
+                }
+            }
+        }
+    }
+
+    private func permissionControlButton(
+        title: String,
+        systemImage: String,
+        fill: Color,
+        foreground: Color,
+        isLoading: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            action()
+        } label: {
+            HStack(spacing: 7) {
+                if isLoading {
+                    ProgressView()
+                        .tint(foreground)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .bold))
+                }
+
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(foreground)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(fill, in: Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isResponding)
+    }
+
+    private func compactList(_ values: [String], fallback: [String]) -> String? {
+        let visibleValues = (values.isEmpty ? fallback : values)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !visibleValues.isEmpty else { return nil }
+
+        let visiblePrefix = visibleValues.prefix(3).joined(separator: ", ")
+        let hiddenCount = visibleValues.count - 3
+
+        guard hiddenCount > 0 else { return visiblePrefix }
+        return "\(visiblePrefix) +\(hiddenCount)"
+    }
+}
+
+private extension Array where Element == String {
+    var cleanedForDisplay: [String] {
+        map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+}
+
+private struct ResponseStatusSiriIndicator: View {
+    let state: ChatResponseState
+    let label: String
+    let icon: String
+    let color: Color
+    let isRetroChat: Bool
+
+    private var isAnimatedState: Bool {
+        state == .generating || state == .stopping
+    }
+
+    private var showsTextLabel: Bool {
+        state == .stopped || state == .failed
+    }
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            ZStack {
+                capsuleBackground
+
+                if isAnimatedState {
+                    animatedBars(time: timeline.date.timeIntervalSinceReferenceDate)
+                } else if showsTextLabel {
+                    Text(label)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(color)
+                        .contentTransition(.opacity)
+                } else {
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(color)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+            .frame(width: showsTextLabel ? 74 : 62, height: 34)
+            .clipShape(Capsule(style: .continuous))
+            .shadow(color: .black.opacity(isRetroChat ? 0 : 0.1), radius: 12, y: 5)
+            .animation(.easeInOut(duration: 0.18), value: state)
+        }
+    }
+
+    @ViewBuilder
+    private var capsuleBackground: some View {
+        let palette = indicatorPalette
+
+        ZStack {
+            Capsule(style: .continuous)
+                .fill(isRetroChat ? RetroChatStyle.paperWarm : Color.appSurface.opacity(0.82))
+
+            if !isRetroChat {
+                LinearGradient(
+                    colors: palette.map { $0.opacity(0.2) },
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .blur(radius: 6)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+            }
+
+            Capsule(style: .continuous)
+                .strokeBorder(
+                    isRetroChat ? RetroChatStyle.ink : Color.white.opacity(0.46),
+                    lineWidth: isRetroChat ? 2 : 0.7
+                )
+        }
+    }
+
+    private func animatedBars(time: TimeInterval) -> some View {
+        HStack(spacing: 4) {
+            ForEach(0 ..< 5, id: \.self) { index in
+                Capsule(style: .continuous)
+                    .fill(barGradient(index: index))
+                    .frame(width: 4, height: barHeight(index: index, time: time))
+                    .shadow(color: indicatorPalette[index % indicatorPalette.count].opacity(isRetroChat ? 0 : 0.45), radius: 3)
+            }
+        }
+        .frame(height: 24, alignment: .center)
+    }
+
+    private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
+        let speed = state == .stopping ? 6.2 : 4.7
+        let phase = Double(index) * 0.74
+        let wave = (sin(time * speed + phase) + 1) / 2
+        let accent = (sin(time * (speed * 0.58) - phase) + 1) / 2
+        return CGFloat(7 + (wave * 10) + (accent * 4))
+    }
+
+    private func barGradient(index: Int) -> LinearGradient {
+        let palette = indicatorPalette
+        return LinearGradient(
+            colors: [
+                palette[index % palette.count],
+                palette[(index + 1) % palette.count]
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var indicatorPalette: [Color] {
+        if isRetroChat {
+            return [
+                RetroChatStyle.blueAccent,
+                RetroChatStyle.magentaAccent,
+                RetroChatStyle.danger,
+                RetroChatStyle.blueAccent
+            ]
+        }
+
+        switch state {
+        case .stopping:
+            return [
+                Color(red: 1.0, green: 0.54, blue: 0.16),
+                Color(red: 1.0, green: 0.24, blue: 0.36),
+                Color(red: 0.94, green: 0.24, blue: 0.78),
+                Color(red: 1.0, green: 0.72, blue: 0.2)
+            ]
+        case .failed:
+            return [.red, .orange]
+        case .stopped:
+            return [Color.appSecondary, Color.appPrimary]
+        case .idle, .generating:
+            return [
+                Color(red: 0.16, green: 0.73, blue: 1.0),
+                Color(red: 0.42, green: 0.38, blue: 1.0),
+                Color(red: 0.96, green: 0.24, blue: 0.78),
+                Color(red: 0.2, green: 0.86, blue: 0.56)
+            ]
+        }
     }
 }
 
@@ -987,116 +1866,174 @@ private struct ChatMessagesListView: View {
     @Bindable var chatClient: ChatClient
 
     @Environment(\.chatEasterEgg) private var chatEasterEgg
+    @AppStorage("showThinking") private var showThinking: Bool = true
 
     @State private var lastAutoScrollDate: Date = .distantPast
-    @State private var bottomMarkerMinY: CGFloat = 0
+    @State private var lastHandledContentVersion: UInt?
     @State private var followLatest = true
+    @State private var scrollInteraction = ChatScrollInteraction.idle
+    @State private var scrollState = ChatScrollState.initial
+    @State private var pendingForcedScroll = false
+    @State private var paginationRestoreAnchorID: String?
+    @State private var timelineItems: [ChatTimelineItem] = []
 
     private let bottomAnchorID = "bottom"
-    private let scrollCoordinateSpace = "chat-scroll"
     private let streamingScrollInterval: TimeInterval = 0.18
-    private let followLatestThreshold: CGFloat = 96
+    private let settledBottomTolerance: CGFloat = 8
     private let scrollToBottomVisibilityThreshold: CGFloat = 56
 
     var body: some View {
-        GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollView {
-                        Color.clear.frame(height: isRetroChat ? 150 : 72)
+        ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    Color.clear.frame(height: isRetroChat ? 150 : 72)
 
-                        LazyVStack(alignment: .leading, spacing: isRetroChat ? 13 : 16) {
-                            if chatClient.hasEarlierMessages {
-                                Button {
-                                    chatClient.loadEarlierMessages()
-                                } label: {
-                                    Text("Load earlier messages")
-                                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium))
-                                        .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 8)
-                                        .ifRetroPanel(isRetroChat)
-                                }
-                            }
-
-                            ForEach(chatClient.displayedMessages) { message in
-                                MessageBubbleView(message: message)
+                    LazyVStack(alignment: .leading, spacing: isRetroChat ? 13 : 16) {
+                        if chatClient.hasEarlierMessages {
+                            Button {
+                                loadEarlierMessages(using: proxy)
+                            } label: {
+                                Text("Load earlier messages")
+                                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14, weight: .medium))
+                                    .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .ifRetroPanel(isRetroChat)
                             }
                         }
-                        .padding(.horizontal, isRetroChat ? 12 : 16)
 
-                        Color.clear
-                            .frame(height: 17)
-                            .background {
-                                GeometryReader { proxy in
-                                    Color.clear.preference(
-                                        key: ChatBottomMarkerMinYPreferenceKey.self,
-                                        value: proxy.frame(in: .named(scrollCoordinateSpace)).minY
-                                    )
-                                }
-                            }
-                            .id(bottomAnchorID)
-                            .padding(.horizontal, 16)
+                        ForEach(timelineItems) { item in
+                            timelineRow(item)
+                        }
                     }
-                    .coordinateSpace(name: scrollCoordinateSpace)
-                    .onPreferenceChange(ChatBottomMarkerMinYPreferenceKey.self) { minY in
-                        bottomMarkerMinY = minY
-                        followLatest = ChatScrollPolicy.isNearBottom(
-                            bottomMarkerMinY: minY,
-                            viewportHeight: geometry.size.height,
-                            threshold: followLatestThreshold
-                        )
-                    }
-                    .onChange(of: chatClient.contentVersion) {
-                        let now = Date()
-                        guard ChatScrollPolicy.shouldAutoFollow(
-                            isLoading: chatClient.isLoading,
-                            followLatest: followLatest,
-                            now: now,
-                            lastAutoScrollDate: lastAutoScrollDate,
-                            minimumInterval: streamingScrollInterval
-                        ) else { return }
+                    .padding(.horizontal, isRetroChat ? 12 : 16)
 
-                        scrollToBottom(using: proxy, animated: false, now: now)
-                    }
-                    .onChange(of: chatClient.scrollAnchor) {
+                    Color.clear
+                        .frame(height: 17)
+                        .id(bottomAnchorID)
+                        .padding(.horizontal, 16)
+
+                    ChatStreamingAutoFollowObserver(
+                        chatClient: chatClient,
+                        proxy: proxy,
+                        bottomAnchorID: bottomAnchorID,
+                        minimumInterval: streamingScrollInterval,
+                        settledBottomTolerance: settledBottomTolerance,
+                        followLatest: $followLatest,
+                        scrollInteraction: $scrollInteraction,
+                        scrollState: $scrollState,
+                        lastHandledContentVersion: $lastHandledContentVersion,
+                        lastAutoScrollDate: $lastAutoScrollDate
+                    )
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+                }
+                .onScrollGeometryChange(for: ChatScrollState.self) { geometry in
+                    ChatScrollPolicy.state(
+                        contentHeight: geometry.contentSize.height,
+                        containerHeight: geometry.containerSize.height,
+                        contentOffsetY: geometry.contentOffset.y,
+                        topInset: geometry.contentInsets.top,
+                        bottomInset: geometry.contentInsets.bottom,
+                        settledBottomTolerance: settledBottomTolerance,
+                        visibilityThreshold: scrollToBottomVisibilityThreshold
+                    )
+                } action: { _, state in
+                    scrollState = state
+                }
+                .onScrollPhaseChange { _, newPhase, context in
+                    let state = ChatScrollPolicy.state(
+                        contentHeight: context.geometry.contentSize.height,
+                        containerHeight: context.geometry.containerSize.height,
+                        contentOffsetY: context.geometry.contentOffset.y,
+                        topInset: context.geometry.contentInsets.top,
+                        bottomInset: context.geometry.contentInsets.bottom,
+                        settledBottomTolerance: settledBottomTolerance,
+                        visibilityThreshold: scrollToBottomVisibilityThreshold
+                    )
+                    scrollState = state
+                    handleScrollPhaseChange(
+                        newPhase,
+                        state: state,
+                        using: proxy
+                    )
+                }
+                .onChange(of: chatClient.scrollAnchor) {
+                    requestForcedScrollToBottom(using: proxy)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .onTapGesture {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+
+                if showsScrollToBottomButton {
+                    Button {
+                        guard scrollInteraction.allowsProgrammaticScroll else { return }
+                        pendingForcedScroll = false
+                        paginationRestoreAnchorID = nil
                         scrollToBottom(
                             using: proxy,
-                            animated: false,
+                            animated: ChatScrollPolicy.shouldAnimateManualScroll(isLoading: chatClient.isLoading),
                             now: Date(),
                             forceFollowLatest: true
                         )
+                    } label: {
+                        scrollToBottomLabel
                     }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onTapGesture {
-                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-
-                    if showsScrollToBottomButton(in: geometry.size.height) {
-                        Button {
-                            scrollToBottom(
-                                using: proxy,
-                                animated: true,
-                                now: Date(),
-                                forceFollowLatest: true
-                            )
-                        } label: {
-                            scrollToBottomLabel
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.trailing, 20)
-                        .padding(.bottom, 16)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                        .accessibilityLabel("Scroll to latest message")
-                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 16)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .accessibilityLabel("Scroll to latest message")
                 }
-                .animation(.easeOut(duration: 0.18), value: showsScrollToBottomButton(in: geometry.size.height))
             }
+            .animation(.easeOut(duration: 0.18), value: showsScrollToBottomButton)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear(perform: rebuildTimeline)
+        .onChange(of: chatClient.timelineVersion) { _, _ in
+            rebuildTimeline()
+        }
+        .onChange(of: showThinking) { _, _ in
+            rebuildTimeline()
         }
     }
 
     private var isRetroChat: Bool {
         chatEasterEgg.visualMode.isRetro
+    }
+
+    private func rebuildTimeline() {
+        timelineItems = ChatTimeline.items(
+            from: chatClient.displayedMessages,
+            showsThinking: showThinking
+        )
+#if DEBUG
+        print(
+            "CHAT_STRESS_TIMELINE_REBUILD displayed=\(chatClient.displayedMessages.count) "
+                + "items=\(timelineItems.count) version=\(chatClient.timelineVersion)"
+        )
+#endif
+    }
+
+    @ViewBuilder
+    private func timelineRow(_ item: ChatTimelineItem) -> some View {
+        switch item.content {
+        case .message(let message):
+            MessageBubbleView(message: message)
+        case .assistantSegment(let message, let segment):
+            AssistantSegmentTimelineRow(
+                message: message,
+                segmentID: segment.id,
+                animatesSubagentStatus: item.animatesSubagentStatus
+            )
+        case .streamingAssistantText(let message, let projection):
+            MessageBubbleView(
+                message: message,
+                assistantSegments: [],
+                streamingText: projection
+            )
+        }
     }
 
     @ViewBuilder
@@ -1133,7 +2070,7 @@ private struct ChatMessagesListView: View {
         ChatStreamInstrumentation.recordScrollToBottom()
 
         if animated {
-            withAnimation(.easeOut(duration: 0.2)) {
+            withAnimation(.smooth(duration: streamingScrollInterval, extraBounce: 0)) {
                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
             }
         } else {
@@ -1141,48 +2078,346 @@ private struct ChatMessagesListView: View {
         }
     }
 
-    private func showsScrollToBottomButton(in viewportHeight: CGFloat) -> Bool {
-        guard !chatClient.displayedMessages.isEmpty else { return false }
+    private func requestForcedScrollToBottom(using proxy: ScrollViewProxy) {
+        guard followLatest else {
+            pendingForcedScroll = false
+            return
+        }
+
+        guard ChatScrollPolicy.shouldPerformProgrammaticScroll(
+            interaction: scrollInteraction
+        ) else {
+            pendingForcedScroll = true
+            return
+        }
+
+        pendingForcedScroll = false
+        paginationRestoreAnchorID = nil
+        scrollToBottom(
+            using: proxy,
+            animated: false,
+            now: Date(),
+            forceFollowLatest: true
+        )
+    }
+
+    private func handleScrollPhaseChange(
+        _ phase: ScrollPhase,
+        state: ChatScrollState,
+        using proxy: ScrollViewProxy
+    ) {
+        let interaction = ChatScrollPolicy.interaction(for: phase)
+        scrollInteraction = interaction
+        followLatest = ChatScrollPolicy.updatedFollowLatest(
+            currentValue: followLatest,
+            interaction: interaction,
+            isAtBottom: state.isAtBottom
+        )
+
+        if interaction.isUserControlled {
+            // User intent wins immediately, before the drag has moved far
+            // enough for geometry thresholds to change.
+            return
+        }
+
+        guard interaction == .idle else { return }
+
+        if pendingForcedScroll {
+            requestForcedScrollToBottom(using: proxy)
+            return
+        }
+
+        if let anchorID = paginationRestoreAnchorID {
+            restorePositionAfterLoadingEarlierMessages(
+                anchorID: anchorID,
+                using: proxy
+            )
+        }
+    }
+
+    private func loadEarlierMessages(using proxy: ScrollViewProxy) {
+        guard ChatScrollPolicy.shouldLoadEarlierMessages(
+            hasEarlierMessages: chatClient.hasEarlierMessages,
+            interaction: scrollInteraction,
+            hasPendingRestoration: paginationRestoreAnchorID != nil
+        ), let anchorID = timelineItems.first?.id else { return }
+
+        paginationRestoreAnchorID = anchorID
+        chatClient.loadEarlierMessages()
+        restorePositionAfterLoadingEarlierMessages(
+            anchorID: anchorID,
+            using: proxy
+        )
+    }
+
+    private func restorePositionAfterLoadingEarlierMessages(
+        anchorID: String,
+        using proxy: ScrollViewProxy
+    ) {
+        Task { @MainActor in
+            // Give the rebuilt LazyVStack one layout pass before restoring the
+            // first item that was visible before older messages were prepended.
+            try? await Task.sleep(for: .milliseconds(32))
+            guard paginationRestoreAnchorID == anchorID,
+                  scrollInteraction.allowsProgrammaticScroll else { return }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+            paginationRestoreAnchorID = nil
+        }
+    }
+
+    private var showsScrollToBottomButton: Bool {
+        guard !timelineItems.isEmpty else { return false }
         return ChatScrollPolicy.shouldShowScrollToLatest(
             followLatest: followLatest,
-            bottomMarkerMinY: bottomMarkerMinY,
-            viewportHeight: viewportHeight,
-            visibilityThreshold: scrollToBottomVisibilityThreshold
+            isPastVisibilityThreshold: scrollState.isPastVisibilityThreshold
         )
     }
 }
 
+/// The flattened timeline keeps a stable segment identity, while the row reads
+/// the current value directly from its observable message. A tool status change
+/// therefore invalidates only this row instead of rebuilding the entire chat
+/// timeline to replace a copied `AssistantSegment` value.
+private struct AssistantSegmentTimelineRow: View {
+    let message: ChatMessage
+    let segmentID: String
+    let animatesSubagentStatus: Bool
+
+    var body: some View {
+        if let segment = message.assistantSegment(withID: segmentID) {
+            MessageBubbleView(
+                message: message,
+                assistantSegments: [segment],
+                animatesSubagentStatus: animatesSubagentStatus
+            )
+        }
+    }
+}
+
+/// A deliberately tiny observation subtree for stream ticks. It keeps
+/// auto-follow responsive without causing the parent list to materialize its
+/// complete timeline again for each text-buffer flush.
+private struct ChatStreamingAutoFollowObserver: View {
+    @Bindable var chatClient: ChatClient
+
+    let proxy: ScrollViewProxy
+    let bottomAnchorID: String
+    let minimumInterval: TimeInterval
+    let settledBottomTolerance: CGFloat
+    @Binding var followLatest: Bool
+    @Binding var scrollInteraction: ChatScrollInteraction
+    @Binding var scrollState: ChatScrollState
+    @Binding var lastHandledContentVersion: UInt?
+    @Binding var lastAutoScrollDate: Date
+
+    var body: some View {
+        Color.clear
+            .task(id: chatClient.contentVersion) {
+                let contentVersion = chatClient.contentVersion
+                guard lastHandledContentVersion != nil else {
+                    lastHandledContentVersion = contentVersion
+                    return
+                }
+
+                // Coalesce a burst and let the new row height reach the scroll
+                // geometry before deciding whether any movement is necessary.
+                try? await Task.sleep(for: .milliseconds(32))
+                guard !Task.isCancelled else { return }
+
+                let now = Date()
+                let shouldAutoFollow = ChatScrollPolicy.shouldAutoFollow(
+                    isLoading: chatClient.isLoading,
+                    followLatest: followLatest,
+                    interaction: scrollInteraction,
+                    bottomDistance: scrollState.bottomDistance,
+                    bottomOverscroll: scrollState.bottomOverscroll,
+                    settledBottomTolerance: settledBottomTolerance,
+                    contentVersion: contentVersion,
+                    lastHandledContentVersion: lastHandledContentVersion,
+                    now: now,
+                    lastAutoScrollDate: lastAutoScrollDate,
+                    minimumInterval: minimumInterval
+                )
+                lastHandledContentVersion = contentVersion
+                guard shouldAutoFollow else { return }
+
+                lastAutoScrollDate = now
+                ChatStreamInstrumentation.recordScrollToBottom()
+                // A stream emits many small content updates. Scrolling them
+                // with a fresh animation every ~180 ms keeps the scroll view
+                // in perpetual layout/animation work and can amplify a busy
+                // transcript into visible hitching. Auto-follow is therefore
+                // deliberately immediate; the explicit user action remains
+                // the only animated scroll path.
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                }
+            }
+    }
+}
+
+struct ChatScrollState: Equatable {
+    var bottomDistance: CGFloat
+    var bottomOverscroll: CGFloat
+    var isAtBottom: Bool
+    var isPastVisibilityThreshold: Bool
+
+    static let initial = ChatScrollState(
+        bottomDistance: .infinity,
+        bottomOverscroll: 0,
+        isAtBottom: false,
+        isPastVisibilityThreshold: false
+    )
+}
+
+enum ChatScrollInteraction: Equatable {
+    case idle
+    case userControlled
+    case programmatic
+
+    var isUserControlled: Bool {
+        self == .userControlled
+    }
+
+    var allowsProgrammaticScroll: Bool {
+        self == .idle
+    }
+}
+
 enum ChatScrollPolicy {
-    static func isNearBottom(bottomMarkerMinY: CGFloat, viewportHeight: CGFloat, threshold: CGFloat) -> Bool {
-        bottomMarkerMinY <= viewportHeight + threshold
+    static func bottomMetrics(
+        contentHeight: CGFloat,
+        containerHeight: CGFloat,
+        contentOffsetY: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat
+    ) -> (distance: CGFloat, overscroll: CGFloat) {
+        let minimumOffset = -topInset
+        let maximumOffset = max(
+            minimumOffset,
+            contentHeight - containerHeight + bottomInset
+        )
+        return (
+            distance: max(0, maximumOffset - contentOffsetY),
+            overscroll: max(0, contentOffsetY - maximumOffset)
+        )
+    }
+
+    static func state(
+        contentHeight: CGFloat,
+        containerHeight: CGFloat,
+        contentOffsetY: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat,
+        settledBottomTolerance: CGFloat,
+        visibilityThreshold: CGFloat
+    ) -> ChatScrollState {
+        let metrics = bottomMetrics(
+            contentHeight: contentHeight,
+            containerHeight: containerHeight,
+            contentOffsetY: contentOffsetY,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
+        return ChatScrollState(
+            bottomDistance: metrics.distance,
+            bottomOverscroll: metrics.overscroll,
+            isAtBottom: isAtBottom(
+                bottomDistance: metrics.distance,
+                bottomOverscroll: metrics.overscroll,
+                tolerance: settledBottomTolerance
+            ),
+            isPastVisibilityThreshold: metrics.distance > visibilityThreshold
+        )
+    }
+
+    static func isAtBottom(
+        bottomDistance: CGFloat,
+        bottomOverscroll: CGFloat,
+        tolerance: CGFloat
+    ) -> Bool {
+        bottomDistance <= tolerance && bottomOverscroll <= tolerance
+    }
+
+    static func interaction(for phase: ScrollPhase) -> ChatScrollInteraction {
+        switch phase {
+        case .idle:
+            .idle
+        case .tracking, .interacting, .decelerating:
+            .userControlled
+        case .animating:
+            .programmatic
+        }
+    }
+
+    static func updatedFollowLatest(
+        currentValue: Bool,
+        interaction: ChatScrollInteraction,
+        isAtBottom: Bool
+    ) -> Bool {
+        if interaction.isUserControlled {
+            return false
+        }
+        if interaction == .idle, isAtBottom {
+            return true
+        }
+        return currentValue
     }
 
     static func shouldAutoFollow(
         isLoading: Bool,
         followLatest: Bool,
+        interaction: ChatScrollInteraction,
+        bottomDistance: CGFloat,
+        bottomOverscroll: CGFloat,
+        settledBottomTolerance: CGFloat,
+        contentVersion: UInt,
+        lastHandledContentVersion: UInt?,
         now: Date,
         lastAutoScrollDate: Date,
         minimumInterval: TimeInterval
     ) -> Bool {
-        guard isLoading, followLatest else { return false }
+        guard isLoading,
+              followLatest,
+              interaction.allowsProgrammaticScroll,
+              (bottomDistance > settledBottomTolerance
+                || bottomOverscroll > settledBottomTolerance),
+              contentVersion != lastHandledContentVersion else { return false }
         return now.timeIntervalSince(lastAutoScrollDate) >= minimumInterval
+    }
+
+    static func shouldLoadEarlierMessages(
+        hasEarlierMessages: Bool,
+        interaction: ChatScrollInteraction,
+        hasPendingRestoration: Bool
+    ) -> Bool {
+        hasEarlierMessages
+            && interaction.allowsProgrammaticScroll
+            && !hasPendingRestoration
+    }
+
+    static func shouldPerformProgrammaticScroll(
+        interaction: ChatScrollInteraction
+    ) -> Bool {
+        interaction.allowsProgrammaticScroll
     }
 
     static func shouldShowScrollToLatest(
         followLatest: Bool,
-        bottomMarkerMinY: CGFloat,
-        viewportHeight: CGFloat,
-        visibilityThreshold: CGFloat
+        isPastVisibilityThreshold: Bool
     ) -> Bool {
         guard !followLatest else { return false }
-        return bottomMarkerMinY > viewportHeight + visibilityThreshold
+        return isPastVisibilityThreshold
     }
-}
 
-private struct ChatBottomMarkerMinYPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    static func shouldAnimateManualScroll(isLoading: Bool) -> Bool {
+        !isLoading
     }
 }

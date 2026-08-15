@@ -13,9 +13,27 @@ enum DemoEvent {
     /// Add a reasoning part to the pending assistant message.
     case reasoning(String)
 
+    /// Stream a reasoning part in chunks through the same buffered projection
+    /// path used by live SSE deltas.
+    case streamReasoning(String, chunkSize: Int = 3, delay: TimeInterval = 0.02)
+
     /// Stream text in chunks with per-chunk delay.
     /// `chunkSize` controls how many characters are flushed per tick.
     case streamText(String, chunkSize: Int = 3, delay: TimeInterval = 0.02)
+
+    /// Stream text while injecting a second user message into the transcript.
+    /// This deliberately exercises the chat list while the first assistant
+    /// response is still live; it does not require a second network stream.
+    case streamTextWithConcurrentSend(
+        String,
+        chunkSize: Int = 3,
+        delay: TimeInterval = 0.02,
+        userMessage: String,
+        after: TimeInterval
+    )
+
+    /// Seed a large local transcript in one structural update before streaming.
+    case seedHistory(messageCount: Int)
 
     /// Show a tool call activity step (shimmer + completed step).
     case toolCall(name: String, detail: String, category: ToolCategory, duration: TimeInterval = 0.8)
@@ -76,13 +94,27 @@ final class DemoPlayer {
     private func run(_ script: DemoScript) async {
         guard let client = chatClient else { return }
 
-        for event in script.events {
+        for (eventIndex, event) in script.events.enumerated() {
             guard !Task.isCancelled else { return }
+#if DEBUG
+            print("CHAT_STRESS_EVENT_BEGIN \(eventIndex)")
+#endif
 
             switch event {
             case .userMessage(let text):
                 let msg = ChatMessage(role: .user, content: text)
                 client.messages.append(msg)
+                client.scrollAnchor &+= 1
+
+            case .seedHistory(let messageCount):
+                let history = makeStressHistory(
+                    messageCount: max(0, messageCount),
+                    sessionID: currentSessionID(for: client)
+                )
+                client.messages.append(contentsOf: history)
+                // Keep enough rows live to exercise scrolling while retaining
+                // pagination for the remainder of the seeded transcript.
+                client.displayLimit = min(60, max(client.displayLimit, history.count))
                 client.scrollAnchor &+= 1
 
             case .assistantStart:
@@ -96,6 +128,7 @@ final class DemoPlayer {
                 )
                 client.pendingAssistantMessage = msg
                 client.isLoading = true
+                client.responseState = .generating
                 client.currentActivity = AgentActivity()
                 client.currentActivity?.currentLabel = "Thinking..."
                 client.scrollAnchor &+= 1
@@ -111,20 +144,68 @@ final class DemoPlayer {
                 )
                 upsertPart(reasoningPart, on: pending)
                 client.currentActivity?.thinkingText = text
+                client.messageLayoutDidChange()
                 client.scrollAnchor &+= 1
 
-            case .streamText(let text, let chunkSize, let delay):
+            case .streamReasoning(let text, let chunkSize, let delay):
                 guard let pending = client.pendingAssistantMessage else { continue }
-                // Stream character chunks through the same buffer path
+                let partID = UUID().uuidString
+                upsertPart(
+                    OCPart(
+                        id: partID,
+                        sessionID: currentSessionID(for: client),
+                        messageID: pending.id,
+                        type: .reasoning,
+                        text: ""
+                    ),
+                    on: pending
+                )
+                client.messageLayoutDidChange()
+
                 var index = text.startIndex
                 while index < text.endIndex {
                     guard !Task.isCancelled else { return }
                     let end = text.index(index, offsetBy: chunkSize, limitedBy: text.endIndex) ?? text.endIndex
                     let chunk = String(text[index..<end])
-                    client.appendStreamingText(messageID: pending.id, text: chunk)
+                    client.appendStreamingReasoning(
+                        messageID: pending.id,
+                        partID: partID,
+                        text: chunk,
+                        chunks: [chunk]
+                    )
                     index = end
+                    guard await client.waitForStreamingRenderCapacity() else { return }
                     try? await Task.sleep(for: .seconds(delay))
                 }
+
+            case .streamText(let text, let chunkSize, let delay):
+                await streamText(text, chunkSize: chunkSize, delay: delay, on: client)
+
+            case .streamTextWithConcurrentSend(
+                let text,
+                let chunkSize,
+                let delay,
+                let userMessage,
+                let after
+            ):
+                let injectionTask = Task { @MainActor [weak client] in
+                    do {
+                        try await Task.sleep(for: .seconds(max(0, after)))
+                    } catch {
+                        return
+                    }
+                    guard !Task.isCancelled, let client else { return }
+                    client.messages.append(
+                        ChatMessage(
+                            role: .user,
+                            content: userMessage,
+                            createdAt: Date()
+                        )
+                    )
+                    client.scrollAnchor &+= 1
+                }
+                await streamText(text, chunkSize: chunkSize, delay: delay, on: client)
+                injectionTask.cancel()
 
             case .toolCall(let name, let detail, let category, let duration):
                 await runActivityToolCall(
@@ -138,8 +219,16 @@ final class DemoPlayer {
             case .toolCallPart(let name, let detail, let category, let output, let duration):
                 guard let pending = client.pendingAssistantMessage else { continue }
                 let partID = UUID().uuidString
-                let input = toolInput(for: category, detail: detail)
                 let toolName = name.lowercased()
+                let input: AnyCodable?
+                if toolName == "task" {
+                    input = AnyCodable([
+                        "subagent_type": "explore",
+                        "description": detail
+                    ])
+                } else {
+                    input = toolInput(for: category, detail: detail)
+                }
 
                 upsertPart(
                     OCPart(
@@ -153,6 +242,7 @@ final class DemoPlayer {
                     ),
                     on: pending
                 )
+                client.messageLayoutDidChange()
 
                 await runActivityToolCall(
                     name: name,
@@ -175,6 +265,7 @@ final class DemoPlayer {
                     ),
                     on: pending
                 )
+                client.messageLayoutDidChange()
 
             case .thinking(let label):
                 client.currentActivity?.currentLabel = label
@@ -185,11 +276,83 @@ final class DemoPlayer {
             case .pause(let duration):
                 try? await Task.sleep(for: .seconds(duration))
             }
+#if DEBUG
+            print(
+                "CHAT_STRESS_EVENT_END \(eventIndex) messages=\(client.messages.count) "
+                    + "displayed=\(client.displayedMessages.count) timeline=\(client.timelineVersion) "
+                    + "content=\(client.contentVersion)"
+            )
+#endif
         }
     }
 
     private func currentSessionID(for client: ChatClient) -> String {
         client.currentSession?.id ?? "demo-session"
+    }
+
+    @MainActor
+    private func streamText(
+        _ text: String,
+        chunkSize: Int,
+        delay: TimeInterval,
+        on client: ChatClient
+    ) async {
+        guard let pending = client.pendingAssistantMessage else { return }
+        let safeChunkSize = max(1, chunkSize)
+
+        // Stream character chunks through the same bounded buffer path used by
+        // live SSE and recorded replay producers.
+        var index = text.startIndex
+        while index < text.endIndex {
+            guard !Task.isCancelled else { return }
+            let end = text.index(index, offsetBy: safeChunkSize, limitedBy: text.endIndex) ?? text.endIndex
+            let chunk = String(text[index..<end])
+            client.appendStreamingText(messageID: pending.id, text: chunk)
+            index = end
+            guard await client.waitForStreamingRenderCapacity() else { return }
+            try? await Task.sleep(for: .seconds(delay))
+        }
+    }
+
+    @MainActor
+    private func makeStressHistory(messageCount: Int, sessionID: String) -> [ChatMessage] {
+        guard messageCount > 0 else { return [] }
+
+        var history: [ChatMessage] = []
+        history.reserveCapacity(messageCount * 2)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        for index in 0..<messageCount {
+            let createdAt = baseDate.addingTimeInterval(TimeInterval(index * 2))
+            history.append(
+                ChatMessage(
+                    id: "stress-user-\(index)",
+                    role: .user,
+                    content: "Inspect workspace checkpoint \(index): keep the stream responsive while older messages remain scrollable.",
+                    createdAt: createdAt
+                )
+            )
+
+            history.append(
+                ChatMessage(
+                    id: "stress-assistant-\(index)",
+                    role: .assistant,
+                    content: "Checkpoint \(index) completed. The transcript keeps stable row identity and bounded rendering while OpenCode continues working.",
+                    parts: [
+                        OCPart(
+                            id: "stress-part-\(index)",
+                            sessionID: sessionID,
+                            messageID: "stress-assistant-\(index)",
+                            type: .text,
+                            text: "Checkpoint \(index) completed. The transcript keeps stable row identity and bounded rendering while OpenCode continues working."
+                        )
+                    ],
+                    createdAt: createdAt.addingTimeInterval(1)
+                )
+            )
+        }
+
+        return history
     }
 
     private func upsertPart(_ part: OCPart, on message: ChatMessage) {
@@ -224,20 +387,17 @@ final class DemoPlayer {
 
         let label = "\(name): \(detail)"
         activity.currentLabel = label
-        activity.steps.append(ActivityStep(
-            type: .toolCall,
+        _ = activity.recordToolCallIfNeeded(
             label: label,
             detail: detail,
             toolCategory: category
-        ))
+        )
         client.scrollAnchor &+= 1
 
         try? await Task.sleep(for: .seconds(duration))
         guard !Task.isCancelled else { return }
 
-        if let idx = activity.steps.lastIndex(where: { $0.label == label }) {
-            activity.steps[idx].isCompleted = true
-        }
+        activity.completeStep(labeled: label)
         activity.currentLabel = "Thinking..."
     }
 }
@@ -408,6 +568,12 @@ extension DemoScript {
                 output: "Collected 4 samples; main-thread spikes line up with scroll and markdown handoff.",
                 duration: 0.45
             ),
+            .toolCallPart(
+                name: "Task",
+                detail: "Explore the rendering path for active subagent work",
+                category: .search,
+                duration: 10.0
+            ),
 
             .streamText("""
             Here's a deliberately heavy baseline response for visual comparison.
@@ -448,6 +614,103 @@ extension DemoScript {
 
             Final note: this response is intentionally long, formatted, and streamed in tiny chunks so it behaves like a repeatable stress test for the current chat UI.
             """, chunkSize: 1, delay: 0.005),
+            .finish,
+        ]
+    )
+
+    /// Debug profile exposed from Connect. It starts with a large local
+    /// transcript, keeps a paginated window visible, and then streams the same
+    /// heavy reasoning/answer workload used by the stress launch argument.
+    static let heavyLoad = DemoScript(
+        sessionTitle: "Debug: Heavy Chat Load",
+        events: [
+            .seedHistory(messageCount: 180),
+            .userMessage("Stress the chat while older messages remain available."),
+            .assistantStart,
+            .thinking("Streaming against a heavy transcript…"),
+            .streamReasoning(streamStressReasoning, chunkSize: 960, delay: 0.012),
+        ] + streamStressTools + [
+            .streamText(streamStressAnswer, chunkSize: 960, delay: 0.012),
+            .finish,
+        ]
+    )
+
+    /// Debug profile that inserts a second user message while the first
+    /// response is still streaming. This stresses layout invalidation,
+    /// auto-follow and the scroll-to-latest affordance at the same time.
+    static let concurrentSend = DemoScript(
+        sessionTitle: "Debug: Send During Stream",
+        events: [
+            .seedHistory(messageCount: 90),
+            .userMessage("Start a response, then send another message while it is still streaming."),
+            .assistantStart,
+            .thinking("The next message will arrive during this response…"),
+            .streamTextWithConcurrentSend(
+                streamStressAnswer,
+                chunkSize: 720,
+                delay: 0.012,
+                userMessage: "Second message sent while the first response is still streaming.",
+                after: 0.9
+            ),
+            .finish,
+        ]
+    )
+
+    /// Debug-only workload used with the `CHAT_STREAM_STRESS_MODE` launch
+    /// argument. It exercises the production chat projection with roughly
+    /// 100 KB each of reasoning and answer text plus many persisted tool rows.
+    private static let streamStressReasoning = Array(
+        repeating: "Reasoning pass: inspect event order, preserve the latest suffix, and keep the interface responsive while the thought transcript grows.",
+        count: 900
+    ).joined(separator: "\n")
+
+    private static let streamStressAnswer = Array(
+        repeating: """
+        ## Streaming checkpoint
+
+        - The response is intentionally long enough to cross many stable text chunks.
+        - Tool rows above must retain their identity while the visible tail changes.
+        - The final Markdown handoff should remain incremental and responsive.
+        """,
+        count: 550
+    ).joined(separator: "\n\n")
+
+    private static let streamStressTools: [DemoEvent] = (1...24).map { index in
+        let category: ToolCategory = switch index % 4 {
+        case 0: .read
+        case 1: .search
+        case 2: .bash
+        default: .edit
+        }
+        let name: String = switch category {
+        case .read: "Read"
+        case .search: "Glob"
+        case .bash: "Bash"
+        case .edit: "Edit"
+        default: "Tool"
+        }
+        return .toolCallPart(
+            name: name,
+            detail: "stress-fixture/step-\(index)",
+            category: category,
+            output: index.isMultiple(of: 3) ? "Completed stress step \(index)." : nil,
+            duration: 0.015
+        )
+    }
+
+    static let streamStress = DemoScript(
+        sessionTitle: "Debug: 100 KB Stream Stress",
+        events: [
+            // Let the debug-only root finish its cold SwiftUI construction before
+            // the first measured stream event in a real-device profiler run.
+            .pause(15),
+            .userMessage("Run the full chat streaming stress fixture."),
+            .assistantStart,
+            .thinking("Starting 100 KB reasoning stream…"),
+            .streamReasoning(streamStressReasoning, chunkSize: 960, delay: 0.012),
+        ] + streamStressTools + [
+            .thinking("Streaming 100 KB Markdown answer…"),
+            .streamText(streamStressAnswer, chunkSize: 960, delay: 0.012),
             .finish,
         ]
     )

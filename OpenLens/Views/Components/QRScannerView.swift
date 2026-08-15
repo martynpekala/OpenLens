@@ -2,9 +2,14 @@ import SwiftUI
 import AVFoundation
 
 /// Native QR code scanner using AVFoundation camera capture.
-/// Parses scanned codes as `openlens://connect` deep links.
+/// Parses direct LAN and physically-present OpenLens Remote pairing codes.
+enum ScannedOpenLensCode {
+    case direct(DeepLinkConnection)
+    case remote(RemotePairingOffer)
+}
+
 struct QRScannerView: View {
-    var onScanned: (DeepLinkConnection) -> Void
+    var onScanned: (ScannedOpenLensCode) -> Void
     var onDismiss: () -> Void
 
     @State private var errorMessage: String?
@@ -69,19 +74,37 @@ struct QRScannerView: View {
     private func handleCode(_ code: String) {
         guard !hasScanned else { return }
 
-        guard let url = URL(string: code),
-              let deepLink = DeepLinkConnection(from: url) else {
+        guard let url = URL(string: code) else {
+            showInvalidCodeError()
+            return
+        }
+
+        if let offer = RemotePairingOffer(url: url) {
+            guard !offer.isExpired else {
+                errorMessage = RemoteProtocolError.expiredPairingOffer.localizedDescription
+                return
+            }
+            hasScanned = true
+            onScanned(.remote(offer))
+            return
+        }
+
+        guard let deepLink = DeepLinkConnection(from: url) else {
+            showInvalidCodeError()
+            return
+        }
+
+        hasScanned = true
+        onScanned(.direct(deepLink))
+    }
+
+    private func showInvalidCodeError() {
             errorMessage = AppText.qrInvalid
             // Reset after a moment so user can try again
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
                 errorMessage = nil
             }
-            return
-        }
-
-        hasScanned = true
-        onScanned(deepLink)
     }
 }
 

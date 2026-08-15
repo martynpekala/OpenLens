@@ -20,14 +20,14 @@
 		<string>_http._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>OpenLens uses the local network to discover OpenCode servers via Bonjour.</string>
+	<string>OpenLens connects to and discovers OpenCode servers on your local network.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Pokemon Classic.ttf</string>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 </dict>

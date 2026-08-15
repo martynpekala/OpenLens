@@ -19,6 +19,7 @@ final class ConnectionManager: ConnectionProviding {
     private(set) var branch: String?
     private(set) var selectedProjectDirectory: String?
     private(set) var connectionMethod: ConnectionMethod?
+    private(set) var localNetworkAccessRequired: Bool = false
 
     /// Set to `true` when the user explicitly disconnects via Settings.
     /// Prevents auto-reconnect from firing until the user manually connects again.
@@ -29,6 +30,7 @@ final class ConnectionManager: ConnectionProviding {
 
     private(set) var client: OpenCodeClient?
     private(set) var sseClient: SSEClient?
+    @ObservationIgnored private var remoteTransport: RemoteOpenCodeTransport?
 
     /// Continuation used to bridge the SSE callback-based connection into async/await.
     /// Resumed once when SSE reports `.connected` or fails to connect.
@@ -39,11 +41,19 @@ final class ConnectionManager: ConnectionProviding {
     private var lastHeartbeat: Date = .distantPast
     private var heartbeatWatchdog: Timer?
 
+    @ObservationIgnored private let localNetworkAccessProbe: any LocalNetworkAccessProbing
+
     /// If no heartbeat arrives within this interval, the connection is considered stale.
     /// OpenCode server typically sends heartbeats every ~30s; 90s allows 3 missed beats.
     private static let heartbeatTimeout: TimeInterval = 90
 
-    init() {}
+    init() {
+        self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+    }
+
+    init(localNetworkAccessProbe: any LocalNetworkAccessProbing) {
+        self.localNetworkAccessProbe = localNetworkAccessProbe
+    }
 
     var isConnected: Bool {
         if case .connected = state { return true }
@@ -70,6 +80,7 @@ final class ConnectionManager: ConnectionProviding {
     ) async {
         didManuallyDisconnect = false
         connectionMethod = method
+        localNetworkAccessRequired = false
 
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -85,6 +96,14 @@ final class ConnectionManager: ConnectionProviding {
         }
 
         state = .connecting
+
+        let localNetworkProbeResult = await localNetworkAccessProbe.probe(baseURL)
+        guard !Task.isCancelled else { return }
+        guard localNetworkProbeResult == .continueConnection else {
+            localNetworkAccessRequired = true
+            state = .error(AppText.localNetworkAccessRequiredBody)
+            return
+        }
 
         var authHeader: String?
         if !password.isEmpty {
@@ -136,52 +155,10 @@ final class ConnectionManager: ConnectionProviding {
                 )
             }
 
-            sse.onStateChange = { [weak self] sseState in
-                guard let self else { return }
-                switch sseState {
-                case .connected:
-                    self.state = .connected
-                    self.startHeartbeatWatchdog()
-                    self.sseConnectionContinuation?.resume()
-                    self.sseConnectionContinuation = nil
-                case .connecting:
-                    // Only show reconnecting if we were previously connected.
-                    // During initial connect we already show .connecting.
-                    if self.state == .connected {
-                        self.enterReconnectingState(trackDisconnection: false)
-                    }
-                case .disconnected:
-                    // SSE dropped. It will auto-reconnect, so show reconnecting
-                    // unless we explicitly disconnected (shouldReconnect = false).
-                    if self.state == .connected || self.state == .reconnecting {
-                        self.enterReconnectingState(trackDisconnection: true)
-                    }
-                }
-            }
-
-            sse.onTerminalHTTPError = { [weak self] statusCode in
-                guard let self else { return }
-                self.stopHeartbeatWatchdog()
-                self.state = .error(
-                    "Authentication failed for the live event stream (HTTP \(statusCode)). Check the OpenCode username and password."
-                )
-                self.sseConnectionContinuation?.resume()
-                self.sseConnectionContinuation = nil
-            }
-
-            sse.connect()
-
-            // Wait for SSE to actually connect before returning to the caller.
-            // This ensures ConnectView sees .connected after connect() returns.
-            await withCheckedContinuation { continuation in
-                if self.state == .connected {
-                    // SSE connected synchronously (unlikely but safe)
-                    continuation.resume()
-                } else {
-                    self.sseConnectionContinuation = continuation
-                }
-            }
+            configureSSECallbacks(sse, isRemote: false)
+            await connectSSEAndWait(sse)
         } catch {
+            guard !Task.isCancelled else { return }
             state = .error(error.localizedDescription)
         }
     }
@@ -189,12 +166,77 @@ final class ConnectionManager: ConnectionProviding {
     /// Reconnect using saved config.
     func reconnect() async {
         guard let saved = savedConnectionsStore?.mostRecent, saved.isConfigured else { return }
+        if saved.isRemote {
+            guard let credential = RemoteConnectionSecretStore.load(connectionID: saved.id) else {
+                state = .error("Remote credentials are missing. Pair this device with the Mac again.")
+                return
+            }
+            await connect(remoteCredential: credential, method: .autoReconnect)
+            return
+        }
         await connect(
             url: saved.serverURL,
             username: saved.username,
             password: saved.password,
             method: .autoReconnect
         )
+    }
+
+    func connect(
+        remoteCredential credential: RemoteDeviceCredential,
+        method: ConnectionMethod = .qr
+    ) async {
+        didManuallyDisconnect = false
+        connectionMethod = method
+        localNetworkAccessRequired = false
+        state = .connecting
+
+        let restoredProjectDirectory = savedConnectionsStore?.connections
+            .first(where: { $0.id == credential.connectionID })?
+            .selectedProjectDirectory?
+            .nilIfBlank
+        let transport = RemoteOpenCodeTransport(credential: credential)
+        let apiClient = OpenCodeClient(
+            baseURL: credential.endpoint,
+            contextDirectory: restoredProjectDirectory,
+            transport: transport
+        )
+        let sse = SSEClient(
+            baseURL: credential.endpoint,
+            transport: transport
+        )
+
+        do {
+            let health = try await apiClient.checkHealth()
+            guard health.healthy else {
+                transport.disconnect()
+                state = .error("Remote OpenCode server is not healthy.")
+                return
+            }
+
+            serverVersion = health.version
+            client = apiClient
+            sseClient = sse
+            remoteTransport = transport
+            selectedProjectDirectory = restoredProjectDirectory
+            SharedConnectionStore.clear()
+
+            await refreshProjectMetadata()
+            savedConnectionsStore?.saveRemoteConnection(credential)
+            if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
+                savedConnectionsStore?.updateProjectSelection(
+                    connectionID: activeConnectionID,
+                    directory: selectedProjectDirectory
+                )
+            }
+
+            configureSSECallbacks(sse, isRemote: true)
+            await connectSSEAndWait(sse)
+        } catch {
+            transport.disconnect()
+            guard !Task.isCancelled else { return }
+            state = .error(error.localizedDescription)
+        }
     }
 
     // MARK: - Disconnect
@@ -205,6 +247,8 @@ final class ConnectionManager: ConnectionProviding {
         stopHeartbeatWatchdog()
         sseClient?.disconnect()
         sseClient = nil
+        remoteTransport?.disconnect()
+        remoteTransport = nil
         client = nil
         state = .disconnected
         serverVersion = nil
@@ -212,8 +256,53 @@ final class ConnectionManager: ConnectionProviding {
         branch = nil
         selectedProjectDirectory = nil
         connectionMethod = nil
+        localNetworkAccessRequired = false
         savedConnectionsStore?.clearActiveConnection()
         SharedConnectionStore.clear()
+    }
+
+    private func configureSSECallbacks(_ sse: SSEClient, isRemote: Bool) {
+        sse.onStateChange = { [weak self] sseState in
+            guard let self else { return }
+            switch sseState {
+            case .connected:
+                self.state = .connected
+                self.startHeartbeatWatchdog()
+                self.sseConnectionContinuation?.resume()
+                self.sseConnectionContinuation = nil
+            case .connecting:
+                if self.state == .connected {
+                    self.enterReconnectingState(trackDisconnection: false)
+                }
+            case .disconnected:
+                if self.state == .connected || self.state == .reconnecting {
+                    self.enterReconnectingState(trackDisconnection: true)
+                }
+            }
+        }
+
+        sse.onTerminalHTTPError = { [weak self] statusCode in
+            guard let self else { return }
+            self.stopHeartbeatWatchdog()
+            self.state = .error(
+                isRemote
+                    ? "The Mac rejected the Remote event stream (HTTP \(statusCode))."
+                    : "Authentication failed for the live event stream (HTTP \(statusCode)). Check the OpenCode username and password."
+            )
+            self.sseConnectionContinuation?.resume()
+            self.sseConnectionContinuation = nil
+        }
+    }
+
+    private func connectSSEAndWait(_ sse: SSEClient) async {
+        sse.connect()
+        await withCheckedContinuation { continuation in
+            if state == .connected {
+                continuation.resume()
+            } else {
+                sseConnectionContinuation = continuation
+            }
+        }
     }
 
     func setProjectContext(directory: String?) async {

@@ -1,7 +1,7 @@
 import ProjectDescription
 
 let project = Project(
-    name: "OpenLensQRMenubar",
+    name: "OpenLensRemote",
     options: .options(
         automaticSchemesOptions: .enabled()
     ),
@@ -14,22 +14,38 @@ let project = Project(
     ),
     targets: [
         .target(
-            name: "OpenLensQRMenubar",
+            name: "OpenLensRemote",
             destinations: .macOS,
             product: .app,
-            bundleId: "dev.openlens.openlens-qr-menubar",
+            bundleId: "dev.openlens.remote",
             deploymentTargets: .macOS("14.0"),
             infoPlist: .extendingDefault(with: [
-                "CFBundleDisplayName": "OpenLens QR",
+                "CFBundleDisplayName": "OpenLens Remote",
+                "LSApplicationCategoryType": "public.app-category.developer-tools",
                 "LSUIElement": true,
-                "OpenLensQRPackagePath": "$(SRCROOT)/../openlens-qr",
             ]),
-            sources: ["Sources/**"],
+            sources: [
+                "RemoteSources/**",
+                "../../OpenLensRemoteCore/**",
+            ],
+            resources: ["Resources/**"],
             settings: .settings(
                 base: [
-                    "PRODUCT_NAME": "OpenLensQRMenubar",
+                    "PRODUCT_NAME": "OpenLensRemote",
                 ]
             )
+        ),
+        .target(
+            name: "OpenLensRemoteTests",
+            destinations: .macOS,
+            product: .unitTests,
+            bundleId: "dev.openlens.remote.tests",
+            deploymentTargets: .macOS("14.0"),
+            infoPlist: .default,
+            sources: ["RemoteTests/**"],
+            dependencies: [
+                .target(name: "OpenLensRemote"),
+            ]
         ),
     ]
 )

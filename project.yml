@@ -109,6 +109,7 @@ targets:
           - "**/*.entitlements"
           - "**/*.md"
           - Assets.xcassets
+      - path: OpenLensRemoteCore
       - path: OpenLens/Assets.xcassets
         buildPhase: resources
     dependencies:

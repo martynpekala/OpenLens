@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="OpenLensQRMenubar"
+APP_NAME="OpenLensRemote"
 DERIVED_DATA_DIR="$SCRIPT_DIR/.derived-data"
 APP_PATH="$DERIVED_DATA_DIR/Build/Products/Debug/$APP_NAME.app"
 
@@ -15,6 +15,7 @@ fi
 
 TUIST_SKIP_UPDATE_CHECK=1 tuist generate --no-open
 TUIST_SKIP_UPDATE_CHECK=1 tuist xcodebuild build \
+  -workspace "$SCRIPT_DIR/OpenLensRemote.xcworkspace" \
   -scheme "$APP_NAME" \
   -configuration Debug \
   -derivedDataPath "$DERIVED_DATA_DIR"

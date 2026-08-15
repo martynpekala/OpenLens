@@ -114,6 +114,35 @@ final class WorkspaceService {
         )
     }
 
+    func loadWorkspaceSelection() async throws -> WorkspaceSelectionSnapshot {
+        if ScreenshotFixtures.isEnabled {
+            let snapshot = ScreenshotFixtures.workspaceSnapshot(path: nil)
+            return WorkspaceSelectionSnapshot(
+                currentProject: snapshot.currentProject,
+                projects: snapshot.projects,
+                pathInfo: snapshot.pathInfo
+            )
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        async let currentProjectTask = tryCurrentProject(client)
+        async let projectsTask = tryProjects(client)
+        async let pathInfoTask = tryPathInfo(client)
+
+        let currentProject = await currentProjectTask
+        let projects = await projectsTask
+        let pathInfo = await pathInfoTask
+
+        return WorkspaceSelectionSnapshot(
+            currentProject: currentProject,
+            projects: projects,
+            pathInfo: pathInfo
+        )
+    }
+
     func loadCommands() async -> [WorkspaceCommandItem] {
         if ScreenshotFixtures.isEnabled {
             return ScreenshotFixtures.workspaceSnapshot(path: nil).commands

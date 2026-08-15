@@ -5,19 +5,22 @@ import os
 /// All methods are async and throw on network/decode errors.
 actor OpenCodeClient {
 
-    private let session: URLSession
+    private let transport: any OpenCodeTransport
+    private static let maximumPendingPromptCount = 24
     private var baseURL: URL
     private var authHeader: String?
     private var contextDirectory: String?
 
-    init(baseURL: URL, authHeader: String? = nil, contextDirectory: String? = nil) {
+    init(
+        baseURL: URL,
+        authHeader: String? = nil,
+        contextDirectory: String? = nil,
+        transport: (any OpenCodeTransport)? = nil
+    ) {
         self.baseURL = baseURL
         self.authHeader = authHeader
         self.contextDirectory = contextDirectory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 300
-        self.session = URLSession(configuration: config)
+        self.transport = transport ?? DirectOpenCodeTransport()
     }
 
     func updateConnection(baseURL: URL, authHeader: String?, contextDirectory: String? = nil) {
@@ -87,8 +90,9 @@ actor OpenCodeClient {
 
     // MARK: - Todos
 
-    func listTodos(sessionID: String) async throws -> [OCTodo] {
-        try await get("/session/\(sessionID)/todo")
+    func listTodos(sessionID: String) async throws -> TodoDisplaySnapshot {
+        let todos: [OCTodo] = try await get("/session/\(sessionID)/todo")
+        return TodoDisplaySafety.prepare(todos)
     }
 
     /// Send a prompt asynchronously (fire and forget, monitor via SSE).
@@ -126,7 +130,7 @@ actor OpenCodeClient {
     /// Fetch raw JSON from /provider for debugging decode issues.
     func listProvidersRaw() async throws -> Data {
         let request = makeRequest(path: "/provider", method: "GET")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return data
     }
@@ -221,12 +225,26 @@ actor OpenCodeClient {
     // MARK: - Permissions
 
     func listPermissions() async throws -> [OCPermissionRequest] {
-        try await get("/permission")
+        let requests: [OCPermissionRequest] = try await get("/permission")
+        var safeRequests: [OCPermissionRequest] = []
+        safeRequests.reserveCapacity(min(requests.count, Self.maximumPendingPromptCount))
+
+        for request in requests {
+            guard let sanitized = PermissionRequestDisplaySafety.sanitize(request) else {
+                continue
+            }
+            safeRequests.append(sanitized)
+            if safeRequests.count == Self.maximumPendingPromptCount {
+                break
+            }
+        }
+
+        return safeRequests
     }
 
-    func replyToPermission(requestID: String, reply: String) async throws -> Bool {
+    func replyToPermission(requestID: String, reply: OCPermissionReply) async throws -> Bool {
         try await post("/permission/\(requestID)/reply", body: [
-            "reply": reply,
+            "reply": reply.rawValue,
         ] as [String: Any])
     }
 
@@ -235,7 +253,18 @@ actor OpenCodeClient {
     /// Fetch any pending (unanswered) questions from the server.
     /// Used after reconnection to recover questions that arrived while disconnected.
     func listPendingQuestions() async throws -> [OCQuestionRequest] {
-        try await get("/question")
+        let requests: [OCQuestionRequest] = try await get("/question")
+        var safeRequests: [OCQuestionRequest] = []
+        safeRequests.reserveCapacity(min(requests.count, Self.maximumPendingPromptCount))
+
+        for request in requests where InteractiveQuestionSafety.accepts(request) {
+            safeRequests.append(request)
+            if safeRequests.count == Self.maximumPendingPromptCount {
+                break
+            }
+        }
+
+        return safeRequests
     }
 
     /// Reply to a question request with selected answers.
@@ -267,7 +296,7 @@ actor OpenCodeClient {
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let request = makeRequest(path: path, method: "GET")
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }
@@ -276,7 +305,7 @@ actor OpenCodeClient {
         var request = makeRequest(path: path, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }
@@ -285,7 +314,7 @@ actor OpenCodeClient {
         var request = makeRequest(path: path, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         if expect204 {
             guard let result = EmptyResponse() as? T else {
@@ -300,14 +329,14 @@ actor OpenCodeClient {
         var request = makeRequest(path: path, method: "PATCH")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }
 
     private func delete<T: Decodable>(_ path: String) async throws -> T {
         let request = makeRequest(path: path, method: "DELETE")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response)
         return try decode(data)
     }
@@ -389,4 +418,3 @@ enum OpenCodeError: LocalizedError {
 // MARK: - Empty response for 204s
 
 struct EmptyResponse: Decodable {}
-
