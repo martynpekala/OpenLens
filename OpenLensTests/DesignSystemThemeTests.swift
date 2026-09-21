@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 import Testing
 @testable import OpenLens
@@ -30,7 +29,7 @@ struct DesignSystemThemeTests {
         }
     }
 
-    @Test func activeThemeUsesFallbackWhileAppearanceSwitchingIsDisabled() {
+    @Test func activeThemeResolvesStoredAppearance() {
         let previousValue = UserDefaults.standard.string(forKey: OpenLensAppearance.storageKey)
         UserDefaults.standard.set(OpenLensAppearance.graphite.rawValue, forKey: OpenLensAppearance.storageKey)
         defer {
@@ -41,6 +40,6 @@ struct DesignSystemThemeTests {
             }
         }
 
-        #expect(OpenLensDesignSystem.currentTheme.id == OpenLensAppearance.fallback.id)
+        #expect(OpenLensDesignSystem.currentTheme.id == OpenLensAppearance.graphite.id)
     }
 }

@@ -28,6 +28,7 @@ struct SettingsView: View {
     @AppStorage(AppPreferenceKeys.hapticsEnabled) private var hapticsEnabled: Bool = true
     @AppStorage(AppPreferenceKeys.liveActivitiesEnabled) private var liveActivitiesEnabled: Bool = true
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
+    @AppStorage(OpenLensAppearance.storageKey) private var appearanceRawValue: String = OpenLensAppearance.fallback.rawValue
 
     private var activeConnection: SavedConnection? {
         savedConnections.activeConnection ?? (ScreenshotFixtures.isEnabled ? ScreenshotFixtures.savedConnection : nil)
@@ -151,10 +152,56 @@ struct SettingsView: View {
 
     // MARK: - App Preferences Card
 
+    private var selectedAppearance: OpenLensAppearance {
+        OpenLensAppearance(rawValue: appearanceRawValue) ?? .fallback
+    }
+
+    private var appearancePickerRow: some View {
+        settingsRow(minHeight: 64) {
+            HStack(spacing: 12) {
+                settingsIcon("paintpalette")
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(AppText.appearance)
+                        .font(.system(size: 16, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                        .lineLimit(1)
+                    Text(selectedAppearance.displayName)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.appSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Menu {
+                    ForEach(OpenLensAppearance.allCases) { appearance in
+                        Button {
+                            appearanceRawValue = appearance.rawValue
+                        } label: {
+                            if appearance == selectedAppearance {
+                                Label(appearance.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(appearance.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.appSecondary)
+                        .accessibilityLabel(AppText.appearance)
+                        .accessibilityValue(selectedAppearance.displayName)
+                }
+            }
+        }
+    }
+
     private var appPreferencesCard: some View {
         VStack(spacing: 8) {
             settingsPanel {
                 VStack(spacing: 10) {
+                    appearancePickerRow
                     settingsToggleRow(
                         icon: "brain",
                         title: AppText.showThinking,

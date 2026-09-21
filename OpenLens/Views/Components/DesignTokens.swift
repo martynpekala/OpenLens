@@ -136,6 +136,7 @@ enum OpenLensAppearance: String, CaseIterable, Identifiable {
     case classic
     case graphite
     case meadow
+    case dracula
 
     var id: String { rawValue }
 
@@ -144,6 +145,7 @@ enum OpenLensAppearance: String, CaseIterable, Identifiable {
         case .classic: "Classic"
         case .graphite: "Graphite"
         case .meadow: "Meadow"
+        case .dracula: "Dracula"
         }
     }
 
@@ -152,6 +154,7 @@ enum OpenLensAppearance: String, CaseIterable, Identifiable {
         case .classic: "Warm neutral"
         case .graphite: "Cool graphite"
         case .meadow: "Soft green"
+        case .dracula: "Vampiric night"
         }
     }
 
@@ -160,6 +163,7 @@ enum OpenLensAppearance: String, CaseIterable, Identifiable {
         case .classic: .classic
         case .graphite: .graphite
         case .meadow: .meadow
+        case .dracula: .dracula
         }
     }
 
@@ -286,11 +290,47 @@ extension OpenLensTheme {
         ),
         components: OpenLensComponentTokens()
     )
+
+    static let dracula = OpenLensTheme(
+        id: "dracula",
+        name: "Dracula",
+        colors: OpenLensColorTokens(
+            background: .init(light: .openLens(255, 251, 235), dark: .openLens(40, 42, 54)),
+            surface: .init(light: .white, dark: .openLens(68, 71, 90)),
+            primary: .init(light: .openLens(31, 31, 31), dark: .openLens(248, 248, 242)),
+            secondary: .init(light: .openLens(108, 102, 75), dark: .openLens(98, 114, 164)),
+            tertiary: .init(light: .openLens(246, 243, 234), dark: .openLens(68, 71, 90)),
+            separator: .init(light: .openLens(207, 207, 222), dark: .openLens(68, 71, 90)),
+            accent: .init(light: .openLens(100, 74, 201), dark: .openLens(189, 147, 249)),
+            onAccent: .init(light: .white, dark: .openLens(40, 42, 54)),
+            success: .init(light: .openLens(20, 113, 10), dark: .openLens(80, 250, 123)),
+            warning: .init(light: .openLens(163, 77, 20), dark: .openLens(255, 184, 108)),
+            danger: .init(light: .openLens(203, 58, 42), dark: .openLens(255, 85, 85))
+        ),
+        typography: OpenLensTypographyTokens(),
+        spacing: OpenLensSpacingTokens(),
+        radius: OpenLensRadiusTokens(),
+        shadow: OpenLensShadowTokens(
+            surface: OpenLensShadowStyle(
+                color: .init(light: .openLens(0, 0, 0, alpha: 0.06), dark: .openLens(0, 0, 0, alpha: 0.35)),
+                radius: 8,
+                x: 0,
+                y: 2
+            ),
+            subtle: OpenLensShadowStyle(
+                color: .init(light: .openLens(0, 0, 0, alpha: 0.04), dark: .openLens(0, 0, 0, alpha: 0.25)),
+                radius: 4,
+                x: 0,
+                y: 1
+            )
+        ),
+        components: OpenLensComponentTokens()
+    )
 }
 
 enum OpenLensDesignSystem {
     static var currentTheme: OpenLensTheme {
-        OpenLensAppearance.fallback.theme
+        OpenLensAppearance.current.theme
     }
 }
 

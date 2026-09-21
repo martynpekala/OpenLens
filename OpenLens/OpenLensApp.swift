@@ -214,6 +214,7 @@ struct OpenLensApp: App {
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
     @AppStorage("reviewPromptAttemptCount") private var reviewPromptAttemptCount: Int = 0
     @AppStorage("reviewPromptSuccessfulConnections") private var reviewPromptSuccessfulConnections: Int = 0
+    @AppStorage(OpenLensAppearance.storageKey) private var appearanceRawValue: String = OpenLensAppearance.fallback.rawValue
 
     /// Deep link connection received via `openlens://connect` URL.
     @State private var pendingDeepLink: DeepLinkConnection?
@@ -234,6 +235,10 @@ struct OpenLensApp: App {
         case .idle, .loading:
             nil
         }
+    }
+
+    private var resolvedAppearance: OpenLensAppearance {
+        OpenLensAppearance(rawValue: appearanceRawValue) ?? .fallback
     }
 
     private var rootDestination: OpenLensRootDestination {
@@ -471,7 +476,7 @@ struct OpenLensApp: App {
                     .transition(.opacity)
                 }
             }
-            .openLensTheme(OpenLensAppearance.fallback.theme)
+            .openLensTheme(resolvedAppearance.theme)
             .environment(\.liveActivity, liveActivity)
             .environment(\.savedConnections, savedConnectionsStore)
             .environment(\.sessionsService, sessionsService)
