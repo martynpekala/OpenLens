@@ -10,6 +10,7 @@ actor OpenCodeClient {
     private var baseURL: URL
     private var authHeader: String?
     private var contextDirectory: String?
+    private(set) var capabilities: OpenCodeServerCapabilities?
 
     init(
         baseURL: URL,
@@ -21,12 +22,14 @@ actor OpenCodeClient {
         self.authHeader = authHeader
         self.contextDirectory = contextDirectory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         self.transport = transport ?? DirectOpenCodeTransport()
+        self.capabilities = nil
     }
 
     func updateConnection(baseURL: URL, authHeader: String?, contextDirectory: String? = nil) {
         self.baseURL = baseURL
         self.authHeader = authHeader
         self.contextDirectory = contextDirectory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.capabilities = nil
     }
 
     func updateContextDirectory(_ directory: String?) {
@@ -41,6 +44,34 @@ actor OpenCodeClient {
 
     func checkHealth() async throws -> OCHealthResponse {
         try await get("/global/health")
+    }
+
+    /// Negotiate the wire protocol from endpoint capability evidence.
+    ///
+    /// A successful, usable `/api/info` response selects v2. A missing v2
+    /// capability endpoint selects the legacy v1 health contract. Other
+    /// failures are surfaced as compatibility or connectivity failures instead
+    /// of being hidden by an unsafe downgrade.
+    func probeCapabilities() async throws -> OpenCodeServerCapabilities {
+        do {
+            let info: OCV2ServerInfo = try await get("/api/info")
+            guard info.isUsable else {
+                throw OpenCodeError.invalidPayload("The v2 server-info response did not contain a usable version.")
+            }
+
+            let capabilities = OpenCodeServerCapabilities.v2(info)
+            self.capabilities = capabilities
+            return capabilities
+        } catch {
+            guard shouldFallbackToV1(afterV2ProbeError: error) else {
+                throw error
+            }
+
+            let health = try await checkHealth()
+            let capabilities = OpenCodeServerCapabilities.v1(health)
+            self.capabilities = capabilities
+            return capabilities
+        }
     }
 
     // MARK: - Sessions
@@ -410,6 +441,23 @@ actor OpenCodeClient {
         guard (200...299).contains(http.statusCode) else {
             throw OpenCodeError.httpError(statusCode: http.statusCode)
         }
+    }
+
+    private func shouldFallbackToV1(afterV2ProbeError error: Error) -> Bool {
+        if let openCodeError = error as? OpenCodeError,
+           case let .httpError(statusCode) = openCodeError {
+            return statusCode == 404 || statusCode == 405
+        }
+
+        // The pre-v2 remote relay rejects unknown routes before forwarding
+        // them. Treat that rejection exactly like a missing v2 endpoint so
+        // existing paired v1 servers keep connecting until the relay itself is
+        // upgraded in the remote-v2 migration step.
+        if let remoteError = error as? RemoteProtocolError {
+            return remoteError == .invalidRequest
+        }
+
+        return false
     }
 
     private func decode<T: Decodable>(_ data: Data) throws -> T {

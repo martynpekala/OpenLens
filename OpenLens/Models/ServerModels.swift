@@ -892,7 +892,7 @@ struct OCReasoningConfigVariant: Codable, Hashable, Sendable {
 
 // MARK: - Health
 
- struct OCHealthResponse: Codable, Sendable {
+ nonisolated struct OCHealthResponse: Codable, Equatable, Sendable {
     let healthy: Bool
     let version: String?
 }

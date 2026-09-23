@@ -683,6 +683,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     private var baseURL: URL
     private var authHeader: String?
+    private var protocolVersion: OpenCodeProtocol
     private var shouldReconnect = true
     private var reconnectDelay: TimeInterval = 2.0
     /// Recording opts into keeping the original decoded OCEvent alongside a
@@ -804,18 +805,27 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     init(
         baseURL: URL,
         authHeader: String? = nil,
+        protocolVersion: OpenCodeProtocol = .v1,
         transport: (any OpenCodeTransport)? = nil
     ) {
         self.baseURL = baseURL
         self.authHeader = authHeader
+        self.protocolVersion = protocolVersion
         self.transport = transport ?? DirectOpenCodeTransport()
         super.init()
     }
 
-    func updateConnection(baseURL: URL, authHeader: String?) {
+    func updateConnection(
+        baseURL: URL,
+        authHeader: String?,
+        protocolVersion: OpenCodeProtocol? = nil
+    ) {
         queue.async { [self] in
             self.baseURL = baseURL
             self.authHeader = authHeader
+            if let protocolVersion {
+                self.protocolVersion = protocolVersion
+            }
         }
     }
 
@@ -899,7 +909,8 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         }
 #endif
 
-        let url = baseURL.appending(path: "event")
+        let eventPath = protocolVersion.eventStreamPath
+        let url = baseURL.appending(path: String(eventPath.dropFirst()))
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -1290,10 +1301,14 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         guard !trimmed.isEmpty else { return false }
 
         var dataLines: [String] = []
+        var eventName: String?
 
         for line in trimmed.components(separatedBy: "\n") {
-            guard let dataValue = extractDataField(from: line) else { continue }
-            dataLines.append(dataValue)
+            if let dataValue = extractDataField(from: line) {
+                dataLines.append(dataValue)
+            } else if let name = extractEventField(from: line) {
+                eventName = name
+            }
         }
 
         guard !dataLines.isEmpty else { return false }
@@ -1306,7 +1321,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         }
 
         do {
-            let event = try JSONDecoder().decode(OCEvent.self, from: jsonData)
+            let event = try decodeEvent(data: jsonData, eventName: eventName)
             enqueueEvent(event, sourceByteCount: sourceByteCount)
             return true
         } catch {
@@ -2208,6 +2223,44 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return String(afterPrefix.dropFirst())
         }
         return String(afterPrefix)
+    }
+
+    /// V1 embeds the event type and properties in the JSON data object. V2
+    /// follows standard SSE framing and carries the event type in `event:`;
+    /// its `data:` payload is the event properties object.
+    private func decodeEvent(data: Data, eventName: String?) throws -> OCEvent {
+        if let legacyEvent = try? JSONDecoder().decode(OCEvent.self, from: data) {
+            return legacyEvent
+        }
+
+        guard protocolVersion == .v2,
+              let eventName,
+              !eventName.isEmpty,
+              var payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw OpenCodeError.invalidPayload("Unsupported SSE event payload.")
+        }
+
+        // Some v2 fixtures/servers serialize the stream data member as a JSON
+        // string. Decode that nested object without changing the public event
+        // model used by the existing chat pipeline.
+        if payload.count == 1,
+           let encodedPayload = payload["data"] as? String,
+           let nestedData = encodedPayload.data(using: .utf8),
+           let nestedPayload = try? JSONSerialization.jsonObject(with: nestedData) as? [String: Any] {
+            payload = nestedPayload
+        }
+
+        return OCEvent(type: eventName, properties: AnyCodable(payload))
+    }
+
+    private func extractEventField(from line: String) -> String? {
+        guard line.hasPrefix("event:") else { return nil }
+        let afterPrefix = line.dropFirst(6)
+        if afterPrefix.first == " " {
+            return String(afterPrefix.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return String(afterPrefix).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Reconnect (called on `queue`)

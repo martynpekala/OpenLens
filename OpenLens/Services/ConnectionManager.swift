@@ -15,6 +15,7 @@ final class ConnectionManager: ConnectionProviding {
 
     private(set) var state: State = .disconnected
     private(set) var serverVersion: String?
+    private(set) var serverCapabilities: OpenCodeServerCapabilities?
     private(set) var projectName: String?
     private(set) var branch: String?
     private(set) var selectedProjectDirectory: String?
@@ -81,6 +82,7 @@ final class ConnectionManager: ConnectionProviding {
         didManuallyDisconnect = false
         connectionMethod = method
         localNetworkAccessRequired = false
+        serverCapabilities = nil
 
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -125,23 +127,23 @@ final class ConnectionManager: ConnectionProviding {
             authHeader: authHeader,
             contextDirectory: restoredProjectDirectory
         )
-        let sse = SSEClient(baseURL: baseURL, authHeader: authHeader)
-
         do {
-            let health = try await apiClient.checkHealth()
-            guard health.healthy else {
+            let capabilities = try await apiClient.probeCapabilities()
+            guard capabilities.isHealthy else {
                 state = .error("Server is not healthy.")
                 return
             }
-            serverVersion = health.version
+            serverCapabilities = capabilities
+            serverVersion = capabilities.serverVersion
 
             self.client = apiClient
-            self.sseClient = sse
             self.selectedProjectDirectory = restoredProjectDirectory?.nilIfBlank
 
             SharedConnectionStore.save(baseURL: baseURL.absoluteString, authHeader: authHeader)
 
-            await refreshProjectMetadata()
+            if capabilities.protocolVersion == .v1 {
+                await refreshProjectMetadata()
+            }
 
             savedConnectionsStore?.saveConnection(
                 serverURL: urlString,
@@ -155,6 +157,12 @@ final class ConnectionManager: ConnectionProviding {
                 )
             }
 
+            let sse = SSEClient(
+                baseURL: baseURL,
+                authHeader: authHeader,
+                protocolVersion: capabilities.protocolVersion
+            )
+            self.sseClient = sse
             configureSSECallbacks(sse, isRemote: false)
             await connectSSEAndWait(sse)
         } catch {
@@ -189,6 +197,7 @@ final class ConnectionManager: ConnectionProviding {
         didManuallyDisconnect = false
         connectionMethod = method
         localNetworkAccessRequired = false
+        serverCapabilities = nil
         state = .connecting
 
         let restoredProjectDirectory = savedConnectionsStore?.connections
@@ -201,27 +210,24 @@ final class ConnectionManager: ConnectionProviding {
             contextDirectory: restoredProjectDirectory,
             transport: transport
         )
-        let sse = SSEClient(
-            baseURL: credential.endpoint,
-            transport: transport
-        )
-
         do {
-            let health = try await apiClient.checkHealth()
-            guard health.healthy else {
+            let capabilities = try await apiClient.probeCapabilities()
+            guard capabilities.isHealthy else {
                 transport.disconnect()
                 state = .error("Remote OpenCode server is not healthy.")
                 return
             }
 
-            serverVersion = health.version
+            serverCapabilities = capabilities
+            serverVersion = capabilities.serverVersion
             client = apiClient
-            sseClient = sse
             remoteTransport = transport
             selectedProjectDirectory = restoredProjectDirectory
             SharedConnectionStore.clear()
 
-            await refreshProjectMetadata()
+            if capabilities.protocolVersion == .v1 {
+                await refreshProjectMetadata()
+            }
             savedConnectionsStore?.saveRemoteConnection(credential)
             if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
                 savedConnectionsStore?.updateProjectSelection(
@@ -230,6 +236,12 @@ final class ConnectionManager: ConnectionProviding {
                 )
             }
 
+            let sse = SSEClient(
+                baseURL: credential.endpoint,
+                protocolVersion: capabilities.protocolVersion,
+                transport: transport
+            )
+            sseClient = sse
             configureSSECallbacks(sse, isRemote: true)
             await connectSSEAndWait(sse)
         } catch {
@@ -252,6 +264,7 @@ final class ConnectionManager: ConnectionProviding {
         client = nil
         state = .disconnected
         serverVersion = nil
+        serverCapabilities = nil
         projectName = nil
         branch = nil
         selectedProjectDirectory = nil
@@ -332,6 +345,14 @@ final class ConnectionManager: ConnectionProviding {
 
     private func refreshProjectMetadata() async {
         guard let client else {
+            projectName = nil
+            branch = nil
+            return
+        }
+
+        // The v2 workspace/location contract is introduced by the next
+        // migration slice. Never issue v1 metadata requests after a v2 probe.
+        guard serverCapabilities?.protocolVersion != .v2 else {
             projectName = nil
             branch = nil
             return
@@ -473,5 +494,6 @@ final class ConnectionManager: ConnectionProviding {
         self.projectName = projectName
         self.branch = branch
         self.serverVersion = "demo"
+        self.serverCapabilities = nil
     }
 }
