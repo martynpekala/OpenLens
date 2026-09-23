@@ -98,6 +98,22 @@ final class OpenCodeForwarder: @unchecked Sendable {
             throw RemoteProtocolError.invalidRequest
         }
 
+        if path == "/api/fs/list" {
+            let filePathItems = parsed.queryItems.filter { $0.name == "path" }
+            guard filePathItems.count <= 1,
+                  filePathItems.allSatisfy({ Self.isSafeWorkspaceRelativePath($0.value, allowsCurrentDirectory: true) })
+            else {
+                throw RemoteProtocolError.invalidRequest
+            }
+        }
+
+        if path.hasPrefix("/api/fs/read/") {
+            let filePath = String(path.dropFirst("/api/fs/read/".count))
+            guard Self.isSafeWorkspaceRelativePath(filePath, allowsCurrentDirectory: false) else {
+                throw RemoteProtocolError.invalidRequest
+            }
+        }
+
         if let queryDirectory = directoryQueryItems.first {
             guard queryDirectory.rawName == queryDirectory.name,
                   queryDirectory.rawValue == queryDirectory.value
@@ -164,6 +180,13 @@ final class OpenCodeForwarder: @unchecked Sendable {
         case ("GET", ["global", "health"]),
              ("GET", ["api", "info"]),
              ("GET", ["api", "event"]),
+             ("GET", ["api", "location"]),
+             ("GET", ["api", "project"]),
+             ("GET", ["api", "project", "current"]),
+             ("GET", ["api", "fs", "list"]),
+             ("GET", ["api", "vcs"]),
+             ("GET", ["api", "vcs", "diff"]),
+             ("GET", ["api", "vcs", "status"]),
              ("GET", ["session"]),
              ("POST", ["session"]),
              ("GET", ["session", "status"]),
@@ -184,6 +207,17 @@ final class OpenCodeForwarder: @unchecked Sendable {
             return true
         default:
             break
+        }
+
+        if method == "GET",
+           segments.count >= 4,
+           segments[0] == "api",
+           segments[1] == "fs",
+           segments[2] == "read" {
+            return isSafeWorkspaceRelativePath(
+                segments.dropFirst(3).joined(separator: "/"),
+                allowsCurrentDirectory: false
+            )
         }
 
         if segments.count == 2,
@@ -309,6 +343,26 @@ final class OpenCodeForwarder: @unchecked Sendable {
         return decoded.unicodeScalars.allSatisfy {
             $0.value < 128
                 && (CharacterSet.alphanumerics.contains($0) || "-._~".unicodeScalars.contains($0))
+        }
+    }
+
+    private static func isSafeWorkspaceRelativePath(_ value: String, allowsCurrentDirectory: Bool) -> Bool {
+        guard !value.hasPrefix("/"),
+              !value.contains("\\"),
+              !value.contains("%"),
+              value.rangeOfCharacter(from: .newlines) == nil
+        else {
+            return false
+        }
+
+        if allowsCurrentDirectory && (value.isEmpty || value == ".") {
+            return true
+        }
+
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.isEmpty else { return false }
+        return components.allSatisfy { component in
+            !component.isEmpty && component != "." && component != ".."
         }
     }
 

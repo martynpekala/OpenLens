@@ -186,13 +186,15 @@ actor OpenCodeClient {
     // MARK: - Agents
 
     func listAgents() async throws -> [OCAgent] {
-        try await get("/agent")
+        guard !usesV2 else { return [] }
+        return try await get("/agent")
     }
 
     // MARK: - Commands
 
     func listCommands() async throws -> [OCCommand] {
-        try await get("/command")
+        guard !usesV2 else { return [] }
+        return try await get("/command")
     }
 
     func sendCommand(
@@ -224,16 +226,48 @@ actor OpenCodeClient {
     // MARK: - Files
 
     func listFiles(path: String? = nil) async throws -> [OCWorkspaceFileEntry] {
+        if usesV2 {
+            let response: OCV2Located<[OCV2FileSystemEntry]> = try await getV2Located(
+                "/api/fs/list",
+                path: path
+            )
+            return response.data.map { entry in
+                OCWorkspaceFileEntry(
+                    name: (entry.path as NSString).lastPathComponent,
+                    path: entry.path,
+                    absolute: nil,
+                    type: entry.type,
+                    ignored: false
+                )
+            }
+        }
+
         var urlPath = "/file"
         if let path { urlPath += "?path=\(path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path)" }
         return try await get(urlPath)
     }
 
     func listFileStatus() async throws -> [OCWorkspaceFileStatus] {
-        try await get("/file/status")
+        if usesV2 {
+            let response: OCV2Located<[OCV2VCSFileStatus]> = try await getV2Located("/api/vcs/status")
+            return response.data.map {
+                OCWorkspaceFileStatus(
+                    path: $0.file,
+                    added: $0.additions,
+                    removed: $0.deletions,
+                    status: $0.status
+                )
+            }
+        }
+
+        return try await get("/file/status")
     }
 
     func readFileContent(path: String) async throws -> OCFileContent {
+        if usesV2 {
+            return try await readV2FileContent(path: path)
+        }
+
         let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
         return try await get("/file/content?path=\(encodedPath)")
     }
@@ -241,19 +275,55 @@ actor OpenCodeClient {
     // MARK: - Project
 
     func listProjects() async throws -> [OCProject] {
-        try await get("/project")
+        if usesV2 {
+            return try await getV2("/api/project")
+        }
+
+        return try await get("/project")
     }
 
     func getCurrentProject() async throws -> OCProject {
-        try await get("/project/current")
+        if usesV2 {
+            return try await getV2("/api/project/current")
+        }
+
+        return try await get("/project/current")
     }
 
     func getPath() async throws -> OCPathInfo {
-        try await get("/path")
+        if usesV2 {
+            let location: OCV2LocationInfo = try await getV2("/api/location")
+            contextDirectory = location.directory
+            return OCPathInfo(
+                state: nil,
+                config: nil,
+                worktree: location.project?.directory ?? location.directory,
+                directory: location.directory
+            )
+        }
+
+        return try await get("/path")
     }
 
     func getVCS() async throws -> OCVCSInfo {
-        try await get("/vcs")
+        if usesV2 {
+            let response: OCV2Located<OCVCSInfo> = try await getV2Located("/api/vcs")
+            return response.data
+        }
+
+        return try await get("/vcs")
+    }
+
+    func getWorkingTreeDiff() async throws -> [OCFileDiff] {
+        guard usesV2 else { return [] }
+        let response: OCV2Located<[OCFileDiff]> = try await getV2Located(
+            "/api/vcs/diff",
+            queryItems: [
+                URLQueryItem(name: "mode", value: "worktree"),
+                URLQueryItem(name: "format", value: "json")
+            ]
+        )
+        return response.data
     }
 
     // MARK: - Diffs
@@ -337,6 +407,84 @@ actor OpenCodeClient {
     }
 
     // MARK: - Private HTTP helpers
+
+    private var usesV2: Bool {
+        capabilities?.protocolVersion == .v2
+    }
+
+    private func getV2<T: Decodable>(_ path: String, pathParameter: String? = nil) async throws -> T {
+        let request = makeV2Request(path: path, pathParameter: pathParameter)
+        Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response)
+        return try decode(data)
+    }
+
+    private func getV2Located<T: Decodable>(
+        _ endpoint: String,
+        path: String? = nil,
+        queryItems: [URLQueryItem] = []
+    ) async throws -> OCV2Located<T> {
+        let request = makeV2Request(path: endpoint, queryPath: path, queryItems: queryItems)
+        Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response)
+        return try decode(data)
+    }
+
+    private func readV2FileContent(path: String) async throws -> OCFileContent {
+        let request = makeV2Request(path: "/api/fs/read", pathParameter: path)
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response)
+
+        let mimeType = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Type")?
+            .split(separator: ";", maxSplits: 1)
+            .first
+            .map(String.init)
+        guard let content = String(data: data, encoding: .utf8)
+        else {
+            return OCFileContent(type: "binary", mimeType: mimeType)
+        }
+        return OCFileContent(type: "text", content: content, mimeType: mimeType)
+    }
+
+    private func makeV2Request(
+        path: String,
+        pathParameter: String? = nil,
+        queryPath: String? = nil,
+        queryItems additionalQueryItems: [URLQueryItem] = []
+    ) -> URLRequest {
+        let rawPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        var url = baseURL.appending(path: rawPath)
+
+        if let pathParameter {
+            let segments = pathParameter.split(separator: "/", omittingEmptySubsequences: true)
+            let encodedSegments = segments.map {
+                $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
+            }
+            url.append(path: encodedSegments.joined(separator: "/"))
+        }
+
+        if var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            var queryItems = additionalQueryItems
+            if let contextDirectory {
+                queryItems.append(URLQueryItem(name: "location[directory]", value: contextDirectory))
+            }
+            if let queryPath {
+                queryItems.append(URLQueryItem(name: "path", value: queryPath))
+            }
+            components.queryItems = queryItems.isEmpty ? nil : queryItems
+            url = components.url ?? url
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        if let authHeader {
+            request.setValue(authHeader, forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let request = makeRequest(path: path, method: "GET")

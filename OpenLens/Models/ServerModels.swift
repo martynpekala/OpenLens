@@ -1229,7 +1229,7 @@ nonisolated struct OCQuestionRequest: Codable, Identifiable, Sendable {
 
 /// Matches the server's `Project` type:
 /// `{ id, worktree, vcsDir?, vcs?, time: { created, initialized? } }`
- struct OCProject: Codable, Identifiable {
+nonisolated struct OCProject: Decodable, Identifiable, Sendable {
     let id: String
     let worktree: String?
     let vcsDir: String?
@@ -1254,35 +1254,65 @@ nonisolated struct OCQuestionRequest: Codable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         worktree = try container.decodeIfPresent(String.self, forKey: .worktree)
+            ?? container.decodeIfPresent(String.self, forKey: .directory)
         vcsDir = try container.decodeIfPresent(String.self, forKey: .vcsDir)
         vcs = try container.decodeIfPresent(String.self, forKey: .vcs)
         time = try? container.decodeIfPresent(OCProjectTime.self, forKey: .time)
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, worktree, vcsDir, vcs, time
+        case id, worktree, directory, vcsDir, vcs, time
     }
 }
 
- struct OCProjectTime: Codable {
+nonisolated struct OCProjectTime: Codable, Sendable {
     let created: Double?
     let initialized: Double?
 }
 
- struct OCPathInfo: Codable {
+nonisolated struct OCPathInfo: Codable, Sendable {
     let state: String?
     let config: String?
     let worktree: String?
     let directory: String?
 }
 
- struct OCVCSInfo: Codable {
+nonisolated struct OCVCSInfo: Codable, Sendable {
     let branch: String?
+}
+
+/// Canonical workspace identity returned by v2 location-scoped endpoints.
+/// The app uses the resolved directory rather than trusting the request value.
+nonisolated struct OCV2LocationInfo: Codable, Sendable {
+    nonisolated struct Project: Codable, Sendable {
+        let id: String
+        let directory: String
+    }
+
+    let directory: String
+    let project: Project?
+}
+
+nonisolated struct OCV2Located<Value: Decodable & Sendable>: Decodable, Sendable {
+    let location: OCV2LocationInfo
+    let data: Value
+}
+
+nonisolated struct OCV2FileSystemEntry: Codable, Sendable {
+    let path: String
+    let type: String
+}
+
+nonisolated struct OCV2VCSFileStatus: Codable, Sendable {
+    let file: String
+    let additions: Int
+    let deletions: Int
+    let status: String
 }
 
 // MARK: - File Browser
 
-struct OCWorkspaceFileEntry: Codable, Identifiable, Sendable {
+nonisolated struct OCWorkspaceFileEntry: Codable, Identifiable, Sendable {
     let name: String
     let path: String
     let absolute: String?
@@ -1292,7 +1322,7 @@ struct OCWorkspaceFileEntry: Codable, Identifiable, Sendable {
     var id: String { absolute ?? path }
 }
 
-struct OCWorkspaceFileStatus: Codable, Hashable, Sendable {
+nonisolated struct OCWorkspaceFileStatus: Codable, Hashable, Sendable {
     let path: String
     let added: Int
     let removed: Int
@@ -1310,7 +1340,7 @@ struct OCWorkspaceFileStatus: Codable, Hashable, Sendable {
     }
 }
 
-struct OCFilePatchHunk: Codable, Hashable, Sendable {
+nonisolated struct OCFilePatchHunk: Codable, Hashable, Sendable {
     let oldStart: Int
     let oldLines: Int
     let newStart: Int
@@ -1318,7 +1348,7 @@ struct OCFilePatchHunk: Codable, Hashable, Sendable {
     let lines: [String]
 }
 
-struct OCFilePatch: Codable, Hashable, Sendable {
+nonisolated struct OCFilePatch: Codable, Hashable, Sendable {
     let oldFileName: String
     let newFileName: String
     let oldHeader: String?
@@ -1327,7 +1357,7 @@ struct OCFilePatch: Codable, Hashable, Sendable {
     let index: String?
 }
 
-struct OCFileContent: Codable, Hashable, Sendable {
+nonisolated struct OCFileContent: Codable, Hashable, Sendable {
     let type: String?
     let content: String?
     let diff: String?
@@ -1401,7 +1431,7 @@ struct OCFileContent: Codable, Hashable, Sendable {
 
 // MARK: - File Diff
 
- struct OCFileDiff: Codable, Sendable {
+nonisolated struct OCFileDiff: Codable, Sendable {
     let file: String?
     let path: String?
     let status: String?

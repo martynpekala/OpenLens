@@ -253,10 +253,17 @@ struct GatewayIntegrationTests {
     @Test func remoteRouteTableIncludesV2ProbeAndEventWithoutChangingV1() {
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/info"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/event"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/location"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/project/current"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/fs/list"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/fs/read/Sources/App.swift"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/vcs/diff"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/vcs/status"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/event"))
         #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/info"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/%65vent"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/info/../event"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/fs/read/../.env"))
     }
 
     @Test func remoteRelayRejectsAmbiguousOrUnregisteredV2WorkspaceLocations() throws {

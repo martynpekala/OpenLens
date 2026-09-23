@@ -3,6 +3,90 @@ import Testing
 @testable import OpenLens
 
 struct OpenCodeProtocolSelectionTests {
+    @Test func v2WorkspaceReadsUseCanonicalLocationAndMapBinaryFilesSafely() async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            "/api/location": .init(statusCode: 200, body: Data(#"""
+            {
+              "directory": "/workspace/OpenLens",
+              "project": {"id": "openlens", "directory": "/workspace/OpenLens"}
+            }
+            """#.utf8)),
+            "/api/project": .init(statusCode: 200, body: Data(#"""
+            [{"id":"openlens","worktree":"/workspace/OpenLens","time":{"created":0}}]
+            """#.utf8)),
+            "/api/project/current": .init(statusCode: 200, body: Data(#"""
+            {"id":"openlens","directory":"/workspace/OpenLens","time":{"created":0}}
+            """#.utf8)),
+            "/api/fs/list": .init(statusCode: 200, body: Data(#"""
+            {
+              "location": {"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},
+              "data": [
+                {"path":"Sources","type":"directory"},
+                {"path":"README.md","type":"file"}
+              ]
+            }
+            """#.utf8)),
+            "/api/fs/read/README.md": .init(
+                statusCode: 200,
+                body: Data([0x89, 0x50, 0x4E, 0x47]),
+                headers: ["Content-Type": "image/png"]
+            ),
+            "/api/vcs": .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":{"branch":"main"}}
+            """#.utf8)),
+            "/api/vcs/status": .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":[{"file":"README.md","additions":2,"deletions":1,"status":"modified"}]}
+            """#.utf8)),
+            "/api/vcs/diff": .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":[{"file":"README.md","patch":"@@ -1,1 +1,1 @@\n-old\n+new\n","additions":1,"deletions":1,"status":"modified"}]}
+            """#.utf8))
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            contextDirectory: "/workspace/OpenLens-alias",
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        let location = try await client.getPath()
+        let currentProject = try await client.getCurrentProject()
+        let projects = try await client.listProjects()
+        let files = try await client.listFiles()
+        let vcs = try await client.getVCS()
+        let status = try await client.listFileStatus()
+        let diffs = try await client.getWorkingTreeDiff()
+        let binary = try await client.readFileContent(path: "README.md")
+
+        #expect(location.directory == "/workspace/OpenLens")
+        #expect(location.worktree == "/workspace/OpenLens")
+        #expect(currentProject.worktree == "/workspace/OpenLens")
+        #expect(projects.map(\.id) == ["openlens"])
+        #expect(files.map(\.path) == ["Sources", "README.md"])
+        #expect(files.map(\.name) == ["Sources", "README.md"])
+        #expect(vcs.branch == "main")
+        #expect(status == [OCWorkspaceFileStatus(path: "README.md", added: 2, removed: 1, status: "modified")])
+        #expect(ReviewFileChange(diff: try #require(diffs.first)).hasReadableDiff)
+        #expect(binary.type == "binary")
+        #expect(binary.resolvedTextContent == nil)
+
+        let requests = await transport.recordedRequests()
+        #expect(requests.allSatisfy { $0.headers["x-opencode-directory"] == nil })
+        #expect(requests.map(\.path) == [
+            "/api/info",
+            "/api/location",
+            "/api/project/current",
+            "/api/project",
+            "/api/fs/list",
+            "/api/vcs",
+            "/api/vcs/status",
+            "/api/vcs/diff",
+            "/api/fs/read/README.md"
+        ])
+        #expect(requests[1].queryItems["location[directory]"] == "/workspace/OpenLens-alias")
+        #expect(requests.dropFirst(2).allSatisfy { $0.queryItems["location[directory]"] == "/workspace/OpenLens" })
+    }
+
     @Test func reachableV2ServerIsSelectedFromServerInfoEvidence() async throws {
         let transport = OpenCodeContractTransport(routes: [
             "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse)
@@ -128,6 +212,12 @@ struct OpenCodeProtocolSelectionTests {
 }
 
 nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @unchecked Sendable {
+    struct RecordedRequest: Sendable {
+        let path: String
+        let queryItems: [String: String]
+        let headers: [String: String]
+    }
+
     struct Fixture: Sendable {
         let statusCode: Int
         let body: Data
@@ -142,6 +232,7 @@ nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @u
 
     private let routes: [String: Fixture]
     private let pathRecorder = OpenCodeContractPathRecorder()
+    private let requestRecorder = OpenCodeContractRequestRecorder()
     private let eventStreamData: Data?
     private let eventPathRecorder = OpenCodeContractPathRecorder()
 
@@ -153,6 +244,7 @@ nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @u
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         let path = request.url?.path ?? ""
         await pathRecorder.append(path)
+        await requestRecorder.append(request)
 
         guard let fixture = routes[path] else {
             throw MissingOpenCodeContractRoute(path: path)
@@ -189,6 +281,10 @@ nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @u
         await pathRecorder.values()
     }
 
+    func recordedRequests() async -> [RecordedRequest] {
+        await requestRecorder.values()
+    }
+
     func recordedEventPaths() async -> [String] {
         await eventPathRecorder.values()
     }
@@ -203,6 +299,29 @@ private actor OpenCodeContractPathRecorder {
 
     func values() -> [String] {
         paths
+    }
+}
+
+private actor OpenCodeContractRequestRecorder {
+    private var requests: [OpenCodeContractTransport.RecordedRequest] = []
+
+    func append(_ request: URLRequest) {
+        let queryItems = URLComponents(url: request.url ?? URL(string: "http://opencode.example.com")!, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .reduce(into: [String: String]()) { items, item in
+                items[item.name] = item.value
+            } ?? [:]
+        requests.append(
+            .init(
+                path: request.url?.path ?? "",
+                queryItems: queryItems,
+                headers: request.allHTTPHeaderFields ?? [:]
+            )
+        )
+    }
+
+    func values() -> [OpenCodeContractTransport.RecordedRequest] {
+        requests
     }
 }
 

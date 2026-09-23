@@ -85,9 +85,9 @@ final class WorkspaceService {
             throw OpenCodeError.notConnected
         }
 
+        let pathInfo = await tryPathInfo(client)
         async let currentProjectTask = tryCurrentProject(client)
         async let projectsTask = tryProjects(client)
-        async let pathInfoTask = tryPathInfo(client)
         async let vcsTask = tryVCS(client)
         async let commandsTask = tryCommands(client)
         async let filesTask = tryFiles(client, path: path)
@@ -95,7 +95,6 @@ final class WorkspaceService {
 
         let currentProject = await currentProjectTask
         let projects = await projectsTask
-        let pathInfo = await pathInfoTask
         let vcsInfo = await vcsTask
         let commands = await commandsTask
         let fileItems = await filesTask
@@ -128,13 +127,12 @@ final class WorkspaceService {
             throw OpenCodeError.notConnected
         }
 
+        let pathInfo = await tryPathInfo(client)
         async let currentProjectTask = tryCurrentProject(client)
         async let projectsTask = tryProjects(client)
-        async let pathInfoTask = tryPathInfo(client)
 
         let currentProject = await currentProjectTask
         let projects = await projectsTask
-        let pathInfo = await pathInfoTask
 
         return WorkspaceSelectionSnapshot(
             currentProject: currentProject,
@@ -163,6 +161,10 @@ final class WorkspaceService {
 
         let contextDirectory = await client.currentContextDirectory() ?? "nil"
         do {
+            let diffs = (try? await client.getWorkingTreeDiff()) ?? []
+            if let diff = diffs.first(where: { $0.resolvedPath == summary.path }) {
+                return ReviewFileChange(diff: diff)
+            }
             let content = try await client.readFileContent(path: summary.path)
             return summary.applying(content: content)
         } catch {
