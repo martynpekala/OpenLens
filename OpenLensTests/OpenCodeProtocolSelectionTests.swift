@@ -18,6 +18,24 @@ struct OpenCodeProtocolSelectionTests {
             "/api/project/current": .init(statusCode: 200, body: Data(#"""
             {"id":"openlens","directory":"/workspace/OpenLens","time":{"created":0}}
             """#.utf8)),
+            "/api/model": .init(statusCode: 200, body: Data(#"""
+            {
+              "location": {"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},
+              "data": [{"id":"coding-default","modelID":"gpt-5.2","providerID":"anthropic","name":"Claude Sonnet","capabilities":{"reasoning":true,"attachment":true,"toolcall":true},"variants":[]}]
+            }
+            """#.utf8)),
+            "/api/model/default": .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":{"id":"coding-default","modelID":"gpt-5.2","providerID":"anthropic","name":"Claude Sonnet","variants":[]}}
+            """#.utf8)),
+            "/api/provider": .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":[{"id":"anthropic","name":"Anthropic"}]}
+            """#.utf8)),
+            "/api/agent": .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":[{"name":"build","description":"Build the app"}]}
+            """#.utf8)),
+            "/api/command": .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":[{"name":"review","description":"Review the diff"}]}
+            """#.utf8)),
             "/api/fs/list": .init(statusCode: 200, body: Data(#"""
             {
               "location": {"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},
@@ -52,6 +70,9 @@ struct OpenCodeProtocolSelectionTests {
         let location = try await client.getPath()
         let currentProject = try await client.getCurrentProject()
         let projects = try await client.listProjects()
+        let providers = try await client.listProviders()
+        let agents = try await client.listAgents()
+        let commands = try await client.listCommands()
         let files = try await client.listFiles()
         let vcs = try await client.getVCS()
         let status = try await client.listFileStatus()
@@ -62,6 +83,14 @@ struct OpenCodeProtocolSelectionTests {
         #expect(location.worktree == "/workspace/OpenLens")
         #expect(currentProject.worktree == "/workspace/OpenLens")
         #expect(projects.map(\.id) == ["openlens"])
+        #expect(providers.all.map(\.id) == ["anthropic"])
+        #expect(providers.all.first?.name == "Anthropic")
+        #expect(providers.all.first?.modelList.map(\.id) == ["coding-default"])
+        #expect(providers.all.first?.modelList.first?.legacyModelID == "gpt-5.2")
+        #expect(providers.default?["id"] == "anthropic")
+        #expect(providers.default?["model"] == "coding-default")
+        #expect(agents.map(\.id) == ["build"])
+        #expect(commands.map(\.id) == ["review"])
         #expect(files.map(\.path) == ["Sources", "README.md"])
         #expect(files.map(\.name) == ["Sources", "README.md"])
         #expect(vcs.branch == "main")
@@ -77,6 +106,11 @@ struct OpenCodeProtocolSelectionTests {
             "/api/location",
             "/api/project/current",
             "/api/project",
+            "/api/model",
+            "/api/model/default",
+            "/api/provider",
+            "/api/agent",
+            "/api/command",
             "/api/fs/list",
             "/api/vcs",
             "/api/vcs/status",

@@ -680,8 +680,12 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
 /// Matches the provider list model shape:
 /// `{ id, name, release_date, attachment, reasoning, temperature, tool_call, capabilities?, cost?, limit, status?, options, ... }`
 /// We decode defensively — most fields are optional.
- struct OCProviderModel: Codable, Identifiable, Sendable {
+struct OCProviderModel: Codable, Identifiable, Sendable {
     let id: String
+    /// Provider-facing model ID when a v2 catalog alias has a different
+    /// selectable ID. This lets persisted v1 selections be reconciled without
+    /// replacing the catalog ID used by the v2 picker.
+    let legacyModelID: String?
     let name: String
     let releaseDate: String?
     let attachment: Bool?
@@ -702,11 +706,12 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
         case cost, limit, status, variants
     }
 
-    init(id: String, name: String, releaseDate: String? = nil, attachment: Bool? = nil,
+    init(id: String, legacyModelID: String? = nil, name: String, releaseDate: String? = nil, attachment: Bool? = nil,
          reasoning: Bool? = nil, temperature: Bool? = nil, toolCall: Bool? = nil,
          cost: OCModelCost? = nil, limit: OCModelLimit? = nil, status: String? = nil,
          variants: [String: OCProviderVariant]? = nil) {
         self.id = id
+        self.legacyModelID = legacyModelID
         self.name = name
         self.releaseDate = releaseDate
         self.attachment = attachment
@@ -723,6 +728,7 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let capabilities = try container.decodeIfPresent(OCProviderModelCapabilities.self, forKey: .capabilities)
         id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        legacyModelID = nil
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         releaseDate = try container.decodeIfPresent(String.self, forKey: .releaseDate)
         attachment = try container.decodeIfPresent(Bool.self, forKey: .attachment) ?? capabilities?.attachment
@@ -796,6 +802,28 @@ struct OCProviderVariant: Codable, Hashable, Sendable {
         case reasoningConfig
     }
 
+    init(
+        disabled: Bool? = nil,
+        reasoningEffort: String? = nil,
+        effort: String? = nil,
+        budgetTokens: Int? = nil,
+        maxReasoningEffort: String? = nil,
+        thinking: OCThinkingVariant? = nil,
+        thinkingConfig: OCThinkingVariant? = nil,
+        reasoning: OCReasoningVariant? = nil,
+        reasoningConfig: OCReasoningConfigVariant? = nil
+    ) {
+        self.disabled = disabled
+        self.reasoningEffort = reasoningEffort
+        self.effort = effort
+        self.budgetTokens = budgetTokens
+        self.maxReasoningEffort = maxReasoningEffort
+        self.thinking = thinking
+        self.thinkingConfig = thinkingConfig
+        self.reasoning = reasoning
+        self.reasoningConfig = reasoningConfig
+    }
+
     var isDisabled: Bool { disabled ?? false }
 
     var isThinkingEffortVariant: Bool {
@@ -859,21 +887,133 @@ struct OCReasoningConfigVariant: Codable, Hashable, Sendable {
 
 /// Response shape for `GET /provider`:
 /// `{ all: Provider[], default: { [key: string]: string }, connected: string[] }`
- struct OCProviderResponse: Codable, Sendable {
+struct OCProviderResponse: Codable, Sendable {
     let all: [OCProvider]
     let `default`: [String: String]?
     let connected: [String]?
 }
 
+/// A model returned by the v2 runtime catalog. The catalog ID is the stable
+/// selection value; `modelID` is the provider-facing identifier and can differ
+/// for configured aliases.
+nonisolated struct OCV2ModelInfo: Decodable, Sendable {
+    let id: String
+    let modelID: String
+    let providerID: String
+    let name: String?
+    let capabilities: OCV2ModelCapabilities?
+    let limit: OCModelLimit?
+    let variants: [String: OCProviderVariant]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, modelID, providerID, name, capabilities, limit, variants
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let catalogID = try container.decodeIfPresent(String.self, forKey: .id)?.nilIfBlank
+        let upstreamID = try container.decodeIfPresent(String.self, forKey: .modelID)?.nilIfBlank
+        guard let id = catalogID ?? upstreamID,
+              let providerID = try container.decodeIfPresent(String.self, forKey: .providerID)?.nilIfBlank else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "Expected non-empty model id and providerID."
+            )
+        }
+        self.id = id
+        modelID = upstreamID ?? id
+        self.providerID = providerID
+        name = try container.decodeIfPresent(String.self, forKey: .name)?.nilIfBlank
+        capabilities = try container.decodeIfPresent(OCV2ModelCapabilities.self, forKey: .capabilities)
+        limit = try container.decodeIfPresent(OCModelLimit.self, forKey: .limit)
+        if let variantsByID = try? container.decodeIfPresent([String: OCProviderVariant].self, forKey: .variants) {
+            variants = variantsByID
+        } else if let variantList = try? container.decodeIfPresent([OCV2ModelVariant].self, forKey: .variants) {
+            variants = variantList.isEmpty
+                ? nil
+                : Dictionary(uniqueKeysWithValues: variantList.map { ($0.id, $0.providerVariant) })
+        } else {
+            variants = nil
+        }
+    }
+}
+
+private nonisolated struct OCV2ModelVariant: Decodable, Sendable {
+    let id: String
+    let disabled: Bool?
+    let reasoningEffort: String?
+    let effort: String?
+    let budgetTokens: Int?
+    let thinking: OCThinkingVariant?
+    let reasoning: OCReasoningVariant?
+    let settings: OCProviderVariant?
+
+    enum CodingKeys: String, CodingKey {
+        case id, disabled, reasoningEffort, effort, budgetTokens, thinking, reasoning, settings
+    }
+
+    var providerVariant: OCProviderVariant {
+        OCProviderVariant(
+            disabled: settings?.disabled ?? disabled,
+            reasoningEffort: settings?.reasoningEffort ?? reasoningEffort,
+            effort: settings?.effort ?? effort,
+            budgetTokens: settings?.budgetTokens ?? budgetTokens,
+            maxReasoningEffort: settings?.maxReasoningEffort,
+            thinking: settings?.thinking ?? thinking,
+            thinkingConfig: settings?.thinkingConfig,
+            reasoning: settings?.reasoning ?? reasoning,
+            reasoningConfig: settings?.reasoningConfig
+        )
+    }
+}
+
+nonisolated struct OCV2ModelCapabilities: Decodable, Sendable {
+    let attachment: Bool?
+    let reasoning: Bool?
+    let toolCall: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case attachment, reasoning
+        case toolCall = "toolcall"
+        case toolCallSnake = "tool_call"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attachment = try container.decodeIfPresent(Bool.self, forKey: .attachment)
+        reasoning = try container.decodeIfPresent(Bool.self, forKey: .reasoning)
+        toolCall = try container.decodeIfPresent(Bool.self, forKey: .toolCall)
+            ?? container.decodeIfPresent(Bool.self, forKey: .toolCallSnake)
+    }
+}
+
+nonisolated struct OCV2ProviderInfo: Decodable, Sendable {
+    let id: String
+    let name: String?
+}
+
 /// The server's Config type is very large. We only decode the fields we use.
 /// Uses AnyCodable fallback to avoid decode failures on unknown fields.
- struct OCConfig: Codable, Sendable {
+struct OCConfig: Codable, Sendable {
     let model: String?
     let provider: [String: AnyCodable]?
     /// When set, ONLY these providers will be enabled. All others are ignored.
     let enabledProviders: [String]?
     /// Disable providers that are loaded automatically.
     let disabledProviders: [String]?
+
+    init(
+        model: String? = nil,
+        provider: [String: AnyCodable]? = nil,
+        enabledProviders: [String]? = nil,
+        disabledProviders: [String]? = nil
+    ) {
+        self.model = model
+        self.provider = provider
+        self.enabledProviders = enabledProviders
+        self.disabledProviders = disabledProviders
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)

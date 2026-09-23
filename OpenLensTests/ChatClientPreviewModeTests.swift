@@ -430,4 +430,28 @@ struct ChatClientPreviewModeTests {
         #expect(selection.modelID == nil)
         #expect(selection.unavailableDefaultModelID == "claude-sonnet-4-20250514")
     }
+
+    @Test func resolvesLegacySavedModelIDToAvailableV2CatalogAlias() {
+        let catalogModel = ChatClient.SelectableModel(
+            providerID: "openai",
+            providerName: "OpenAI",
+            modelID: "coding-default",
+            modelName: "Coding Default",
+            reasoning: true,
+            attachment: true,
+            toolCall: true,
+            cost: nil,
+            limit: nil,
+            variants: []
+        )
+
+        let selection = ChatClient.resolveSavedModelSelection(
+            providerID: "openai",
+            modelID: "gpt-5.2",
+            availableModels: [catalogModel],
+            legacyModelIDs: ["openai/gpt-5.2": "coding-default"]
+        )
+
+        #expect(selection?.id == "openai/coding-default")
+    }
 }

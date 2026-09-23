@@ -166,6 +166,46 @@ actor OpenCodeClient {
     // MARK: - Providers
 
     func listProviders() async throws -> OCProviderResponse {
+        if usesV2 {
+            let modelsResponse: OCV2Located<[OCV2ModelInfo]> = try await getV2Located("/api/model")
+            let defaultResponse: OCV2Located<OCV2ModelInfo>? = try? await getV2Located("/api/model/default")
+            let providersResponse: OCV2Located<[OCV2ProviderInfo]>? = try? await getV2Located("/api/provider")
+            let providerNames = Dictionary(
+                uniqueKeysWithValues: (providersResponse?.data ?? []).map { ($0.id, $0.name?.nilIfBlank ?? $0.id) }
+            )
+            let providers = Dictionary(grouping: modelsResponse.data, by: \.providerID)
+                .map { providerID, models in
+                    OCProvider(
+                        id: providerID,
+                        name: providerNames[providerID] ?? providerID,
+                        models: Dictionary(
+                            uniqueKeysWithValues: models.map { model in
+                                (
+                                    model.id,
+                                    OCProviderModel(
+                                        id: model.id,
+                                        legacyModelID: model.modelID == model.id ? nil : model.modelID,
+                                        name: model.name ?? model.id,
+                                        attachment: model.capabilities?.attachment,
+                                        reasoning: model.capabilities?.reasoning,
+                                        toolCall: model.capabilities?.toolCall,
+                                        limit: model.limit,
+                                        variants: model.variants
+                                    )
+                                )
+                            }
+                        )
+                    )
+                }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return OCProviderResponse(
+                all: providers,
+                default: defaultResponse.map {
+                    ["id": $0.data.providerID, "model": $0.data.id]
+                },
+                connected: nil
+            )
+        }
         try await get("/provider")
     }
 
@@ -180,20 +220,29 @@ actor OpenCodeClient {
     // MARK: - Config
 
     func getConfig() async throws -> OCConfig {
+        guard !usesV2 else {
+            return OCConfig(model: nil, provider: nil, enabledProviders: nil, disabledProviders: nil)
+        }
         try await get("/config")
     }
 
     // MARK: - Agents
 
     func listAgents() async throws -> [OCAgent] {
-        guard !usesV2 else { return [] }
+        if usesV2 {
+            let response: OCV2Located<[OCAgent]> = try await getV2Located("/api/agent")
+            return response.data
+        }
         return try await get("/agent")
     }
 
     // MARK: - Commands
 
     func listCommands() async throws -> [OCCommand] {
-        guard !usesV2 else { return [] }
+        if usesV2 {
+            let response: OCV2Located<[OCCommand]> = try await getV2Located("/api/command")
+            return response.data
+        }
         return try await get("/command")
     }
 

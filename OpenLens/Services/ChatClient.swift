@@ -323,7 +323,13 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     var defaultModelSelection: (providerID: String, modelID: String)? {
         guard let activeConnectionID = savedConnectionsStore?.activeConnectionID else { return nil }
-        return savedConnectionsStore?.defaultModelSelection(connectionID: activeConnectionID)
+        guard let saved = savedConnectionsStore?.defaultModelSelection(connectionID: activeConnectionID) else { return nil }
+        return Self.resolveSavedModelSelection(
+            providerID: saved.providerID,
+            modelID: saved.modelID,
+            availableModels: availableModels,
+            legacyModelIDs: legacyModelIDs
+        ).map { (providerID: $0.providerID, modelID: $0.modelID) }
     }
 
     private func applyPreferredDefaultModelSelection() {
@@ -378,7 +384,22 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard let savedConnectionsStore, let connectionID = quickModelConnectionID else {
             return inMemoryRecentModelIDs
         }
-        return savedConnectionsStore.recentModelSelections(connectionID: connectionID).map(\.id)
+        return savedConnectionsStore.recentModelSelections(connectionID: connectionID).map { saved in
+            Self.resolveSavedModelSelection(
+                providerID: saved.providerID,
+                modelID: saved.modelID,
+                availableModels: availableModels,
+                legacyModelIDs: legacyModelIDs
+            )?.id ?? saved.id
+        }
+    }
+
+    private var legacyModelIDs: [String: String] {
+        Dictionary(uniqueKeysWithValues: providers.flatMap { provider in
+            provider.models.values.compactMap { model in
+                model.legacyModelID.map { ("\(provider.id)/\($0)", model.id) }
+            }
+        })
     }
 
     /// Models assigned to the global Code and Review quick actions.
@@ -456,42 +477,28 @@ final class ChatClient: SSEEventHandlerDelegate {
         return true
     }
 
-    /// Removes assignments that no longer resolve after a successful provider
-    /// refresh. A missing variant resets to Default while retaining its model.
-    private func synchronizeQuickModelAssignments() {
-        var didChange = false
-
-        for action in ModelQuickAction.allCases {
-            guard let assignment = globalQuickModelAssignments[action] else { continue }
-
-            guard let model = availableModels.first(where: { $0.id == assignment.id }) else {
-                globalQuickModelAssignments.removeValue(forKey: action)
-                didChange = true
-                continue
-            }
-
-            guard let variant = assignment.variant else { continue }
-            let isAvailable = model.variants.contains {
-                $0.id == variant && $0.value.isThinkingEffortVariant
-            }
-            guard !isAvailable else { continue }
-
-            var updatedAssignment = assignment
-            updatedAssignment.variant = nil
-            globalQuickModelAssignments[action] = updatedAssignment
-            didChange = true
-        }
-
-        if didChange {
-            AppPreferences.saveQuickModelAssignments(globalQuickModelAssignments)
-            quickModelAssignmentsVersion &+= 1
-        }
-    }
-
     struct DefaultModelResolution: Equatable {
         let providerID: String?
         let modelID: String?
         let unavailableDefaultModelID: String?
+    }
+
+    static func resolveSavedModelSelection(
+        providerID: String,
+        modelID: String,
+        availableModels: [SelectableModel],
+        legacyModelIDs: [String: String]
+    ) -> SelectableModel? {
+        if let exactMatch = availableModels.first(where: {
+            $0.providerID == providerID && $0.modelID == modelID
+        }) {
+            return exactMatch
+        }
+
+        guard let catalogModelID = legacyModelIDs["\(providerID)/\(modelID)"] else { return nil }
+        return availableModels.first {
+            $0.providerID == providerID && $0.modelID == catalogModelID
+        }
     }
 
     static func resolveDefaultModelSelection(
@@ -1653,7 +1660,6 @@ final class ChatClient: SSEEventHandlerDelegate {
     func loadProviders() async {
         guard !isOfflinePreviewMode else { return }
         isLoadingProviders = true
-        var didLoadProvidersSuccessfully = false
         defer {
             isLoadingProviders = false
             quickModelAssignmentsVersion &+= 1
@@ -1667,6 +1673,9 @@ final class ChatClient: SSEEventHandlerDelegate {
         let savedDefault = savedConnectionsStore?.activeConnectionID.flatMap {
             savedConnectionsStore?.defaultModelSelection(connectionID: $0)
         }
+        let savedSelection = savedConnectionsStore?.activeConnectionID.flatMap {
+            savedConnectionsStore?.savedModelSelection(connectionID: $0)
+        }
         var serverDefault: (providerID: String, modelID: String)?
         let configDefault = configResult.defaultProviderID.flatMap { providerID in
             configResult.defaultModelID.map { (providerID: providerID, modelID: $0) }
@@ -1677,7 +1686,6 @@ final class ChatClient: SSEEventHandlerDelegate {
             let result = try await providersService!.loadProviders()
             self.providers = result.providers
             self.connectedProviderIDs = result.connectedProviderIDs
-            didLoadProvidersSuccessfully = true
             serverDefault = result.defaultProviderID.flatMap { providerID in
                 result.defaultModelID.map { (providerID: providerID, modelID: $0) }
             }
@@ -1686,14 +1694,36 @@ final class ChatClient: SSEEventHandlerDelegate {
             Logger.chat.error("loadProviders failed: \(error, privacy: .public)")
         }
 
+        let resolvedSavedDefault = savedDefault.flatMap { selection in
+            Self.resolveSavedModelSelection(
+                providerID: selection.providerID,
+                modelID: selection.modelID,
+                availableModels: availableModels,
+                legacyModelIDs: legacyModelIDs
+            ).map { (providerID: $0.providerID, modelID: $0.modelID) }
+        }
+        let resolvedSavedSelection = savedSelection.flatMap { selection in
+            Self.resolveSavedModelSelection(
+                providerID: selection.providerID,
+                modelID: selection.modelID,
+                availableModels: availableModels,
+                legacyModelIDs: legacyModelIDs
+            )
+        }
         let resolution = Self.resolveDefaultModelSelection(
-            savedDefault: savedDefault,
+            savedDefault: resolvedSavedDefault,
             serverDefault: serverDefault,
             configDefault: configDefault,
             availableModels: availableModels
         )
 
-        if let providerID = resolution.providerID,
+        if let resolvedSavedSelection {
+            preferredDefaultProviderID = resolution.providerID ?? ""
+            preferredDefaultModelID = resolution.modelID ?? ""
+            self.selectedProviderID = resolvedSavedSelection.providerID
+            self.selectedModelID = resolvedSavedSelection.modelID
+            self.selectedVariant = savedSelection?.variant
+        } else if let providerID = resolution.providerID,
            let modelID = resolution.modelID {
             preferredDefaultProviderID = providerID
             preferredDefaultModelID = modelID
@@ -1712,26 +1742,20 @@ final class ChatClient: SSEEventHandlerDelegate {
             errorMessage = AppText.defaultModelUnavailable(unavailableDefaultModelID)
         }
 
-        // Guard: if selected model's provider is filtered out, clear selection
-        // so the UI doesn't show a model the user can't actually use
+        // An unavailable saved selection is retained in the connection store so
+        // it can be restored when the server exposes it again. The current
+        // session instead falls back to a supported default where possible.
         if !selectedProviderID.isEmpty,
            !availableModels.contains(where: { $0.providerID == selectedProviderID && $0.modelID == selectedModelID }) {
-            Logger.chat.warning("Selected model \(self.selectedProviderID)/\(self.selectedModelID) is filtered out by config — clearing")
+            Logger.chat.warning("Selected model \(self.selectedProviderID)/\(self.selectedModelID) is unavailable — clearing current session selection")
             self.selectedProviderID = ""
             self.selectedModelID = ""
             self.selectedVariant = nil
-            if let connID = savedConnectionsStore?.activeConnectionID {
-                savedConnectionsStore?.clearModelSelection(connectionID: connID)
-            }
         } else if let selectedVariant,
                   !availableReasoningVariants.contains(where: { $0.id == selectedVariant }) {
             self.selectedVariant = nil
-            persistCurrentSelection()
         }
 
-        if didLoadProvidersSuccessfully {
-            synchronizeQuickModelAssignments()
-        }
     }
 
     static func recentSessionModelSelection(from messages: [ChatMessage]) -> (providerID: String, modelID: String)? {
