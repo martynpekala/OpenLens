@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A reachable v2 server is identified through capability-based probing, while a v1 server continues to select the supported v1 behavior.
-- [ ] Sanitized representative v1 and v2 HTTP/SSE contracts make the selected behavior and compatibility failures reproducible in tests.
+- [x] A reachable v2 server is identified through capability-based probing, while a v1 server continues to select the supported v1 behavior.
+- [x] Sanitized representative v1 and v2 HTTP/SSE contracts make the selected behavior and compatibility failures reproducible in tests.
