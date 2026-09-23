@@ -122,16 +122,17 @@ struct ChatView: View {
             await chatClient.recoverPendingQuestions()
         }
 
-        // Foreground recovery: refresh messages and questions when app becomes active
+        // Foreground recovery: stream events may have been missed while iOS
+        // suspended the app, so reconcile session and transcript before the
+        // incremental stream is considered current again.
         .onChange(of: scenePhase) { _, newPhase in
             updateShakeMonitoring(for: newPhase)
 
             if newPhase == .active {
                 chatClient.setupSSEHandlers()
+                chatClient.synchronizeCurrentSessionFromServer()
                 Task {
                     await loadCommands(force: true)
-                    await chatClient.refreshCurrentSessionStatus()
-                    await chatClient.loadMessages()
                     await chatClient.recoverPendingPermission()
                     await chatClient.recoverPendingQuestions()
                 }

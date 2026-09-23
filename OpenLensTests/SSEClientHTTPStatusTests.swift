@@ -2,11 +2,16 @@ import Foundation
 import Testing
 @testable import OpenLens
 
-private func makeActiveSSEConnection() -> (client: SSEClient, session: URLSession, task: URLSessionDataTask) {
+private func makeActiveSSEConnection(
+    protocolVersion: OpenCodeProtocol = .v1
+) -> (client: SSEClient, session: URLSession, task: URLSessionDataTask) {
     let url = URL(string: "http://127.0.0.1:1/event")!
     let session = URLSession(configuration: .ephemeral)
     let task = session.dataTask(with: url)
-    let client = SSEClient(baseURL: URL(string: "http://127.0.0.1:1")!)
+    let client = SSEClient(
+        baseURL: URL(string: "http://127.0.0.1:1")!,
+        protocolVersion: protocolVersion
+    )
     client.installActiveConnectionForTesting(session: session, task: task)
     return (client, session, task)
 }
@@ -33,6 +38,69 @@ private func textPartSnapshotRecord(partID: String, text: String) -> String {
 }
 
 struct SSEClientHTTPStatusTests {
+
+    @MainActor
+    @Test func v2FramingAcceptsSplitMultilineDataAndIgnoresUnknownEvents() async {
+        let connection = makeActiveSSEConnection(protocolVersion: .v2)
+        var synchronizationGaps: [SSEClient.SynchronizationGap] = []
+        connection.client.onSynchronizationGap = { synchronizationGaps.append($0) }
+
+        // The bytes, record, and JSON object are each split independently.
+        // Future event names deliberately have no reducer and must remain safe.
+        let firstChunk = "event: future.event\r\ndata: {\"first\": 1,\r\n"
+        let secondChunk = "data: \"second\": 2}\r\n\r\n"
+        connection.client.receiveDataForTesting(
+            session: connection.session,
+            task: connection.task,
+            data: Data(firstChunk.utf8)
+        )
+        connection.client.receiveDataForTesting(
+            session: connection.session,
+            task: connection.task,
+            data: Data(secondChunk.utf8)
+        )
+
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(synchronizationGaps.isEmpty)
+    }
+
+    @MainActor
+    @Test func v2DecodeFailureAndDisconnectReportSynchronizationGaps() async {
+        let decodeConnection = makeActiveSSEConnection(protocolVersion: .v2)
+        var decodeGaps: [SSEClient.SynchronizationGap] = []
+        decodeConnection.client.onSynchronizationGap = { decodeGaps.append($0) }
+        decodeConnection.client.receiveDataForTesting(
+            session: decodeConnection.session,
+            task: decodeConnection.task,
+            data: Data("event: session.updated\ndata: not-json\n\n".utf8)
+        )
+
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(decodeGaps == [.decodeFailure])
+
+        let malformedUpdateConnection = makeActiveSSEConnection(protocolVersion: .v2)
+        var malformedUpdateGaps: [SSEClient.SynchronizationGap] = []
+        malformedUpdateConnection.client.onSynchronizationGap = { malformedUpdateGaps.append($0) }
+        malformedUpdateConnection.client.receiveDataForTesting(
+            session: malformedUpdateConnection.session,
+            task: malformedUpdateConnection.task,
+            data: Data("event: message.part.delta\ndata: {\"sessionID\":\"session\"}\n\n".utf8)
+        )
+
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(malformedUpdateGaps == [.decodeFailure])
+
+        let disconnectConnection = makeActiveSSEConnection(protocolVersion: .v2)
+        var disconnectGaps: [SSEClient.SynchronizationGap] = []
+        disconnectConnection.client.onSynchronizationGap = { disconnectGaps.append($0) }
+        disconnectConnection.client.completeForTesting(
+            session: disconnectConnection.session,
+            task: disconnectConnection.task
+        )
+
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(disconnectGaps == [.disconnected])
+    }
 
     @Test func treats401AsTerminalAuthFailure() {
         #expect(isTerminalSSEHTTPStatus(401))

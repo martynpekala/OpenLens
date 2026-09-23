@@ -701,6 +701,13 @@ final class ChatClient: SSEEventHandlerDelegate {
     @ObservationIgnored private var stoppedStateClearTask: Task<Void, Never>?
     @ObservationIgnored private var ignoredAssistantMessageIDs: Set<String> = []
     @ObservationIgnored private var locallyStoppedSessionID: String?
+    /// A v2 stream has no resume cursor, so a transport or decoding gap must be
+    /// reconciled against the session and transcript endpoints. Coalesce gap
+    /// notifications while that authoritative refresh is in flight.
+    @ObservationIgnored private var streamSynchronizationTask: Task<Void, Never>?
+    @ObservationIgnored private var streamSynchronizationGeneration: UInt = 0
+    @ObservationIgnored private var streamSynchronizationToken: UUID?
+    private(set) var isStreamSynchronized = true
 
     /// Duration before a pending question is auto-rejected (5 minutes).
     private static let questionTimeoutSeconds: UInt64 = 300
@@ -1253,18 +1260,20 @@ final class ChatClient: SSEEventHandlerDelegate {
             await loadProviders()
         }
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
-        await loadMessages()
+        let didLoadMessages = await loadMessages()
+        isStreamSynchronized = didLoadMessages
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
         await recoverPendingPermission()
         await recoverPendingQuestions()
     }
 
-    func loadMessages() async {
-        guard !isOfflinePreviewMode, let session = currentSession else { return }
+    @discardableResult
+    func loadMessages() async -> Bool {
+        guard !isOfflinePreviewMode, let session = currentSession else { return false }
 
         do {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
-            guard !Task.isCancelled, currentSession?.id == session.id else { return }
+            guard !Task.isCancelled, currentSession?.id == session.id else { return false }
             let mergedMessages = mergeLoadedMessagesWithLocallyStoppedMessages(loaded)
             let revert = currentSession?.id == session.id
                 ? currentSession?.revert
@@ -1282,14 +1291,16 @@ final class ChatClient: SSEEventHandlerDelegate {
             self.contentVersion &+= 1
             self.scrollAnchor &+= 1
         } catch is CancellationError {
-            return
+            return false
         } catch {
-            guard currentSession?.id == session.id else { return }
+            guard currentSession?.id == session.id else { return false }
             self.errorMessage = "Failed to load messages: \(error.localizedDescription)"
+            return false
         }
 
         await refreshCurrentSessionStatus()
         await loadTodos()
+        return true
     }
 
     func unloadSession(ifMatching sessionID: String) {
@@ -1386,6 +1397,65 @@ final class ChatClient: SSEEventHandlerDelegate {
             reconcileCurrentSessionStatus(statuses[sessionID])
         } catch {
             Logger.chat.warning("refreshCurrentSessionStatus failed: \(error, privacy: .public)")
+        }
+    }
+
+    /// Replaces any potentially incomplete incremental stream state with the
+    /// authoritative session and transcript. Calls arriving while a refresh is
+    /// in flight collapse into one follow-up pass, preserving the newest state
+    /// without concurrent requests racing to overwrite the chat.
+    func synchronizeCurrentSessionFromServer() {
+        guard !isOfflinePreviewMode,
+              !isDemoMode,
+              !isRecordedReplayMode,
+              currentSession != nil,
+              sessionsService != nil,
+              messagesService != nil
+        else { return }
+
+        streamSynchronizationGeneration &+= 1
+        isStreamSynchronized = false
+        guard streamSynchronizationTask == nil else { return }
+        let token = UUID()
+        streamSynchronizationToken = token
+
+        streamSynchronizationTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                guard self.streamSynchronizationToken == token else { break }
+                let generation = self.streamSynchronizationGeneration
+                guard let sessionID = self.currentSession?.id,
+                      let sessionsService = self.sessionsService
+                else { break }
+
+                do {
+                    let session = try await sessionsService.getSession(id: sessionID)
+                    guard !Task.isCancelled,
+                          self.streamSynchronizationToken == token,
+                          self.currentSession?.id == sessionID
+                    else { break }
+                    self.currentSession = session
+
+                    guard await self.loadMessages(), self.currentSession?.id == sessionID else {
+                        break
+                    }
+                } catch is CancellationError {
+                    break
+                } catch {
+                    guard self.currentSession?.id == sessionID else { break }
+                    self.errorMessage = "Failed to synchronize chat: \(error.localizedDescription)"
+                    break
+                }
+
+                guard generation == self.streamSynchronizationGeneration else { continue }
+                self.isStreamSynchronized = true
+                break
+            }
+
+            guard self.streamSynchronizationToken == token else { return }
+            self.streamSynchronizationTask = nil
+            self.streamSynchronizationToken = nil
         }
     }
 
@@ -1619,6 +1689,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard !isOfflinePreviewMode else { return }
 
         resetSessionState()
+        isStreamSynchronized = false
         currentSession = nil
         inputText = ""
 
@@ -2276,6 +2347,9 @@ final class ChatClient: SSEEventHandlerDelegate {
                 self?.recordIncomingEvent(rawEvent)
             }
             self?.sseHandler?.handleInboundEvent(inboundEvent)
+        }
+        sseClient.onSynchronizationGap = { [weak self] _ in
+            self?.synchronizeCurrentSessionFromServer()
         }
     }
 
@@ -3099,6 +3173,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func resetSessionState() {
+        streamSynchronizationTask?.cancel()
+        streamSynchronizationTask = nil
+        streamSynchronizationToken = nil
+        streamSynchronizationGeneration &+= 1
+        isStreamSynchronized = true
         abortTask?.cancel()
         abortTask = nil
         streamingFinalizationTokens.removeAll()

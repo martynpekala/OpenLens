@@ -284,19 +284,24 @@ nonisolated enum SSEInboundEvent {
 
         switch event.type {
         case "session.status":
-            return .cold(.sessionStatus(SSESessionStatusUpdate(event: event)), rawEvent: rawEvent)
+            guard let update = SSESessionStatusUpdate(event: event) else { return nil }
+            return .cold(.sessionStatus(update), rawEvent: rawEvent)
 
         case "session.updated":
-            return .cold(.sessionUpdated(SSESessionUpdate(event: event)), rawEvent: rawEvent)
+            guard let update = SSESessionUpdate(event: event) else { return nil }
+            return .cold(.sessionUpdated(update), rawEvent: rawEvent)
 
         case "permission.asked", "permission.v2.asked":
-            return .cold(.permissionAsked(SSEPermissionAsked(event: event)), rawEvent: rawEvent)
+            guard let request = SSEPermissionAsked(event: event) else { return nil }
+            return .cold(.permissionAsked(request), rawEvent: rawEvent)
 
         case "question.asked":
-            return .cold(.questionAsked(SSEQuestionAsked(event: event)), rawEvent: rawEvent)
+            guard let request = SSEQuestionAsked(event: event) else { return nil }
+            return .cold(.questionAsked(request), rawEvent: rawEvent)
 
         case "todo.updated":
-            return .cold(.todoUpdated(SSETodoUpdated(event: event)), rawEvent: rawEvent)
+            guard let update = SSETodoUpdated(event: event) else { return nil }
+            return .cold(.todoUpdated(update), rawEvent: rawEvent)
 
         case "message.updated":
             guard let update = SSEMessageUpdate(event: event) else { return nil }
@@ -430,6 +435,15 @@ private enum SSETextChunker {
 final class SSEClient: NSObject, URLSessionDataDelegate {
 
     // MARK: - Types
+
+    /// A condition where incremental stream delivery may have omitted state.
+    /// Consumers must reload their authoritative state before treating the
+    /// stream as synchronized again.
+    enum SynchronizationGap: Equatable {
+        case disconnected
+        case decodeFailure
+        case overflow
+    }
 
     enum ConnectionState {
         case disconnected
@@ -677,6 +691,10 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// Called when the SSE endpoint returns a terminal HTTP status that should not auto-reconnect.
     var onTerminalHTTPError: ((Int) -> Void)?
 
+    /// Called once per v2 connection when the incremental stream can no longer
+    /// be relied upon as a complete representation of server state.
+    var onSynchronizationGap: ((SynchronizationGap) -> Void)?
+
     // MARK: - Private state (protected by `queue`)
 
     private let queue = DispatchQueue(label: "com.opencode.SSEClient", qos: .userInitiated)
@@ -750,6 +768,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// cascading one main-queue delivery per record.
     private var mainDeliverySelectionScheduled = false
     private var lastResponseStatusCode: Int?
+    private var hasReportedSynchronizationGap = false
     private let stateDeliveryGate = StateDeliveryGate()
 #if DEBUG
     private var connectionStartHandlerForTesting: (() -> Void)?
@@ -923,6 +942,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         isTransportPausedForMainBackpressure = false
         transportTaskSuspendedByBackpressure = false
         oversizedRecordCancellationPending = false
+        hasReportedSynchronizationGap = false
         pendingTransportCompletion = nil
         let stream = transport.makeEventStream(
             request: request,
@@ -1048,6 +1068,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     }
 
     private func completeTransport(error: Error?) {
+        reportSynchronizationGap(.disconnected)
         // A paused stream can still have complete records already received in
         // `buffer`. Drain those records through the same bounded mailbox before
         // tearing down the transport, otherwise a final tool/status/idle event
@@ -1264,6 +1285,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         oversizedRecordCancellationCountForTesting += 1
 #endif
         Logger.sse.error("Cancelling SSE stream after \(reason, privacy: .public)")
+        reportSynchronizationGap(.overflow)
         resetFramingBuffer()
         eventStream?.cancel()
         task?.cancel()
@@ -1294,6 +1316,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private func parseEvent(_ raw: Data, sourceByteCount: Int) -> Bool {
         guard let rawString = String(data: raw, encoding: .utf8) else {
             Logger.sse.error("Discarding malformed UTF-8 SSE record")
+            reportSynchronizationGap(.decodeFailure)
             return false
         }
 
@@ -1326,7 +1349,22 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return true
         } catch {
             Logger.sse.error("Parse error: \(error, privacy: .public) for data: \(jsonString.prefix(200), privacy: .private)")
+            reportSynchronizationGap(.decodeFailure)
             return false
+        }
+    }
+
+    /// A v2 event stream has no replay cursor. Once a record was dropped or a
+    /// transport ended, the only safe way to close the resulting gap is to
+    /// reconcile from REST. Coalesce all causes until the next connection so a
+    /// malformed record followed by the expected disconnect reloads once.
+    private func reportSynchronizationGap(_ gap: SynchronizationGap) {
+        guard protocolVersion == .v2, !hasReportedSynchronizationGap else { return }
+
+        hasReportedSynchronizationGap = true
+        let callback = onSynchronizationGap
+        DispatchQueue.main.async {
+            callback?(gap)
         }
     }
 
@@ -1422,12 +1460,31 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return
         }
 
+        if eventRequiresPreparedPayload(event.type) {
+            // The name is known, but its payload was not valid enough to form
+            // the typed update consumed by chat. Unlike a future event, it
+            // cannot be safely ignored without reconciling authoritative state.
+            reportSynchronizationGap(.decodeFailure)
+            return
+        }
+
         // Cold events are ordering barriers: any buffered stream data must be
         // visible before status changes, removals, permissions, or completion.
         flushPendingTextDelta()
         flushPendingPartUpdate()
         clearTextSnapshotCache(for: event)
         deliverInboundEvent(.raw(event), byteCount: sourceByteCount)
+    }
+
+    private func eventRequiresPreparedPayload(_ type: String) -> Bool {
+        switch type {
+        case "session.status", "session.updated", "permission.asked", "permission.v2.asked",
+             "question.asked", "todo.updated", "message.updated", "message.part.updated",
+             "message.part.delta":
+            true
+        default:
+            false
+        }
     }
 
     /// Converts a growing `message.part.updated` snapshot into a suffix delta
