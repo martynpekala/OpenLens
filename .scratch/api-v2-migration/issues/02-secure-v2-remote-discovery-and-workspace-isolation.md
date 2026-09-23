@@ -4,7 +4,7 @@
 
 **Blocked by:** 01: Establish v2 contract fixtures and runtime protocol selection.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A paired client can probe and select v2 through the encrypted remote transport without weakening v1 compatibility.
-- [ ] The relay permits only explicitly supported v2 routes and rejects encoded, duplicate, conflicting, or unregistered workspace locations.
+- [x] A paired client can probe and select v2 through the encrypted remote transport without weakening v1 compatibility.
+- [x] The relay permits only explicitly supported v2 routes and rejects encoded, duplicate, conflicting, or unregistered workspace locations.

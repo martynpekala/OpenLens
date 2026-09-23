@@ -197,14 +197,11 @@ final class WorkspaceRegistry: @unchecked Sendable {
 
     func isAllowed(_ requestedPath: String?) -> Bool {
         lock.withLock {
-            if requestedPath == nil || requestedPath?.isEmpty == true {
+            if requestedPath == nil {
                 return !records.isEmpty
             }
             guard let requestedPath else { return false }
-            let canonical = URL(fileURLWithPath: requestedPath, isDirectory: true)
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-                .path
+            guard let canonical = Self.canonicalPath(requestedPath) else { return false }
             return records.contains { $0.path == canonical }
         }
     }
@@ -212,14 +209,30 @@ final class WorkspaceRegistry: @unchecked Sendable {
     func resolvedPath(_ requestedPath: String?) -> String? {
         lock.withLock {
             if let requestedPath {
-                let canonical = URL(fileURLWithPath: requestedPath, isDirectory: true)
-                    .standardizedFileURL
-                    .resolvingSymlinksInPath()
-                    .path
+                guard let canonical = Self.canonicalPath(requestedPath) else { return nil }
                 return records.first(where: { $0.path == canonical })?.path
             }
             return records.first?.path
         }
+    }
+
+    private static func canonicalPath(_ path: String) -> String? {
+        guard !path.isEmpty,
+              path.hasPrefix("/"),
+              !path.hasPrefix("//"),
+              !path.contains("%"),
+              !path.contains("\\"),
+              !path.contains("\0"),
+              path.rangeOfCharacter(from: .newlines) == nil
+        else {
+            return nil
+        }
+
+        let canonical = URL(fileURLWithPath: path, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        return canonical == path ? canonical : nil
     }
 
     private func persistLocked() throws {

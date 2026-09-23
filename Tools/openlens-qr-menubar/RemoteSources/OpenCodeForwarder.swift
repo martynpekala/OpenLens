@@ -5,13 +5,21 @@ final class OpenCodeForwarder: @unchecked Sendable {
     private let authHeader: String
     private let session: URLSession
 
-    init(workspaceRegistry: WorkspaceRegistry, password: String) {
+    init(
+        workspaceRegistry: WorkspaceRegistry,
+        password: String,
+        session: URLSession? = nil
+    ) {
         self.workspaceRegistry = workspaceRegistry
         authHeader = "Basic " + Data("opencode:\(password)".utf8).base64EncodedString()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 300
-        session = URLSession(configuration: configuration)
+        if let session {
+            self.session = session
+        } else {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 30
+            configuration.timeoutIntervalForResource = 300
+            self.session = URLSession(configuration: configuration)
+        }
     }
 
     func perform(_ request: RemoteHTTPRequest) async throws -> RemoteHTTPResponse {
@@ -51,23 +59,17 @@ final class OpenCodeForwarder: @unchecked Sendable {
         from remote: RemoteHTTPRequest,
         requiresEventStream: Bool
     ) throws -> URLRequest {
-        let decodedPathAndQuery = remote.pathAndQuery.removingPercentEncoding ?? remote.pathAndQuery
+        let parsed = try Self.parsePathAndQuery(remote.pathAndQuery)
+        let path = parsed.path
         guard Self.allowedMethods.contains(remote.method),
-              remote.pathAndQuery.hasPrefix("/"),
-              !remote.pathAndQuery.hasPrefix("//"),
-              !remote.pathAndQuery.contains(".."),
-              !decodedPathAndQuery.contains(".."),
-              !decodedPathAndQuery.contains("\\"),
-              !remote.pathAndQuery.contains("://"),
               (remote.body?.count ?? 0) <= RemoteProtocolVersion.maximumHTTPBodyBytes
         else {
             throw RemoteProtocolError.invalidRequest
         }
 
-        let path = String(remote.pathAndQuery.split(separator: "?", maxSplits: 1).first ?? "")
         guard Self.isAllowed(method: remote.method, path: path),
-              (!requiresEventStream || path == "/event"),
-              (requiresEventStream || path != "/event")
+              (!requiresEventStream || Self.eventStreamPaths.contains(path)),
+              (requiresEventStream || !Self.eventStreamPaths.contains(path))
         else {
             throw RemoteProtocolError.invalidRequest
         }
@@ -76,20 +78,54 @@ final class OpenCodeForwarder: @unchecked Sendable {
             $0.key.caseInsensitiveCompare("x-opencode-directory") == .orderedSame
         }
         guard directoryHeaders.count <= 1 else { throw RemoteProtocolError.invalidRequest }
-        let requestedDirectory = directoryHeaders.first?.value
-        guard workspaceRegistry.isAllowed(requestedDirectory),
-              let allowedDirectory = workspaceRegistry.resolvedPath(requestedDirectory)
+        let requestedHeaderDirectory = directoryHeaders.first?.value
+        let directoryQueryItems = parsed.queryItems.filter {
+            ["directory", "location[directory]"].contains($0.name.lowercased())
+        }
+        guard directoryQueryItems.count <= 1 else { throw RemoteProtocolError.invalidRequest }
+        if parsed.queryItems.contains(where: {
+            ["workspace", "location[workspace]"].contains($0.name.lowercased())
+        }) {
+            throw RemoteProtocolError.invalidRequest
+        }
+
+        let requestedQueryDirectory = directoryQueryItems.first.map(\.value)
+        guard requestedHeaderDirectory == nil || requestedQueryDirectory == nil,
+              let allowedDirectory = workspaceRegistry.resolvedPath(
+                  requestedHeaderDirectory ?? requestedQueryDirectory
+              )
         else {
             throw RemoteProtocolError.invalidRequest
+        }
+
+        if let queryDirectory = directoryQueryItems.first {
+            guard queryDirectory.rawName == queryDirectory.name,
+                  queryDirectory.rawValue == queryDirectory.value
+            else {
+                throw RemoteProtocolError.invalidRequest
+            }
         }
 
         var components = URLComponents()
         components.scheme = "http"
         components.host = "127.0.0.1"
         components.port = Int(RemoteProtocolVersion.openCodePort)
-        let split = remote.pathAndQuery.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-        components.percentEncodedPath = String(split[0])
-        if split.count == 2 { components.percentEncodedQuery = String(split[1]) }
+        components.percentEncodedPath = path
+        let forwardedQuery = parsed.queryItems
+            .filter { !["directory", "location[directory]"].contains($0.name.lowercased()) }
+            .map { $0.rawPair }
+            .joined(separator: "&")
+        if path.hasPrefix("/api/") {
+            let v2LocationQuery = try [
+                Self.encodedQueryItem(name: "directory", value: allowedDirectory),
+                Self.encodedQueryItem(name: "location[directory]", value: allowedDirectory),
+            ].joined(separator: "&")
+            components.percentEncodedQuery = [forwardedQuery, v2LocationQuery]
+                .filter { !$0.isEmpty }
+                .joined(separator: "&")
+        } else if !forwardedQuery.isEmpty {
+            components.percentEncodedQuery = forwardedQuery
+        }
         guard let url = components.url else { throw RemoteProtocolError.invalidRequest }
 
         var request = URLRequest(url: url)
@@ -97,7 +133,9 @@ final class OpenCodeForwarder: @unchecked Sendable {
         request.httpBody = remote.body
         request.timeoutInterval = requiresEventStream ? .infinity : 30
         request.setValue(authHeader, forHTTPHeaderField: "Authorization")
-        request.setValue(allowedDirectory, forHTTPHeaderField: "x-opencode-directory")
+        if !path.hasPrefix("/api/") {
+            request.setValue(allowedDirectory, forHTTPHeaderField: "x-opencode-directory")
+        }
         remote.headers.forEach { name, value in
             guard Self.forwardedRequestHeaders.contains(name.lowercased()),
                   !value.contains("\r"),
@@ -110,13 +148,22 @@ final class OpenCodeForwarder: @unchecked Sendable {
 
     private static let allowedMethods: Set<String> = ["GET", "POST", "PATCH", "DELETE"]
     private static let forwardedRequestHeaders: Set<String> = ["accept", "content-type"]
+    private static let eventStreamPaths: Set<String> = ["/event", "/api/event"]
 
     static func isAllowed(method: String, path: String) -> Bool {
+        guard !path.contains("%"),
+              !path.contains("\\"),
+              path.hasPrefix("/"),
+              !path.hasPrefix("//")
+        else { return false }
+
         let segments = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         guard path == "/" + segments.joined(separator: "/") else { return false }
 
         switch (method, segments) {
         case ("GET", ["global", "health"]),
+             ("GET", ["api", "info"]),
+             ("GET", ["api", "event"]),
              ("GET", ["session"]),
              ("POST", ["session"]),
              ("GET", ["session", "status"]),
@@ -182,6 +229,74 @@ final class OpenCodeForwarder: @unchecked Sendable {
         }
 
         return false
+    }
+
+    private struct QueryItem {
+        let rawName: String
+        let rawValue: String
+        let name: String
+        let value: String
+
+        var rawPair: String {
+            rawValue.isEmpty ? rawName : "\(rawName)=\(rawValue)"
+        }
+    }
+
+    private struct ParsedPathAndQuery {
+        let path: String
+        let queryItems: [QueryItem]
+    }
+
+    private static func parsePathAndQuery(_ pathAndQuery: String) throws -> ParsedPathAndQuery {
+        let split = pathAndQuery.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let path = String(split[0])
+        guard path.hasPrefix("/"),
+              !path.hasPrefix("//"),
+              !path.contains("://"),
+              split.count < 2 || !String(split[1]).contains("#")
+        else {
+            throw RemoteProtocolError.invalidRequest
+        }
+
+        guard split.count == 2 else {
+            return ParsedPathAndQuery(path: path, queryItems: [])
+        }
+
+        let query = String(split[1])
+        guard !query.isEmpty else {
+            throw RemoteProtocolError.invalidRequest
+        }
+
+        let queryItems = try query
+            .split(separator: "&", omittingEmptySubsequences: false)
+            .map { pair -> QueryItem in
+                guard !pair.isEmpty else { throw RemoteProtocolError.invalidRequest }
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                let rawName = String(parts[0])
+                let rawValue = parts.count == 2 ? String(parts[1]) : ""
+                guard let name = rawName.removingPercentEncoding,
+                      let value = rawValue.removingPercentEncoding,
+                      !name.isEmpty
+                else {
+                    throw RemoteProtocolError.invalidRequest
+                }
+                return QueryItem(
+                    rawName: rawName,
+                    rawValue: rawValue,
+                    name: name,
+                    value: value
+                )
+            }
+        return ParsedPathAndQuery(path: path, queryItems: queryItems)
+    }
+
+    private static func encodedQueryItem(name: String, value: String) throws -> String {
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: name, value: value)]
+        guard let query = components.percentEncodedQuery else {
+            throw RemoteProtocolError.invalidRequest
+        }
+        return query
     }
 
     private static func isSafeIdentifier(_ value: String) -> Bool {

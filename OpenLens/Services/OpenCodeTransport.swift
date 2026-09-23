@@ -575,7 +575,7 @@ private actor RemoteWebSocketSession {
 
         case .eventCompleted:
             let subscription = subscriptions.removeValue(forKey: message.id)
-            subscription?.onComplete(message.errorCode.map(RemoteProtocolError.remoteError))
+            subscription?.onComplete(message.errorCode.map { Self.remoteError(for: $0) })
 
         case .ping:
             try await send(RemoteMessage(kind: .pong, id: message.id))
@@ -583,15 +583,20 @@ private actor RemoteWebSocketSession {
         case .error:
             if let continuation = pendingRequests.removeValue(forKey: message.id) {
                 requestTimeouts.removeValue(forKey: message.id)?.cancel()
-                continuation.resume(throwing: RemoteProtocolError.remoteError(message.errorCode ?? "unknown"))
+                continuation.resume(throwing: Self.remoteError(for: message.errorCode))
             } else if let subscription = subscriptions.removeValue(forKey: message.id) {
-                subscription.onComplete(RemoteProtocolError.remoteError(message.errorCode ?? "unknown"))
+                subscription.onComplete(Self.remoteError(for: message.errorCode))
             }
 
         case .sessionHello, .sessionWelcome, .request, .subscribeEvents,
              .unsubscribeEvents, .pong:
             break
         }
+    }
+
+    private static func remoteError(for code: String?) -> RemoteProtocolError {
+        guard let code else { return .remoteError("unknown") }
+        return code == "invalid_request" ? .invalidRequest : .remoteError(code)
     }
 
     private func timeOutRequest(id: String) {

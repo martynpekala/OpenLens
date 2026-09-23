@@ -155,6 +155,7 @@ struct GatewayIntegrationTests {
             )
         )
         #expect(errorMessage.kind == .error)
+        #expect(errorMessage.errorCode == "invalid_request")
         #expect(errorMessage.id == invalidRequest.id)
 
         try await sessionSocket.send(.data(try requestEnvelope.encoded()))
@@ -247,6 +248,87 @@ struct GatewayIntegrationTests {
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/session/ses_123/shell"))
         #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/global/health"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/session/../config"))
+    }
+
+    @Test func remoteRouteTableIncludesV2ProbeAndEventWithoutChangingV1() {
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/info"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/event"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/event"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/info"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/%65vent"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/info/../event"))
+    }
+
+    @Test func remoteRelayRejectsAmbiguousOrUnregisteredV2WorkspaceLocations() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registry = WorkspaceRegistry(
+            storageURL: root.appendingPathComponent("allowlist.json")
+        )
+        _ = try registry.add(url: root)
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test-password")
+        let deliveryQueue = DispatchQueue(label: "remote-workspace-test")
+
+        let acceptedStream = try forwarder.makeEventStream(
+            request: RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/event",
+                headers: ["x-opencode-directory": root.path]
+            ),
+            deliveryQueue: deliveryQueue,
+            onOpened: { _, _ in },
+            onData: { _ in },
+            onComplete: { _ in }
+        )
+        acceptedStream.cancel()
+
+        let requests = [
+            RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/event",
+                headers: [
+                    "x-opencode-directory": root.path,
+                    "X-OpenCode-Directory": root.path,
+                ]
+            ),
+            RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/event?directory=\(root.path)",
+                headers: ["x-opencode-directory": root.path]
+            ),
+            RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/event?directory=\(root.path)/unregistered"
+            ),
+            RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/event?directory=\(root.path.replacingOccurrences(of: "/", with: "%2F"))"
+            ),
+            RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/event?directory=\(root.path)&location[directory]=\(root.path)"
+            ),
+            RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/event",
+                headers: ["x-opencode-directory": root.path.replacingOccurrences(of: "/", with: "%2F")]
+            ),
+        ]
+
+        for request in requests {
+            #expect(throws: RemoteProtocolError.invalidRequest) {
+                _ = try forwarder.makeEventStream(
+                    request: request,
+                    deliveryQueue: deliveryQueue,
+                    onOpened: { _, _ in },
+                    onData: { _ in },
+                    onComplete: { _ in }
+                )
+            }
+        }
     }
 
     @Test func accessJWTRequiresSignatureIssuerAudienceExpiryAndServiceTokenIdentity() throws {
