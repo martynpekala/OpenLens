@@ -1438,6 +1438,22 @@ nonisolated struct OCV2Located<Value: Decodable & Sendable>: Decodable, Sendable
     let data: Value
 }
 
+/// A v2 response whose payload is independent of the active location.
+nonisolated struct OCV2Envelope<Value: Decodable & Sendable>: Decodable, Sendable {
+    let data: Value
+}
+
+/// A cursor page returned by the v2 session and session-message endpoints.
+nonisolated struct OCV2CursorPage<Value: Decodable & Sendable>: Decodable, Sendable {
+    nonisolated struct Cursor: Decodable, Sendable {
+        let previous: String?
+        let next: String?
+    }
+
+    let data: Value
+    let cursor: Cursor
+}
+
 nonisolated struct OCV2FileSystemEntry: Codable, Sendable {
     let path: String
     let type: String
