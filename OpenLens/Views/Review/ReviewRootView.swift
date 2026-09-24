@@ -38,7 +38,7 @@ struct ReviewRootView: View {
         }
     }
 
-    enum ViewState {
+    enum ViewState: Equatable {
         case idle
         case loading
         case loaded
@@ -779,12 +779,38 @@ struct ReviewRootView: View {
         do {
             try await reviewService.revertChangeSet(sessionID: sessionID, messageID: changeSet.id)
             changeSetToRevert = nil
-            if chatClient.currentSession?.id == sessionID {
-                await chatClient.loadMessages()
+            guard await refreshAfterRevertAttempt(sessionID: sessionID) else {
+                showRevertRefreshFailure()
+                return
             }
-            await loadReview(force: true)
         } catch {
-            viewState = .error(error.localizedDescription)
+            // A staged revert can fail after the server changed its preview.
+            // Always replace the displayed review snapshot before reporting the
+            // failure so the user can safely retry once the session is idle.
+            guard await refreshAfterRevertAttempt(sessionID: sessionID) else {
+                showRevertRefreshFailure()
+                return
+            }
         }
+    }
+
+    private func refreshAfterRevertAttempt(sessionID: String) async -> Bool {
+        let refreshedChat = if chatClient.currentSession?.id == sessionID {
+            await chatClient.refreshCurrentSessionFromServer()
+        } else {
+            true
+        }
+        await refreshAvailableSessions(preferActiveSession: false)
+        await loadReview(force: true)
+        return refreshedChat && viewState == .loaded
+    }
+
+    private func showRevertRefreshFailure() {
+        // Do not continue showing a stale diff after an incomplete server
+        // mutation. The explicit error state leaves pull-to-refresh available
+        // for a safe recovery.
+        reviewSnapshot = nil
+        selectedScopeState = .empty
+        viewState = .error("The revert state could not be refreshed. Pull to refresh and retry once the session is idle.")
     }
 }

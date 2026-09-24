@@ -525,6 +525,15 @@ actor OpenCodeClient {
     // MARK: - Diffs
 
     func getSessionDiff(sessionID: String, messageID: String? = nil) async throws -> [OCFileDiff] {
+        if usesV2 {
+            let queryItems = messageID.map { [URLQueryItem(name: "messageID", value: $0)] } ?? []
+            let response: OCV2Located<[OCFileDiff]> = try await getV2Located(
+                "/api/session/\(sessionID)/diff",
+                queryItems: queryItems
+            )
+            return response.data
+        }
+
         var path = "/session/\(sessionID)/diff"
         if let messageID { path += "?messageID=\(messageID)" }
         return try await get(path)
@@ -597,6 +606,47 @@ actor OpenCodeClient {
     /// it. Older OpenCode versions returned a boolean acknowledgement, which is
     /// also accepted for compatibility.
     func revertMessage(sessionID: String, messageID: String, partID: String? = nil) async throws -> OCSession? {
+        if usesV2 {
+            do {
+                // Clear a previous, uncommitted preview before creating the new
+                // boundary. This makes the one-tap action safe to retry after a
+                // disrupted revert attempt.
+                try await sendV2RequestDiscardingResponse(
+                    method: "POST",
+                    path: "/api/session/\(sessionID)/revert/clear",
+                    includesLocation: false
+                )
+                try await sendV2RequestDiscardingResponse(
+                    method: "POST",
+                    path: "/api/session/\(sessionID)/revert/stage",
+                    body: OCV2RevertStageInput(messageID: messageID, files: true),
+                    includesLocation: false
+                )
+                try await sendV2RequestDiscardingResponse(
+                    method: "POST",
+                    path: "/api/session/\(sessionID)/revert/commit",
+                    includesLocation: false
+                )
+
+                // The mutation endpoints acknowledge without the canonical
+                // session projection, so refetch before callers refresh their
+                // transcript and diff state.
+                return try await getSession(id: sessionID)
+            } catch {
+                // Stage/commit can race a busy session. If any part of the
+                // sequence already changed server state, surface that latest
+                // snapshot so the UI can recover rather than retaining a stale
+                // transcript or diff.
+                if let session = try? await getSession(id: sessionID) {
+                    throw OpenCodeError.incompleteRevert(
+                        session: session,
+                        reason: error.localizedDescription
+                    )
+                }
+                throw error
+            }
+        }
+
         var body: [String: Any] = ["messageID": messageID]
         if let partID { body["partID"] = partID }
         return try await postOptionallyDecoding("/session/\(sessionID)/revert", body: body)
@@ -1021,6 +1071,7 @@ enum OpenCodeError: LocalizedError {
     case notConnected
     case invalidURL
     case invalidPayload(String)
+    case incompleteRevert(session: OCSession, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -1029,6 +1080,8 @@ enum OpenCodeError: LocalizedError {
         case .notConnected: return "Not connected to server."
         case .invalidURL: return "Invalid server URL."
         case .invalidPayload(let message): return message
+        case .incompleteRevert(_, let reason):
+            return "Revert did not finish. The latest session state was refreshed: \(reason)"
         }
     }
 }

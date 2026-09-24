@@ -2000,3 +2000,9 @@ nonisolated struct AnyCodable: Codable {
         }
     }
 }
+
+/// v2 creates a reversible boundary before committing a one-tap revert.
+nonisolated struct OCV2RevertStageInput: Encodable, Sendable {
+    let messageID: String
+    let files: Bool
+}

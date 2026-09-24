@@ -1383,6 +1383,20 @@ final class ChatClient: SSEEventHandlerDelegate {
             await loadMessages()
         } catch {
             guard currentSession?.id == session.id else { return }
+
+            let didRefresh: Bool
+            if let revertError = error as? OpenCodeError,
+               case .incompleteRevert(let recoveredSession, _) = revertError {
+                currentSession = recoveredSession
+                didRefresh = await loadMessages()
+            } else {
+                didRefresh = await refreshCurrentSessionFromServer()
+            }
+
+            guard currentSession?.id == session.id else { return }
+            if !didRefresh {
+                discardStaleTranscriptAndDiffState()
+            }
             errorMessage = "Failed to undo message: \(error.localizedDescription)"
         }
     }
@@ -1403,6 +1417,52 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         await undo(message)
+    }
+
+    /// Reloads the active session projection and transcript after a user-driven
+    /// mutation whose server result may be incomplete or conflict with ongoing
+    /// work. The REST snapshot keeps the chat and turn-diff state recoverable.
+    @discardableResult
+    func refreshCurrentSessionFromServer() async -> Bool {
+        guard !isOfflinePreviewMode,
+              !isDemoMode,
+              !isRecordedReplayMode,
+              let sessionID = currentSession?.id,
+              let sessionsService
+        else { return false }
+
+        do {
+            let session = try await sessionsService.getSession(id: sessionID)
+            guard currentSession?.id == sessionID else { return false }
+            currentSession = session
+            let didRefresh = await loadMessages()
+            guard currentSession?.id == sessionID else { return false }
+            if !didRefresh {
+                discardStaleTranscriptAndDiffState()
+            }
+            return didRefresh
+        } catch is CancellationError {
+            return false
+        } catch {
+            guard currentSession?.id == sessionID else { return false }
+            discardStaleTranscriptAndDiffState()
+            errorMessage = "Failed to refresh the session: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func discardStaleTranscriptAndDiffState() {
+        turnDiffTasksByAssistantID.values.forEach { $0.cancel() }
+        turnDiffTasksByAssistantID.removeAll()
+        resolvedTurnDiffAssistantIDs.removeAll()
+        turnFileDetailCache.removeAll()
+        turnFileDetailCacheOrder.removeAll()
+        pendingAssistantMessage = nil
+        messages = []
+        contentVersion &+= 1
+        timelineVersion &+= 1
+        scrollAnchor &+= 1
+        isStreamSynchronized = false
     }
 
     func refreshCurrentSessionStatus() async {
