@@ -181,10 +181,18 @@ final class OpenCodeForwarder: @unchecked Sendable {
              ("GET", ["api", "info"]),
              ("GET", ["api", "event"]),
              ("GET", ["api", "session", "active"]),
+             ("GET", ["api", "session"]),
+             ("POST", ["api", "session"]),
              ("GET", ["api", "location"]),
              ("GET", ["api", "project"]),
              ("GET", ["api", "project", "current"]),
+             ("GET", ["api", "model"]),
+             ("GET", ["api", "model", "default"]),
+             ("GET", ["api", "provider"]),
+             ("GET", ["api", "agent"]),
+             ("GET", ["api", "command"]),
              ("GET", ["api", "form"]),
+             ("GET", ["api", "permission", "request"]),
              ("GET", ["api", "fs", "list"]),
              ("GET", ["api", "vcs"]),
              ("GET", ["api", "vcs", "diff"]),
@@ -262,6 +270,63 @@ final class OpenCodeForwarder: @unchecked Sendable {
            segments[1] == "session",
            isSafeIdentifier(segments[2]),
            segments[3] == "command" {
+            return true
+        }
+
+        if segments.count == 3,
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]) {
+            return ["GET", "PATCH", "DELETE"].contains(method)
+        }
+
+        if segments.count == 4,
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]) {
+            switch (method, segments[3]) {
+            case ("POST", "interrupt"),
+                 ("GET", "message"),
+                 ("POST", "prompt"),
+                 ("POST", "model"),
+                 ("POST", "agent"),
+                 ("GET", "diff"),
+                 ("GET", "permission"),
+                 ("GET", "form"):
+                return true
+            default:
+                return false
+            }
+        }
+
+        if segments.count == 5,
+           method == "GET",
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]),
+           segments[3] == "message",
+           isSafeIdentifier(segments[4]) {
+            return true
+        }
+
+        if segments.count == 6,
+           method == "POST",
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]),
+           segments[3] == "permission",
+           isSafeIdentifier(segments[4]),
+           segments[5] == "reply" {
+            return true
+        }
+
+        if segments.count == 5,
+           method == "POST",
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]),
+           segments[3] == "revert",
+           ["clear", "stage", "commit"].contains(segments[4]) {
             return true
         }
 

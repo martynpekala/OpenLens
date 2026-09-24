@@ -20,9 +20,11 @@ Remote relay forwards only its explicit allowlist, including both
 
 ### v2 conventions
 
-- Location-scoped routes include `location[directory]` after the app resolves
-  the canonical location. Session status and message detail requests are not
-  location-scoped.
+- Direct location-scoped routes include `location[directory]` after the app
+  resolves the canonical location. Direct session-status and message-detail
+  requests are not location-scoped; the Remote relay still injects its
+  authenticated canonical workspace query on every forwarded `/api/*` route
+  to preserve workspace isolation.
 - Most v2 projections use `{ "data": ... }`; location-aware projections also
   include `{ "location": ..., "data": ... }`.
 - Non-2xx v2 responses with an OpenCode error document are surfaced as a typed

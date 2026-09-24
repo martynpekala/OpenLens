@@ -276,6 +276,77 @@ struct GatewayIntegrationTests {
         #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/../command"))
     }
 
+    @Test func remoteRouteTableCoversTheV2ClientSessionSurface() {
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/model"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/model/default"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/provider"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/agent"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/command"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/permission/request"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123"))
+        #expect(OpenCodeForwarder.isAllowed(method: "PATCH", path: "/api/session/ses_123"))
+        #expect(OpenCodeForwarder.isAllowed(method: "DELETE", path: "/api/session/ses_123"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/interrupt"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/message"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/message/msg_456"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/prompt"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/model"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/agent"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/diff"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/permission"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/permission/per_456/reply"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/revert/clear"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/revert/stage"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/revert/commit"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/revert/clear"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/../prompt"))
+    }
+
+    @Test func remoteV2ForwardingPreservesAuthenticationErrorsAndCanonicalWorkspace() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+
+        ForwarderURLProtocol.setResponse(
+            statusCode: 401,
+            body: Data(#"{"_tag":"UnauthorizedError","message":"Wrong password"}"#.utf8)
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(
+            workspaceRegistry: registry,
+            password: "test-password",
+            session: URLSession(configuration: configuration)
+        )
+
+        let response = try await forwarder.perform(
+            RemoteHTTPRequest(
+                method: "GET",
+                pathAndQuery: "/api/session/active",
+                headers: ["x-opencode-directory": root.path]
+            )
+        )
+        let forwarded = try #require(ForwarderURLProtocol.recordedRequest())
+        let queryItems = URLComponents(url: try #require(forwarded.url), resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .reduce(into: [String: String]()) { items, item in
+                items[item.name] = item.value
+            }
+
+        #expect(response.statusCode == 401)
+        #expect(response.body == Data(#"{"_tag":"UnauthorizedError","message":"Wrong password"}"#.utf8))
+        #expect(forwarded.url?.path == "/api/session/active")
+        #expect(forwarded.value(forHTTPHeaderField: "Authorization") == "Basic b3BlbmNvZGU6dGVzdC1wYXNzd29yZA==")
+        #expect(queryItems?["directory"] == root.path)
+        #expect(queryItems?["location[directory]"] == root.path)
+    }
+
     @Test func remoteRouteTableAllowsOnlyDocumentedV2FormOperations() {
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/form"))
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/form/frm_456/reply"))
@@ -606,6 +677,58 @@ struct GatewayIntegrationTests {
             clientSecret: "integration-test-client-secret"
         )
     }
+}
+
+private final class ForwarderURLProtocol: URLProtocol, @unchecked Sendable {
+    private struct Response {
+        let statusCode: Int
+        let body: Data
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var response = Response(statusCode: 200, body: Data())
+    nonisolated(unsafe) private static var request: URLRequest?
+
+    static func setResponse(statusCode: Int, body: Data) {
+        lock.lock()
+        response = Response(statusCode: statusCode, body: body)
+        request = nil
+        lock.unlock()
+    }
+
+    static func recordedRequest() -> URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return request
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.request = request
+        let response = Self.response
+        Self.lock.unlock()
+
+        let url = request.url ?? URL(string: "http://127.0.0.1")!
+        let http = HTTPURLResponse(
+            url: url,
+            statusCode: response.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: response.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private struct TestJWKCache: Codable {

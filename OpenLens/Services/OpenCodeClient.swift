@@ -220,7 +220,7 @@ actor OpenCodeClient {
     // MARK: - Todos
 
     func listTodos(sessionID: String) async throws -> TodoDisplaySnapshot {
-        guard !usesV2 else {
+        guard supports(.todos) else {
             return TodoDisplaySafety.prepare([])
         }
         let todos: [OCTodo] = try await get("/session/\(sessionID)/todo")
@@ -303,7 +303,7 @@ actor OpenCodeClient {
         agent: String? = nil,
         variant: String? = nil
     ) async throws -> OCMessageWithParts {
-        guard !usesV2 else {
+        guard supports(.synchronousPrompt) else {
             throw OpenCodeError.invalidPayload("Synchronous prompts are not available on this v2 OpenCode server.")
         }
         let part = OCPromptPart(type: "text", text: text)
@@ -763,7 +763,7 @@ actor OpenCodeClient {
     // MARK: - Session actions
 
     func shareSession(id: String) async throws -> OCSession {
-        guard !usesV2 else {
+        guard supports(.sessionSharing) else {
             throw OpenCodeError.invalidPayload("Session sharing is not available on this v2 OpenCode server.")
         }
         return try await post("/session/\(id)/share", body: [:] as [String: String])
@@ -823,6 +823,10 @@ actor OpenCodeClient {
 
     private var usesV2: Bool {
         capabilities?.protocolVersion == .v2
+    }
+
+    private func supports(_ feature: OpenCodeOptionalFeature) -> Bool {
+        capabilities?.supports(feature) ?? true
     }
 
     private func applyV2PromptSelection(
