@@ -21,8 +21,10 @@ struct InboxRootView: View {
     @Environment(\.inboxService) private var inboxService
 
     @State private var viewState: ViewState = .idle
-    @State private var snapshot = InboxSnapshot(permissions: [], questions: [])
+    @State private var snapshot = InboxSnapshot(permissions: [], questions: [], forms: [])
     @State private var activeQuestion: OCQuestionRequest?
+    @State private var activeForm: OCFormRequest?
+    @State private var isResolvingForm = false
 
     var body: some View {
         Group {
@@ -58,18 +60,38 @@ struct InboxRootView: View {
                 }
             )
         }
+        .sheet(item: $activeForm) { form in
+            FormView(
+                form: form,
+                onSubmit: { answer in
+                    Task {
+                        await submitForm(form, answer: answer)
+                    }
+                },
+                onCancel: {
+                    Task {
+                        await cancelForm(form)
+                    }
+                },
+                isSubmitting: isResolvingForm
+            )
+            .interactiveDismissDisabled(isResolvingForm)
+        }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let errorMessage, snapshot.permissions.isEmpty, snapshot.questions.isEmpty {
+        if let errorMessage,
+           snapshot.permissions.isEmpty,
+           snapshot.questions.isEmpty,
+           snapshot.forms.isEmpty {
             FeaturePlaceholderView(
                 title: "Inbox",
                 subtitle: errorMessage,
                 symbol: "exclamationmark.triangle",
                 highlights: [
                     "Pull to refresh and retry",
-                    "Inbox reads pending permissions and questions",
+                    "Inbox reads pending permissions, questions, and forms",
                     "Chat keeps working while inbox reloads"
                 ]
             )
@@ -78,6 +100,9 @@ struct InboxRootView: View {
                 VStack(alignment: .leading, spacing: InboxLayout.sectionGap) {
                     if let errorMessage {
                         errorCard(errorMessage)
+                    }
+                    if let warning = snapshot.warning {
+                        errorCard(warning)
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
@@ -88,6 +113,11 @@ struct InboxRootView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         sectionHeader(title: "Questions", count: snapshot.questions.count)
                         questionsCard
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        sectionHeader(title: "Forms", count: snapshot.forms.count)
+                        formsCard
                     }
                 }
                 .padding(.horizontal, InboxLayout.screenInset)
@@ -221,6 +251,54 @@ struct InboxRootView: View {
         }
     }
 
+    private var formsCard: some View {
+        SurfaceCard(padding: 0) {
+            if snapshot.forms.isEmpty {
+                emptyRow(symbol: "checkmark.circle", text: "No pending forms from the agent.")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(snapshot.forms.enumerated()), id: \.element.id) { index, form in
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack(alignment: .top, spacing: 12) {
+                                itemBadge(title: "Form", tint: Color.appPrimary)
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(form.title.nilIfBlank ?? "Agent form")
+                                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(Color.appPrimary)
+
+                                    Text(form.hasUnsupportedFields
+                                        ? "Open this form to see fields OpenLens cannot safely submit."
+                                        : "\(form.fields.count) field\(form.fields.count == 1 ? "" : "s") ready for review.")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(Color.appSecondary)
+                                        .lineLimit(3)
+                                }
+                            }
+
+                            HStack(spacing: 10) {
+                                actionButton(title: "Open", fill: Color.appAccent, foreground: Color.appOnAccent) {
+                                    activeForm = form
+                                }
+                                actionButton(title: "Cancel", fill: Color.appTertiary, foreground: Color.appPrimary) {
+                                    Task {
+                                        await cancelForm(form)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, InboxLayout.rowPaddingHorizontal)
+                        .padding(.vertical, InboxLayout.rowPaddingVertical)
+
+                        if index < snapshot.forms.count - 1 {
+                            SurfaceDivider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func actionButton(title: String, fill: Color, foreground: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -286,7 +364,7 @@ struct InboxRootView: View {
 
     private var isInitialLoading: Bool {
         if case .loading = viewState {
-            return snapshot.permissions.isEmpty && snapshot.questions.isEmpty
+            return snapshot.permissions.isEmpty && snapshot.questions.isEmpty && snapshot.forms.isEmpty
         }
         return false
     }
@@ -347,6 +425,42 @@ struct InboxRootView: View {
                 chatClient.showQuestionSheet = false
             }
             activeQuestion = nil
+            await loadInbox(force: true)
+        } catch {
+            viewState = .error(error.localizedDescription)
+        }
+    }
+
+    private func submitForm(_ form: OCFormRequest, answer: [String: OCFormValue]) async {
+        guard !isResolvingForm else { return }
+        isResolvingForm = true
+        defer { isResolvingForm = false }
+
+        do {
+            try await inboxService.respondToForm(form, answer: answer)
+            if chatClient.pendingForm?.id == form.id {
+                chatClient.pendingForm = nil
+                chatClient.showFormSheet = false
+            }
+            activeForm = nil
+            await loadInbox(force: true)
+        } catch {
+            viewState = .error(error.localizedDescription)
+        }
+    }
+
+    private func cancelForm(_ form: OCFormRequest) async {
+        guard !isResolvingForm else { return }
+        isResolvingForm = true
+        defer { isResolvingForm = false }
+
+        do {
+            try await inboxService.cancelForm(form)
+            if chatClient.pendingForm?.id == form.id {
+                chatClient.pendingForm = nil
+                chatClient.showFormSheet = false
+            }
+            activeForm = nil
             await loadInbox(force: true)
         } catch {
             viewState = .error(error.localizedDescription)

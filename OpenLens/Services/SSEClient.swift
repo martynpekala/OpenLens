@@ -194,6 +194,65 @@ nonisolated struct SSEQuestionAsked {
     }
 }
 
+/// A v2 form creation event is decoded and safety-bounded before it reaches
+/// the MainActor. Unknown field types remain part of the form so the UI can
+/// show its explicit OpenCode fallback instead of guessing an answer.
+nonisolated struct SSEFormCreated {
+    let sessionID: String?
+    let form: OCFormRequest?
+    /// A structurally invalid form can be cancelled once its safe identifiers
+    /// are known. This mirrors the legacy question safety path without
+    /// rejecting a valid form that merely contains a future field type.
+    let rejectedFormID: String?
+
+    init?(event: OCEvent) {
+        guard let properties = event.properties?.value as? [String: Any] else {
+            return nil
+        }
+
+        let rawForm = properties["form"] ?? properties
+        let decodedForm = SSEPreparedPayload.decode(OCFormRequest.self, from: rawForm)
+        let candidateSessionID = decodedForm?.sessionID ?? (properties["sessionID"] as? String)
+        let candidateFormID = decodedForm?.id
+            ?? (properties["id"] as? String)
+            ?? (properties["formID"] as? String)
+
+        sessionID = candidateSessionID.flatMap {
+            InteractiveFormSafety.fitsIdentifier($0) ? $0 : nil
+        }
+
+        if let decodedForm,
+           let safeForm = InteractiveFormSafety.sanitize(decodedForm) {
+            form = safeForm
+            rejectedFormID = nil
+        } else {
+            form = nil
+            rejectedFormID = candidateFormID.flatMap {
+                InteractiveFormSafety.fitsIdentifier($0) ? $0 : nil
+            }
+        }
+    }
+}
+
+nonisolated struct SSEFormResolved {
+    let sessionID: String
+    let formID: String
+
+    init?(event: OCEvent) {
+        guard let properties = event.properties?.value as? [String: Any],
+              let sessionID = properties["sessionID"] as? String,
+              let formID = (properties["id"] as? String) ?? (properties["formID"] as? String),
+              InteractiveFormSafety.fitsIdentifier(sessionID),
+              InteractiveFormSafety.fitsIdentifier(formID)
+        else {
+            return nil
+        }
+
+        self.sessionID = sessionID
+        self.formID = formID
+    }
+}
+
 nonisolated struct SSETodoUpdated {
     let sessionID: String?
     let todos: [OCTodo]?
@@ -239,6 +298,8 @@ nonisolated enum SSEColdEvent {
     case sessionUpdated(SSESessionUpdate?)
     case permissionAsked(SSEPermissionAsked?)
     case questionAsked(SSEQuestionAsked?)
+    case formCreated(SSEFormCreated?)
+    case formResolved(SSEFormResolved?)
     case todoUpdated(SSETodoUpdated?)
 }
 
@@ -298,6 +359,14 @@ nonisolated enum SSEInboundEvent {
         case "question.asked":
             guard let request = SSEQuestionAsked(event: event) else { return nil }
             return .cold(.questionAsked(request), rawEvent: rawEvent)
+
+        case "form.created", "form.asked":
+            guard let form = SSEFormCreated(event: event) else { return nil }
+            return .cold(.formCreated(form), rawEvent: rawEvent)
+
+        case "form.replied", "form.cancelled":
+            guard let form = SSEFormResolved(event: event) else { return nil }
+            return .cold(.formResolved(form), rawEvent: rawEvent)
 
         case "todo.updated":
             guard let update = SSETodoUpdated(event: event) else { return nil }
@@ -1479,8 +1548,8 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private func eventRequiresPreparedPayload(_ type: String) -> Bool {
         switch type {
         case "session.status", "session.updated", "permission.asked", "permission.v2.asked",
-             "question.asked", "todo.updated", "message.updated", "message.part.updated",
-             "message.part.delta":
+             "question.asked", "form.created", "form.asked", "form.replied", "form.cancelled",
+             "todo.updated", "message.updated", "message.part.updated", "message.part.delta":
             true
         default:
             false

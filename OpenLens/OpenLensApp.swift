@@ -309,10 +309,18 @@ struct OpenLensApp: App {
             )
         )
 
-//        if screenshotModeEnabled, ScreenshotFixtures.opensDefaultChatSession {
-//            router.selectedTab = .chat
-//            router.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
-//        }
+        var initialRouter = AppRouter()
+        if screenshotModeEnabled,
+           ScreenshotFixtures.opensDefaultChatSession
+            || ScreenshotFixtures.opensPermissionSheet
+            || ScreenshotFixtures.opensFormSheet {
+            initialRouter.selectedTab = .chat
+            initialRouter.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
+        }
+        if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
+            initialRouter.selectedTab = launchTab
+        }
+        self._router = State(initialValue: initialRouter)
 
         let savedConnections = SavedConnectionsStore()
         let connection = ConnectionManager()
@@ -366,6 +374,12 @@ struct OpenLensApp: App {
                 demoClient.pendingPermission = ScreenshotFixtures.inboxSnapshot.permissions.first
                 demoClient.showPermissionAlert = demoClient.pendingPermission != nil
             }
+            if ScreenshotFixtures.opensFormSheet {
+                let session = ScreenshotFixtures.defaultSession
+                demoClient.currentSession = session
+                demoClient.pendingForm = ScreenshotFixtures.inboxSnapshot.forms.first
+                demoClient.showFormSheet = demoClient.pendingForm != nil
+            }
             self._chatClient = State(initialValue: demoClient)
         } else {
             self._chatClient = State(initialValue: ChatClient(
@@ -378,10 +392,6 @@ struct OpenLensApp: App {
                 savedConnectionsStore: savedConnections,
                 recordedReplayStore: recordedReplayStore
             ))
-        }
-
-        if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
-            router.selectedTab = launchTab
         }
 
         if streamStressModeEnabled {

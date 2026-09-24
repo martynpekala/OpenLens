@@ -3,6 +3,22 @@ import Foundation
 struct InboxSnapshot: Sendable {
     let permissions: [OCPermissionRequest]
     let questions: [OCQuestionRequest]
+    let forms: [OCFormRequest]
+    /// A partial-load warning. Successful inbox sections remain actionable
+    /// instead of being replaced with an all-or-nothing error state.
+    let warning: String?
+
+    init(
+        permissions: [OCPermissionRequest],
+        questions: [OCQuestionRequest],
+        forms: [OCFormRequest],
+        warning: String? = nil
+    ) {
+        self.permissions = permissions
+        self.questions = questions
+        self.forms = forms
+        self.warning = warning
+    }
 }
 
 final class InboxService {
@@ -24,23 +40,32 @@ final class InboxService {
 
         async let permissionsTask = loadPermissions(using: client)
         async let questionsTask = loadQuestions(using: client)
+        async let formsTask = loadForms(using: client)
 
         let permissionsResult = await permissionsTask
         let questionsResult = await questionsTask
+        let formsResult = await formsTask
 
         let permissions = permissionsResult.value ?? []
         let questions = questionsResult.value ?? []
+        let forms = formsResult.value ?? []
+        let errors = [permissionsResult.error, questionsResult.error, formsResult.error]
+            .compactMap { $0?.localizedDescription.nilIfBlank }
 
-        if let permissionsError = permissionsResult.error,
-           let questionsError = questionsResult.error {
+        if permissionsResult.error != nil,
+           questionsResult.error != nil,
+           formsResult.error != nil {
             throw OpenCodeError.invalidPayload(
-                [permissionsError.localizedDescription, questionsError.localizedDescription]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: "\n")
+                errors.joined(separator: "\n")
             )
         }
 
-        return InboxSnapshot(permissions: permissions, questions: questions)
+        return InboxSnapshot(
+            permissions: permissions,
+            questions: questions,
+            forms: forms,
+            warning: errors.isEmpty ? nil : errors.joined(separator: "\n")
+        )
     }
 
     private func loadPermissions(using client: OpenCodeClient) async -> InboxLoadResult<[OCPermissionRequest]> {
@@ -54,6 +79,14 @@ final class InboxService {
     private func loadQuestions(using client: OpenCodeClient) async -> InboxLoadResult<[OCQuestionRequest]> {
         do {
             return InboxLoadResult(value: try await client.listPendingQuestions(), error: nil)
+        } catch {
+            return InboxLoadResult(value: nil, error: error)
+        }
+    }
+
+    private func loadForms(using client: OpenCodeClient) async -> InboxLoadResult<[OCFormRequest]> {
+        do {
+            return InboxLoadResult(value: try await client.listPendingForms(), error: nil)
         } catch {
             return InboxLoadResult(value: nil, error: error)
         }
@@ -97,6 +130,33 @@ final class InboxService {
         }
 
         let _ = try await client.rejectQuestion(requestID: requestID)
+    }
+
+    func respondToForm(_ form: OCFormRequest, answer: [String: OCFormValue]) async throws {
+        if ScreenshotFixtures.isEnabled {
+            return
+        }
+
+        guard InteractiveFormSafety.accepts(answer: answer, for: form) else {
+            throw OpenCodeError.invalidPayload("The form reply does not satisfy the server-provided field constraints.")
+        }
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        try await client.replyToForm(sessionID: form.sessionID, formID: form.id, answer: answer)
+    }
+
+    func cancelForm(_ form: OCFormRequest) async throws {
+        if ScreenshotFixtures.isEnabled {
+            return
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        try await client.cancelForm(sessionID: form.sessionID, formID: form.id)
     }
 }
 

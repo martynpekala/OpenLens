@@ -607,6 +607,10 @@ actor OpenCodeClient {
     /// Fetch any pending (unanswered) questions from the server.
     /// Used after reconnection to recover questions that arrived while disconnected.
     func listPendingQuestions() async throws -> [OCQuestionRequest] {
+        // V2 replaces question operations with typed forms. Never fall through
+        // to a legacy route once capability negotiation selected v2.
+        guard !usesV2 else { return [] }
+
         let requests: [OCQuestionRequest] = try await get("/question")
         var safeRequests: [OCQuestionRequest] = []
         safeRequests.reserveCapacity(min(requests.count, Self.maximumPendingPromptCount))
@@ -624,13 +628,108 @@ actor OpenCodeClient {
     /// Reply to a question request with selected answers.
     /// Each element in `answers` is an array of selected option labels for the corresponding question.
     func replyToQuestion(requestID: String, answers: [[String]]) async throws -> Bool {
+        guard !usesV2 else {
+            throw OpenCodeError.invalidPayload("V2 servers use form replies instead of legacy question replies.")
+        }
+
         let reply = OCQuestionReply(answers: answers)
         return try await postCodable("/question/\(requestID)/reply", body: reply)
     }
 
     /// Reject/dismiss a question request.
     func rejectQuestion(requestID: String) async throws -> Bool {
-        try await post("/question/\(requestID)/reject", body: [:] as [String: String])
+        guard !usesV2 else {
+            throw OpenCodeError.invalidPayload("V2 servers use form cancellation instead of legacy question rejection.")
+        }
+
+        return try await post(
+            "/question/\(requestID)/reject",
+            body: [:] as [String: String]
+        )
+    }
+
+    // MARK: - Forms
+
+    /// Fetches pending v2 forms. Session-scoped reads preserve the owning
+    /// session without accepting a caller-supplied location; inbox reads use
+    /// the active location and receive the server-owned session identities.
+    func listPendingForms(sessionID: String? = nil) async throws -> [OCFormRequest] {
+        guard usesV2 else { return [] }
+
+        let forms: [OCFormRequest]
+        if let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank {
+            guard InteractiveFormSafety.fitsIdentifier(sessionID) else {
+                throw OpenCodeError.invalidPayload("A valid session ID is required to recover v2 forms.")
+            }
+            let response: OCV2Envelope<[OCFormRequest]> = try await getV2(
+                "/api/session/\(sessionID)/form",
+                includesLocation: false
+            )
+            forms = response.data.map { form in
+                form.sessionID.isEmpty
+                    ? OCFormRequest(
+                        id: form.id,
+                        sessionID: sessionID,
+                        title: form.title,
+                        fields: form.fields,
+                        state: form.state
+                    )
+                    : form
+            }
+        } else {
+            let response: OCV2Located<[OCFormRequest]> = try await getV2Located("/api/form")
+            forms = response.data
+        }
+
+        var safeForms: [OCFormRequest] = []
+        safeForms.reserveCapacity(min(forms.count, Self.maximumPendingPromptCount))
+        for form in forms {
+            guard let form = InteractiveFormSafety.sanitize(form) else { continue }
+            safeForms.append(form)
+            if safeForms.count == Self.maximumPendingPromptCount {
+                break
+            }
+        }
+        return safeForms
+    }
+
+    func replyToForm(
+        sessionID: String,
+        formID: String,
+        answer: [String: OCFormValue]
+    ) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Form replies require a v2 server.")
+        }
+        guard InteractiveFormSafety.fitsIdentifier(sessionID),
+              InteractiveFormSafety.fitsIdentifier(formID)
+        else {
+            throw OpenCodeError.invalidPayload("A valid session and form ID are required to reply to a v2 form.")
+        }
+
+        try await sendV2RequestDiscardingResponse(
+            method: "POST",
+            path: "/api/session/\(sessionID)/form/\(formID)/reply",
+            body: OCV2FormReplyInput(answer: answer),
+            includesLocation: false
+        )
+    }
+
+    func cancelForm(sessionID: String, formID: String) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Form cancellation requires a v2 server.")
+        }
+        guard InteractiveFormSafety.fitsIdentifier(sessionID),
+              InteractiveFormSafety.fitsIdentifier(formID)
+        else {
+            throw OpenCodeError.invalidPayload("A valid session and form ID are required to cancel a v2 form.")
+        }
+
+        try await sendV2RequestDiscardingResponse(
+            method: "DELETE",
+            path: "/api/session/\(sessionID)/form/\(formID)",
+            includesLocation: false
+        )
     }
 
     // MARK: - Session actions

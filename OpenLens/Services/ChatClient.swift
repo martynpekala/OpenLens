@@ -112,6 +112,13 @@ final class ChatClient: SSEEventHandlerDelegate {
         didSet { syncLiveActivityPendingUserResponse() }
     }
     var showQuestionSheet: Bool = false
+    /// Pending v2 form. Forms are distinct from legacy questions because their
+    /// field values and cancellation operation are session-scoped.
+    var pendingForm: OCFormRequest? {
+        didSet { syncLiveActivityPendingUserResponse() }
+    }
+    var showFormSheet: Bool = false
+    var isResolvingForm: Bool = false
     var isRecordingStream: Bool = false
 
     /// Active todo list from the server (updated via `todo.updated` SSE event).
@@ -701,7 +708,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     @ObservationIgnored private let sseHandler: SSEEventHandler?
 
     /// Active question timeout task (auto-rejects if user doesn't respond).
-    @ObservationIgnored private var questionTimeoutTask: Task<Void, Never>?
+    @ObservationIgnored private var interactiveRequestTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var responseStartDate: Date?
     @ObservationIgnored private var streamRecorder: ChatStreamRecorder?
     @ObservationIgnored private var abortTask: Task<Void, Never>?
@@ -725,7 +732,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     private(set) var isStreamSynchronized = true
 
     /// Duration before a pending question is auto-rejected (5 minutes).
-    private static let questionTimeoutSeconds: UInt64 = 300
+    private static let interactiveRequestTimeoutSeconds: UInt64 = 300
     static let stoppedResponseDisplayDuration: Duration = .milliseconds(1500)
     private static let statusRefreshIdleGraceInterval: TimeInterval = 1.5
 
@@ -990,7 +997,33 @@ final class ChatClient: SSEEventHandlerDelegate {
     var currentSessionID: String? { currentSession?.id }
 
     func questionDidPresent() {
-        startQuestionTimeout()
+        startInteractiveRequestTimeout()
+    }
+
+    @discardableResult
+    func presentForm(_ form: OCFormRequest) -> Bool {
+        guard pendingQuestion == nil else { return false }
+
+        if pendingForm?.id == form.id {
+            if !showFormSheet, !isResolvingForm {
+                showFormSheet = true
+            }
+            return true
+        }
+
+        guard pendingForm == nil else { return false }
+        pendingForm = form
+        showFormSheet = true
+        startInteractiveRequestTimeout()
+        return true
+    }
+
+    func formDidResolve(id: String) {
+        guard pendingForm?.id == id else { return }
+        cancelInteractiveRequestTimeout()
+        pendingForm = nil
+        showFormSheet = false
+        isResolvingForm = false
     }
 
     func messageLayoutDidChange() {
@@ -1280,6 +1313,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
         await recoverPendingPermission()
         await recoverPendingQuestions()
+        await recoverPendingForms()
     }
 
     @discardableResult
@@ -1521,6 +1555,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                     }
                     await self.recoverPendingPermission(sessionID: sessionID)
                     await self.recoverPendingQuestions()
+                    await self.recoverPendingForms()
                 } catch is CancellationError {
                     break
                 } catch {
@@ -1801,8 +1836,8 @@ final class ChatClient: SSEEventHandlerDelegate {
             return false
         }
 
-        guard pendingQuestion == nil else {
-            errorMessage = "Answer the current question before starting another workspace action."
+        guard pendingQuestion == nil, pendingForm == nil else {
+            errorMessage = "Complete the current question or form before starting another workspace action."
             return false
         }
 
@@ -2115,6 +2150,7 @@ final class ChatClient: SSEEventHandlerDelegate {
               !isStoppingResponse,
               !isQueueingPrompt,
               pendingQuestion == nil,
+              pendingForm == nil,
               canCompose,
               currentSession != nil else {
             return
@@ -2327,6 +2363,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             && !isStoppingResponse
             && !isQueueingPrompt
             && pendingQuestion == nil
+            && pendingForm == nil
             && canCompose
             && currentSession != nil
     }
@@ -2545,7 +2582,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         showPermissionAlert = false
         pendingQuestion = nil
         showQuestionSheet = false
-        cancelQuestionTimeout()
+        pendingForm = nil
+        showFormSheet = false
+        isResolvingForm = false
+        cancelInteractiveRequestTimeout()
         liveActivityTracker?.end()
         contentVersion &+= 1
     }
@@ -2747,7 +2787,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                 if self.pendingQuestion == nil {
                     self.pendingQuestion = question
                     self.showQuestionSheet = true
-                    self.startQuestionTimeout()
+                    self.startInteractiveRequestTimeout()
                 }
             }
         } catch {
@@ -2755,9 +2795,34 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
+    /// Recover pending v2 forms after a stream gap or foreground return.
+    func recoverPendingForms() async {
+        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return }
+
+        do {
+            if let form = try await questionService?.recoverPendingForm(sessionID: sessionID) {
+                guard pendingQuestion == nil else { return }
+                if pendingForm?.id == form.id {
+                    if !showFormSheet, !isResolvingForm {
+                        showFormSheet = true
+                    }
+                    return
+                }
+                guard pendingForm == nil else { return }
+                _ = presentForm(form)
+            } else if pendingForm?.sessionID == sessionID {
+                cancelInteractiveRequestTimeout()
+                pendingForm = nil
+                showFormSheet = false
+            }
+        } catch {
+            Logger.chat.warning("recoverPendingForms failed: \(error, privacy: .public)")
+        }
+    }
+
     /// Send selected answers back to the server.
     func respondToQuestion(answers: [[String]]) {
-        cancelQuestionTimeout()
+        cancelInteractiveRequestTimeout()
 
         guard let question = pendingQuestion else {
             pendingQuestion = nil
@@ -2778,7 +2843,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     /// Dismiss/reject the question without answering.
     func rejectQuestion() {
-        cancelQuestionTimeout()
+        cancelInteractiveRequestTimeout()
 
         guard let question = pendingQuestion else {
             pendingQuestion = nil
@@ -2794,27 +2859,80 @@ final class ChatClient: SSEEventHandlerDelegate {
         showQuestionSheet = false
     }
 
-    // MARK: - Question Timeout
+    /// Sends a v2 form reply. Unsupported fields never call this method
+    /// because `FormView` disables submission until OpenCode can handle them.
+    func respondToForm(answer: [String: OCFormValue]) {
+        resolvePendingForm(failureMessage: "Failed to submit form") { service, form in
+            try await service.respondToForm(form, answer: answer)
+        }
+    }
 
-    private func startQuestionTimeout() {
-        cancelQuestionTimeout()
-        questionTimeoutTask = Task { [weak self] in
+    func cancelForm() {
+        resolvePendingForm(failureMessage: "Failed to cancel form") { service, form in
+            try await service.cancelForm(form)
+        }
+    }
+
+    private func resolvePendingForm(
+        failureMessage: String,
+        operation: @escaping (QuestionService, OCFormRequest) async throws -> Void
+    ) {
+        guard !isResolvingForm else { return }
+        cancelInteractiveRequestTimeout()
+
+        guard let form = pendingForm else {
+            pendingForm = nil
+            showFormSheet = false
+            return
+        }
+        guard let questionService else {
+            errorMessage = "\(failureMessage): OpenLens is not connected."
+            showFormSheet = true
+            startInteractiveRequestTimeout()
+            return
+        }
+
+        isResolvingForm = true
+        Task {
+            defer { isResolvingForm = false }
             do {
-                try await Task.sleep(for: .seconds(Self.questionTimeoutSeconds))
+                try await operation(questionService, form)
+                guard pendingForm?.id == form.id else { return }
+                pendingForm = nil
+                showFormSheet = false
             } catch {
-                return // cancelled
-            }
-            guard let self, self.pendingQuestion != nil else { return }
-            await MainActor.run {
-                Logger.chat.info("Question timed out after \(Self.questionTimeoutSeconds)s, auto-rejecting")
-                self.rejectQuestion()
+                errorMessage = "\(failureMessage): \(error.localizedDescription)"
+                showFormSheet = true
+                startInteractiveRequestTimeout()
             }
         }
     }
 
-    private func cancelQuestionTimeout() {
-        questionTimeoutTask?.cancel()
-        questionTimeoutTask = nil
+    // MARK: - Interactive Request Timeout
+
+    private func startInteractiveRequestTimeout() {
+        cancelInteractiveRequestTimeout()
+        interactiveRequestTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(Self.interactiveRequestTimeoutSeconds))
+            } catch {
+                return // cancelled
+            }
+            guard let self, self.pendingQuestion != nil || self.pendingForm != nil else { return }
+            await MainActor.run {
+                Logger.chat.info("Interactive request timed out after \(Self.interactiveRequestTimeoutSeconds)s, auto-cancelling")
+                if self.pendingForm != nil {
+                    self.cancelForm()
+                } else {
+                    self.rejectQuestion()
+                }
+            }
+        }
+    }
+
+    private func cancelInteractiveRequestTimeout() {
+        interactiveRequestTimeoutTask?.cancel()
+        interactiveRequestTimeoutTask = nil
     }
 
     // MARK: - Streaming Text Buffer API
@@ -3465,10 +3583,13 @@ final class ChatClient: SSEEventHandlerDelegate {
         showPermissionAlert = false
         pendingQuestion = nil
         showQuestionSheet = false
+        pendingForm = nil
+        showFormSheet = false
+        isResolvingForm = false
         sessionStatus = nil
         todos = []
         hiddenTodoCount = 0
-        cancelQuestionTimeout()
+        cancelInteractiveRequestTimeout()
         responseStartDate = nil
     }
 

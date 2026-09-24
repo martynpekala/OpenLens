@@ -183,6 +183,7 @@ final class OpenCodeForwarder: @unchecked Sendable {
              ("GET", ["api", "location"]),
              ("GET", ["api", "project"]),
              ("GET", ["api", "project", "current"]),
+             ("GET", ["api", "form"]),
              ("GET", ["api", "fs", "list"]),
              ("GET", ["api", "vcs"]),
              ("GET", ["api", "vcs", "diff"]),
@@ -260,6 +261,35 @@ final class OpenCodeForwarder: @unchecked Sendable {
            segments[1] == "session",
            isSafeIdentifier(segments[2]),
            segments[3] == "command" {
+            return true
+        }
+
+        if segments.count == 4,
+           method == "GET",
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]),
+           segments[3] == "form" {
+            return true
+        }
+
+        if segments.count == 5,
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]),
+           segments[3] == "form",
+           isSafeIdentifier(segments[4]) {
+            return method == "DELETE"
+        }
+
+        if segments.count == 6,
+           method == "POST",
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]),
+           segments[3] == "form",
+           isSafeIdentifier(segments[4]),
+           segments[5] == "reply" {
             return true
         }
 

@@ -84,6 +84,15 @@ protocol SSEEventHandlerDelegate: AnyObject {
 
     /// Called when a new question is presented so the VM can start a timeout timer.
     func questionDidPresent()
+
+    /// Presents a v2 form when it belongs to the active conversation. Returning
+    /// false lets the handler cancel an overlapping form instead of leaving it
+    /// pending with no UI owner.
+    @discardableResult
+    func presentForm(_ form: OCFormRequest) -> Bool
+
+    /// Clears a form that the server has answered or cancelled elsewhere.
+    func formDidResolve(id: String)
 }
 
 extension SSEEventHandlerDelegate {
@@ -108,6 +117,8 @@ extension SSEEventHandlerDelegate {
     func clearStreamingReasoningBuffer(messageID: String, partID: String) {}
     func remapStreamingMessageID(from oldID: String, to newID: String) -> Bool { false }
     func waitForStreamingRenderCapacity() async -> Bool { !Task.isCancelled }
+    func presentForm(_ form: OCFormRequest) -> Bool { false }
+    func formDidResolve(id: String) {}
 }
 
 // MARK: - SSEEventHandler
@@ -197,6 +208,16 @@ final class SSEEventHandler {
                 handleQuestionAsked(request)
             }
 
+        case .formCreated(let form):
+            if let form {
+                handleFormCreated(form)
+            }
+
+        case .formResolved(let form):
+            if let form {
+                handleFormResolved(form)
+            }
+
         case .todoUpdated(let update):
             if let update {
                 handleTodoUpdated(update)
@@ -230,6 +251,16 @@ final class SSEEventHandler {
         case "question.replied", "question.rejected":
             // These confirm the question was answered/dismissed; clear UI if still showing
             handleQuestionDismissed(event)
+
+        case "form.created", "form.asked":
+            if let form = SSEFormCreated(event: event) {
+                handleFormCreated(form)
+            }
+
+        case "form.replied", "form.cancelled":
+            if let form = SSEFormResolved(event: event) {
+                handleFormResolved(form)
+            }
 
         default:
             Logger.debug.debug("[SSE] unhandled event: \(event.type, privacy: .public)")
@@ -688,6 +719,58 @@ final class SSEEventHandler {
         guard let client = connectionClient else { return }
         Task {
             let _ = try? await client.rejectQuestion(requestID: requestID)
+        }
+    }
+
+    private func handleFormCreated(_ incoming: SSEFormCreated) {
+        guard let delegate else { return }
+
+        let sessionID = incoming.sessionID ?? incoming.form?.sessionID
+        guard sessionBelongsToCurrentConversation(sessionID, delegate: delegate) else {
+            return
+        }
+
+        if let requestID = incoming.rejectedFormID {
+            Logger.sseHandler.warning("Cancelling unsafe interactive form \(requestID, privacy: .public)")
+            cancelForm(sessionID: sessionID, formID: requestID)
+            return
+        }
+
+        guard let form = incoming.form,
+              let formSessionID = sessionID,
+              form.sessionID == formSessionID
+        else {
+            return
+        }
+
+        guard delegate.presentForm(form) else {
+            Logger.sseHandler.warning("Cancelling overlapping form \(form.id, privacy: .public)")
+            cancelForm(sessionID: form.sessionID, formID: form.id)
+            return
+        }
+
+        haptics.playWarning()
+    }
+
+    private func handleFormResolved(_ incoming: SSEFormResolved) {
+        guard let delegate,
+              sessionBelongsToCurrentConversation(incoming.sessionID, delegate: delegate)
+        else {
+            return
+        }
+
+        delegate.formDidResolve(id: incoming.formID)
+    }
+
+    private func cancelForm(sessionID: String?, formID: String) {
+        guard let client = connectionClient,
+              let sessionID,
+              InteractiveFormSafety.fitsIdentifier(sessionID),
+              InteractiveFormSafety.fitsIdentifier(formID)
+        else { return }
+
+        Task {
+            let _ = try? await client.cancelForm(sessionID: sessionID, formID: formID)
         }
     }
 

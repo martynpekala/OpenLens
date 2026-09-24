@@ -585,6 +585,13 @@ extension OCEvent {
              "question.rejected":
             return propertiesDictionary["sessionID"] as? String
 
+        case "form.created", "form.asked":
+            return propertiesDictionary["sessionID"] as? String
+                ?? nestedDictionary(for: "form", in: propertiesDictionary)?["sessionID"] as? String
+
+        case "form.replied", "form.cancelled":
+            return propertiesDictionary["sessionID"] as? String
+
         case "message.updated":
             return nestedDictionary(for: "info", in: propertiesDictionary)?["sessionID"] as? String
 
@@ -1387,6 +1394,301 @@ nonisolated struct OCQuestionRequest: Codable, Identifiable, Sendable {
     let answers: [[String]]
 }
 
+// MARK: - Forms
+
+/// A server-driven v2 form. Unlike legacy questions, forms carry typed fields
+/// and must retain their session identity for their session-scoped operations.
+nonisolated struct OCFormRequest: Decodable, Identifiable, Sendable {
+    let id: String
+    let sessionID: String
+    let title: String
+    let fields: [OCFormField]
+    let state: OCFormState
+
+    init(
+        id: String,
+        sessionID: String,
+        title: String,
+        fields: [OCFormField],
+        state: OCFormState = .pending
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.title = title
+        self.fields = fields
+        self.state = state
+    }
+
+    var hasUnsupportedFields: Bool {
+        fields.contains { !$0.isSupported }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sessionID, title, fields, state
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID) ?? ""
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        fields = try container.decodeIfPresent([OCFormField].self, forKey: .fields) ?? []
+        state = try container.decodeIfPresent(OCFormState.self, forKey: .state) ?? .pending
+    }
+}
+
+nonisolated enum OCFormState: Equatable, Sendable {
+    case pending
+    case answered
+    case cancelled
+    case unknown
+}
+
+extension OCFormState: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case status
+    }
+
+    init(from decoder: Decoder) throws {
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+            self = .unknown
+            return
+        }
+
+        switch try? container.decodeIfPresent(String.self, forKey: .status) {
+        case "pending": self = .pending
+        case "answered": self = .answered
+        case "cancelled": self = .cancelled
+        default: self = .unknown
+        }
+    }
+}
+
+nonisolated enum OCFormFieldKind: String, Equatable, Sendable {
+    case string
+    case number
+    case integer
+    case boolean
+    case multiselect
+    case external
+    case unsupported
+}
+
+/// A decoded v2 form field. We intentionally retain an explicit unsupported
+/// case: an added server field must not make the entire form undecodable or
+/// tempt the client to submit a guessed value.
+nonisolated struct OCFormField: Decodable, Identifiable, Sendable {
+    let key: String
+    let kind: OCFormFieldKind
+    let rawType: String
+    let title: String?
+    let description: String?
+    let required: Bool
+    let hidden: Bool
+    let stringFormat: String?
+    let stringMinimum: Int?
+    let stringMaximum: Int?
+    let stringPattern: String?
+    let placeholder: String?
+    let stringDefault: String?
+    let options: [OCFormOption]
+    let custom: Bool
+    let numberMinimum: Double?
+    let numberMaximum: Double?
+    let numberDefault: Double?
+    let booleanDefault: Bool?
+    let multiselectMinimum: Int?
+    let multiselectMaximum: Int?
+    let multiselectDefault: [String]
+    let externalURLString: String?
+    /// Conditions are part of the documented contract, but OpenLens does not
+    /// yet evaluate them. Treat them as unsupported instead of submitting
+    /// values for fields that may be inactive.
+    let hasConditionalRules: Bool
+
+    var id: String { key }
+    var isSupported: Bool {
+        kind != .unsupported
+            && !hasConditionalRules
+            && (kind != .string || stringFormat.map {
+                ["email", "uri", "date", "date-time"].contains($0)
+            } ?? true)
+            && (kind != .external || externalURL != nil)
+    }
+
+    var displayTitle: String {
+        title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? key
+    }
+
+    var externalURL: URL? {
+        guard kind == .external,
+              let externalURLString,
+              let url = URL(string: externalURLString),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host,
+              !host.isEmpty
+        else {
+            return nil
+        }
+        return url
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, type, title, description, required, hidden
+        case format, minLength, maxLength, pattern, placeholder, `default`, options, custom
+        case minimum, maximum, minItems, maxItems, url, when
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decodeIfPresent(String.self, forKey: .key) ?? ""
+        rawType = try container.decodeIfPresent(String.self, forKey: .type) ?? ""
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        required = try container.decodeIfPresent(Bool.self, forKey: .required) ?? false
+        hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        stringFormat = try container.decodeIfPresent(String.self, forKey: .format)
+        stringMinimum = try container.decodeIfPresent(Int.self, forKey: .minLength)
+        stringMaximum = try container.decodeIfPresent(Int.self, forKey: .maxLength)
+        stringPattern = try container.decodeIfPresent(String.self, forKey: .pattern)
+        placeholder = try container.decodeIfPresent(String.self, forKey: .placeholder)
+        options = try container.decodeIfPresent([OCFormOption].self, forKey: .options) ?? []
+        custom = try container.decodeIfPresent(Bool.self, forKey: .custom) ?? false
+        numberMinimum = Self.finiteNumber(from: container, key: .minimum)
+        numberMaximum = Self.finiteNumber(from: container, key: .maximum)
+        multiselectMinimum = try container.decodeIfPresent(Int.self, forKey: .minItems)
+        multiselectMaximum = try container.decodeIfPresent(Int.self, forKey: .maxItems)
+        externalURLString = try container.decodeIfPresent(String.self, forKey: .url)
+        if container.contains(.when) {
+            // An empty condition list has no effect. A malformed condition is
+            // treated as conditional so the field falls back safely instead
+            // of being submitted with guessed visibility semantics.
+            if let conditions = try? container.decode([OCFormCondition].self, forKey: .when) {
+                hasConditionalRules = !conditions.isEmpty
+            } else {
+                hasConditionalRules = true
+            }
+        } else {
+            hasConditionalRules = false
+        }
+
+        switch rawType {
+        case "string":
+            kind = .string
+            stringDefault = try container.decodeIfPresent(String.self, forKey: .default)
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = []
+        case "number":
+            kind = .number
+            stringDefault = nil
+            numberDefault = Self.finiteNumber(from: container, key: .default)
+            booleanDefault = nil
+            multiselectDefault = []
+        case "integer":
+            kind = .integer
+            stringDefault = nil
+            numberDefault = Self.finiteNumber(from: container, key: .default)
+            booleanDefault = nil
+            multiselectDefault = []
+        case "boolean":
+            kind = .boolean
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = try container.decodeIfPresent(Bool.self, forKey: .default)
+            multiselectDefault = []
+        case "multiselect":
+            kind = .multiselect
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = try container.decodeIfPresent([String].self, forKey: .default) ?? []
+        case "external":
+            kind = .external
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = []
+        default:
+            kind = .unsupported
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = []
+        }
+    }
+
+    private static func finiteNumber(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> Double? {
+        guard let value = try? container.decode(Double.self, forKey: key),
+              value.isFinite
+        else {
+            return nil
+        }
+        return value
+    }
+}
+
+nonisolated struct OCFormOption: Decodable, Identifiable, Sendable {
+    let value: String
+    let label: String
+    let description: String?
+
+    var id: String { value }
+
+    private enum CodingKeys: String, CodingKey {
+        case value, label, description
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        value = try container.decodeIfPresent(String.self, forKey: .value) ?? ""
+        label = try container.decodeIfPresent(String.self, forKey: .label) ?? ""
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+    }
+}
+
+/// Conditions are intentionally only decoded to decide whether a form field
+/// needs the unsupported fallback. OpenLens does not evaluate them yet.
+private nonisolated struct OCFormCondition: Decodable {
+    let key: String
+    let op: String
+    let value: AnyCodable
+
+    private enum CodingKeys: String, CodingKey {
+        case key, op, value
+    }
+}
+
+/// Values accepted by the v2 form reply contract. The number case represents
+/// both `number` and `integer` fields; integer validation happens before the
+/// value reaches this transport type.
+nonisolated enum OCFormValue: Equatable, Sendable {
+    case string(String)
+    case number(Double)
+    case boolean(Bool)
+    case strings([String])
+}
+
+extension OCFormValue: Encodable {
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .boolean(let value):
+            try container.encode(value)
+        case .strings(let values):
+            try container.encode(values)
+        }
+    }
+}
+
 // MARK: - Project / Path / VCS
 
 /// Matches the server's `Project` type:
@@ -1878,6 +2180,10 @@ nonisolated struct OCCommand: Codable, Identifiable, Sendable {
 /// session mutations before this input is admitted.
 nonisolated struct OCV2PermissionReplyInput: Encodable, Sendable {
     let reply: OCPermissionReply
+}
+
+nonisolated struct OCV2FormReplyInput: Encodable, Sendable {
+    let answer: [String: OCFormValue]
 }
 
 nonisolated struct OCV2PromptInput: Codable, Sendable {

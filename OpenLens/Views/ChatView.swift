@@ -120,6 +120,7 @@ struct ChatView: View {
             await chatClient.ensureSession()
             await chatClient.recoverPendingPermission()
             await chatClient.recoverPendingQuestions()
+            await chatClient.recoverPendingForms()
         }
 
         // Foreground recovery: stream events may have been missed while iOS
@@ -135,6 +136,7 @@ struct ChatView: View {
                     await loadCommands(force: true)
                     await chatClient.recoverPendingPermission()
                     await chatClient.recoverPendingQuestions()
+                    await chatClient.recoverPendingForms()
                 }
             }
         }
@@ -171,6 +173,26 @@ struct ChatView: View {
                     }
                 )
                 .presentationDetents([.medium, .large])
+            }
+        }
+        .sheet(isPresented: $chatClient.showFormSheet, onDismiss: {
+            if chatClient.pendingForm != nil {
+                chatClient.cancelForm()
+            }
+        }) {
+            if let form = chatClient.pendingForm {
+                FormView(
+                    form: form,
+                    onSubmit: { answer in
+                        chatClient.respondToForm(answer: answer)
+                    },
+                    onCancel: {
+                        chatClient.cancelForm()
+                    },
+                    isSubmitting: chatClient.isResolvingForm
+                )
+                .presentationDetents([.medium, .large])
+                .interactiveDismissDisabled(chatClient.isResolvingForm)
             }
         }
         .onChange(of: chatClient.inputText) { _, newValue in

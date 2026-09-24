@@ -196,9 +196,11 @@ struct MicroRootView: View {
     @State private var viewState: ViewState = .idle
     @State private var sessions: [OCSession] = []
     @State private var sessionStatuses: [String: OCSessionStatus] = [:]
-    @State private var inbox = InboxSnapshot(permissions: [], questions: [])
+    @State private var inbox = InboxSnapshot(permissions: [], questions: [], forms: [])
     @State private var focusedSessionID: String?
     @State private var activeQuestion: OCQuestionRequest?
+    @State private var activeForm: OCFormRequest?
+    @State private var isResolvingForm = false
     @State private var isCreatingSession = false
     @State private var actionError: String?
     @AppStorage("microControllerGridItems") private var controllerGridStorage = ""
@@ -213,7 +215,7 @@ struct MicroRootView: View {
         _viewState = State(initialValue: previewState == nil ? .idle : .loaded)
         _sessions = State(initialValue: previewState?.sessions ?? [])
         _sessionStatuses = State(initialValue: previewState?.sessionStatuses ?? [:])
-        _inbox = State(initialValue: previewState?.inbox ?? InboxSnapshot(permissions: [], questions: []))
+        _inbox = State(initialValue: previewState?.inbox ?? InboxSnapshot(permissions: [], questions: [], forms: []))
         _focusedSessionID = State(initialValue: previewState?.focusedSessionID)
         _controllerGridItems = State(initialValue: Self.defaultControllerGridItems)
         _activeControllerDragID = State(initialValue: nil)
@@ -259,6 +261,19 @@ struct MicroRootView: View {
                 }
             )
         }
+        .sheet(item: $activeForm) { form in
+            FormView(
+                form: form,
+                onSubmit: { answer in
+                    Task { await submitForm(form, answer: answer) }
+                },
+                onCancel: {
+                    Task { await cancelForm(form) }
+                },
+                isSubmitting: isResolvingForm
+            )
+            .interactiveDismissDisabled(isResolvingForm)
+        }
         .alert("Micro action failed", isPresented: actionErrorBinding) {
             Button(AppText.dismiss, role: .cancel) {
                 actionError = nil
@@ -289,6 +304,8 @@ struct MicroRootView: View {
                     permissionCard(permission)
                 } else if let question = visibleQuestions.first {
                     questionCard(question)
+                } else if let form = visibleForms.first {
+                    formCard(form)
                 } else {
                     allClearCard
                 }
@@ -565,31 +582,35 @@ struct MicroRootView: View {
 
             case .approve:
                 MicroHardwareKey(
-                    title: visiblePermissions.first == nil && visibleQuestions.first == nil ? "Approve" : visiblePermissions.first == nil ? "Answer" : "Approve",
-                    detail: visiblePermissions.first == nil && visibleQuestions.first == nil ? "Ready" : visiblePermissions.first == nil ? "Open" : "Allow once",
-                    symbol: visiblePermissions.first == nil && visibleQuestions.first == nil ? "checkmark" : visiblePermissions.first == nil ? "text.bubble" : "checkmark",
-                    tint: visiblePermissions.first == nil && visibleQuestions.first == nil ? MicroPalette.complete : MicroPalette.needsInput,
-                    isEnabled: visiblePermissions.first != nil || visibleQuestions.first != nil
+                    title: visiblePermissions.first == nil && visibleQuestions.first == nil && visibleForms.first == nil ? "Approve" : visiblePermissions.first == nil ? "Answer" : "Approve",
+                    detail: visiblePermissions.first == nil && visibleQuestions.first == nil && visibleForms.first == nil ? "Ready" : visiblePermissions.first == nil ? "Open" : "Allow once",
+                    symbol: visiblePermissions.first == nil && visibleQuestions.first == nil && visibleForms.first == nil ? "checkmark" : visiblePermissions.first == nil ? "text.bubble" : "checkmark",
+                    tint: visiblePermissions.first == nil && visibleQuestions.first == nil && visibleForms.first == nil ? MicroPalette.complete : MicroPalette.needsInput,
+                    isEnabled: visiblePermissions.first != nil || visibleQuestions.first != nil || visibleForms.first != nil
                 ) {
                     if let permission = visiblePermissions.first {
                         Task { await respondToPermission(permission, reply: .once) }
                     } else if let question = visibleQuestions.first {
                         activeQuestion = question
+                    } else if let form = visibleForms.first {
+                        activeForm = form
                     }
                 }
 
             case .deny:
                 MicroHardwareKey(
-                    title: visiblePermissions.first == nil && visibleQuestions.first == nil ? "Deny" : visiblePermissions.first == nil ? "Dismiss" : "Deny",
-                    detail: visiblePermissions.first == nil && visibleQuestions.first == nil ? "No request" : "Reject request",
+                    title: visiblePermissions.first == nil && visibleQuestions.first == nil && visibleForms.first == nil ? "Deny" : visiblePermissions.first == nil ? "Dismiss" : "Deny",
+                    detail: visiblePermissions.first == nil && visibleQuestions.first == nil && visibleForms.first == nil ? "No request" : "Reject request",
                     symbol: "xmark",
                     tint: MicroPalette.error,
-                    isEnabled: visiblePermissions.first != nil || visibleQuestions.first != nil
+                    isEnabled: visiblePermissions.first != nil || visibleQuestions.first != nil || visibleForms.first != nil
                 ) {
                     if let permission = visiblePermissions.first {
                         Task { await respondToPermission(permission, reply: .reject) }
                     } else if let question = visibleQuestions.first {
                         Task { await rejectQuestion(question) }
+                    } else if let form = visibleForms.first {
+                        Task { await cancelForm(form) }
                     }
                 }
 
@@ -793,6 +814,54 @@ struct MicroRootView: View {
         }
     }
 
+    private func formCard(_ form: OCFormRequest) -> some View {
+        MicroGlassPanel(tint: MicroPalette.needsInput) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 10) {
+                    MicroSignalBadge(symbol: "list.clipboard", tint: MicroPalette.needsInput)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Form needed")
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .foregroundStyle(MicroPalette.ink)
+                        Text(form.hasUnsupportedFields
+                            ? "Open in OpenCode to complete every field safely."
+                            : "The agent needs your input.")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(MicroPalette.mutedInk)
+                    }
+
+                    Spacer()
+                }
+
+                Text(form.title)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(MicroPalette.ink)
+
+                HStack(spacing: 9) {
+                    MicroPillAction(
+                        title: "Open",
+                        symbol: "list.bullet.rectangle",
+                        tint: MicroPalette.needsInput,
+                        prominent: true
+                    ) {
+                        activeForm = form
+                    }
+
+                    MicroPillAction(
+                        title: "Cancel",
+                        symbol: "xmark",
+                        tint: MicroPalette.error,
+                        prominent: false
+                    ) {
+                        Task { await cancelForm(form) }
+                    }
+                }
+            }
+            .padding(18)
+        }
+    }
+
     private var allClearCard: some View {
         MicroGlassPanel(tint: MicroPalette.complete) {
             HStack(spacing: 14) {
@@ -804,7 +873,7 @@ struct MicroRootView: View {
                     Text("All agents clear")
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                         .foregroundStyle(MicroPalette.ink)
-                    Text("No approvals or questions are waiting")
+                    Text("No approvals, questions, or forms are waiting")
                         .font(.system(size: 13))
                         .foregroundStyle(MicroPalette.mutedInk)
                 }
@@ -936,11 +1005,23 @@ struct MicroRootView: View {
         return result
     }
 
+    private var visibleForms: [OCFormRequest] {
+        var result = inbox.forms
+        if let pending = chatClient.pendingForm,
+           !result.contains(where: { $0.id == pending.id }) {
+            result.insert(pending, at: 0)
+        }
+        return result
+    }
+
     private func agentState(for session: OCSession) -> MicroAgentState {
         if visiblePermissions.contains(where: { $0.sessionID == session.id }) {
             return .approval
         }
         if visibleQuestions.contains(where: { $0.sessionID == session.id }) {
+            return .question
+        }
+        if visibleForms.contains(where: { $0.sessionID == session.id }) {
             return .question
         }
 
@@ -1034,7 +1115,7 @@ struct MicroRootView: View {
         do {
             let loadedSessions = try await sessionsTask
             let loadedStatuses = (try? await statusesTask) ?? [:]
-            let loadedInbox = (try? await inboxTask) ?? InboxSnapshot(permissions: [], questions: [])
+            let loadedInbox = (try? await inboxTask) ?? InboxSnapshot(permissions: [], questions: [], forms: [])
 
             guard !Task.isCancelled else { return }
             sessions = loadedSessions
@@ -1145,6 +1226,46 @@ struct MicroRootView: View {
                 chatClient.showQuestionSheet = false
             }
             activeQuestion = nil
+            await refresh()
+        } catch is CancellationError {
+            return
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func submitForm(_ form: OCFormRequest, answer: [String: OCFormValue]) async {
+        guard !isResolvingForm else { return }
+        isResolvingForm = true
+        defer { isResolvingForm = false }
+
+        do {
+            try await inboxService.respondToForm(form, answer: answer)
+            if chatClient.pendingForm?.id == form.id {
+                chatClient.pendingForm = nil
+                chatClient.showFormSheet = false
+            }
+            activeForm = nil
+            await refresh()
+        } catch is CancellationError {
+            return
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func cancelForm(_ form: OCFormRequest) async {
+        guard !isResolvingForm else { return }
+        isResolvingForm = true
+        defer { isResolvingForm = false }
+
+        do {
+            try await inboxService.cancelForm(form)
+            if chatClient.pendingForm?.id == form.id {
+                chatClient.pendingForm = nil
+                chatClient.showFormSheet = false
+            }
+            activeForm = nil
             await refresh()
         } catch is CancellationError {
             return
@@ -1517,7 +1638,7 @@ private extension MicroRootView.PreviewState {
     static let empty = MicroRootView.PreviewState(
         sessions: [],
         sessionStatuses: [:],
-        inbox: InboxSnapshot(permissions: [], questions: [])
+        inbox: InboxSnapshot(permissions: [], questions: [], forms: [])
     )
 }
 

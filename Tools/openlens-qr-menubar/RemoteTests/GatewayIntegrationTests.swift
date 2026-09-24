@@ -259,6 +259,7 @@ struct GatewayIntegrationTests {
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/fs/read/Sources/App.swift"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/vcs/diff"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/vcs/status"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/form"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/event"))
         #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/info"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/%65vent"))
@@ -271,6 +272,17 @@ struct GatewayIntegrationTests {
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/command"))
         #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/shell"))
         #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/../command"))
+    }
+
+    @Test func remoteRouteTableAllowsOnlyDocumentedV2FormOperations() {
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/form"))
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/form/frm_456/reply"))
+        #expect(OpenCodeForwarder.isAllowed(method: "DELETE", path: "/api/session/ses_123/form/frm_456"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/form"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/form/frm_456"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "PATCH", path: "/api/session/ses_123/form/frm_456"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/form/frm_456/cancel"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/../form/frm_456/reply"))
     }
 
     @Test func remoteRelayRejectsAmbiguousOrUnregisteredV2WorkspaceLocations() throws {

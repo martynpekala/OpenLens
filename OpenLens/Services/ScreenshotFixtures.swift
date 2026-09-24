@@ -5,6 +5,7 @@ enum ScreenshotFixtures {
     static let tabArgumentPrefix = "SCREENSHOT_TAB="
     static let chatSessionArgument = "SCREENSHOT_CHAT_SESSION"
     static let permissionSheetArgument = "SCREENSHOT_PERMISSION_SHEET"
+    static let formSheetArgument = "SCREENSHOT_FORM_SHEET"
     static let permissionAllowAllConfirmationArgument = "SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let turnDiffSheetArgument = "CHAT_TURN_DIFF_SHEET_PREVIEW_MODE"
     static let settingsSectionArgumentPrefix = "SCREENSHOT_SETTINGS_SECTION="
@@ -12,6 +13,7 @@ enum ScreenshotFixtures {
     static let tabEnvironmentKey = "OPENLENS_SCREENSHOT_TAB"
     static let chatSessionEnvironmentKey = "OPENLENS_SCREENSHOT_CHAT_SESSION"
     static let permissionSheetEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_SHEET"
+    static let formSheetEnvironmentKey = "OPENLENS_SCREENSHOT_FORM_SHEET"
     static let permissionAllowAllConfirmationEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let settingsSectionEnvironmentKey = "OPENLENS_SCREENSHOT_SETTINGS_SECTION"
 
@@ -43,6 +45,11 @@ enum ScreenshotFixtures {
     static var opensPermissionSheet: Bool {
         let processInfo = ProcessInfo.processInfo
         return processInfo.arguments.contains(permissionSheetArgument) || processInfo.environment[permissionSheetEnvironmentKey] == "1"
+    }
+
+    static var opensFormSheet: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains(formSheetArgument) || processInfo.environment[formSheetEnvironmentKey] == "1"
     }
 
     static var opensPermissionAllowAllConfirmation: Bool {
@@ -211,8 +218,62 @@ enum ScreenshotFixtures {
                     )
                 ]
             )
-        ]
+        ],
+        forms: [screenshotForm]
     )
+
+    private static let screenshotForm: OCFormRequest = {
+        let data = Data(#"""
+        {
+          "id": "form-screenshot-1",
+          "sessionID": "session-screenshot-1",
+          "title": "Choose the release focus",
+          "fields": [
+            {
+              "key": "summary",
+              "type": "string",
+              "title": "Release summary",
+              "description": "Describe the most important improvement for this release.",
+              "required": true,
+              "minLength": 3,
+              "default": "Safer agent handoffs"
+            },
+            {
+              "key": "confidence",
+              "type": "integer",
+              "title": "Confidence",
+              "description": "How confident are you in the release plan?",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 8
+            },
+            {
+              "key": "targets",
+              "type": "multiselect",
+              "title": "Ship targets",
+              "required": true,
+              "minItems": 1,
+              "options": [
+                {"value": "ios", "label": "iPhone app"},
+                {"value": "widget", "label": "Live Activity"}
+              ],
+              "default": ["ios"]
+            },
+            {
+              "key": "notes",
+              "type": "external",
+              "title": "Release checklist",
+              "url": "https://opencode.ai/docs"
+            }
+          ]
+        }
+        """#.utf8)
+
+        guard let form = try? JSONDecoder().decode(OCFormRequest.self, from: data) else {
+            preconditionFailure("Screenshot form fixture must decode.")
+        }
+        return form
+    }()
 
     static func session(withID id: String) -> OCSession? {
         sessions.first { $0.id == id }
