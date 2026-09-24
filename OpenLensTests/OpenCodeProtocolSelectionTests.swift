@@ -3,6 +3,166 @@ import Testing
 @testable import OpenLens
 
 struct OpenCodeProtocolSelectionTests {
+    @Test func v2SessionStatusesUseTheActiveSnapshotWithoutV1Routes() async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            "/api/session/active": .init(statusCode: 200, body: Data(#"""
+            {
+              "data": {
+                "ses_running": {"type": "running"}
+              }
+            }
+            """#.utf8)),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        let statuses = try await client.getSessionStatus()
+
+        #expect(statuses["ses_running"]?.type == .busy)
+        #expect(await transport.recordedPaths() == [
+            "/api/info",
+            "/api/session/active",
+        ])
+    }
+
+    @Test func v2TodosReturnAnEmptySnapshotWithoutV1Routes() async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        let todos = try await client.listTodos(sessionID: "ses_123")
+
+        #expect(todos.todos.isEmpty)
+        #expect(todos.hiddenCount == 0)
+        #expect(await transport.recordedPaths() == ["/api/info"])
+    }
+
+    @Test func v2SessionSharingIsRejectedWithoutAV1Request() async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        do {
+            _ = try await client.shareSession(id: "ses_123")
+            Issue.record("v2 session sharing must be unavailable rather than use the v1 endpoint.")
+        } catch let error as OpenCodeError {
+            guard case .invalidPayload = error else {
+                Issue.record("Expected a clear unavailable-feature error, got \(error).")
+                return
+            }
+        }
+
+        #expect(await transport.recordedPaths() == ["/api/info"])
+    }
+
+    @Test func v2FailuresExposeTheTypedServerErrorPayload() async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            "/api/session": .init(statusCode: 401, body: Data(#"""
+            {
+              "_tag": "UnauthorizedError",
+              "message": "Wrong password",
+              "service": "opencode"
+            }
+            """#.utf8)),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        do {
+            _ = try await client.listSessions()
+            Issue.record("Expected an authenticated v2 server error.")
+        } catch let error as OpenCodeError {
+            guard case let .apiError(statusCode, payload) = error else {
+                Issue.record("Expected typed API error, got \(error).")
+                return
+            }
+            #expect(statusCode == 401)
+            #expect(payload.tag == "UnauthorizedError")
+            #expect(payload.message == "Wrong password")
+            #expect(payload.service == "opencode")
+        }
+    }
+
+    @Test func v2MessageDetailUsesTheV2EnvelopeWithoutAV1Request() async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            "/api/session/ses_123/message/msg_456": .init(statusCode: 200, body: Data(#"""
+            {
+              "data": {
+                "info": {
+                  "id": "msg_456",
+                  "sessionID": "ses_123",
+                  "role": "assistant",
+                  "time": {"created": 0}
+                },
+                "parts": []
+              }
+            }
+            """#.utf8)),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        let message = try await client.getMessage(sessionID: "ses_123", messageID: "msg_456")
+
+        #expect(message.info.id == "msg_456")
+        #expect(await transport.recordedPaths() == [
+            "/api/info",
+            "/api/session/ses_123/message/msg_456",
+        ])
+    }
+
+    @Test func v1KeepsItsSupportedTodoAndSessionSharingRoutes() async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": .init(statusCode: 404, body: Data(#"{"message":"not found"}"#.utf8)),
+            "/global/health": .init(statusCode: 200, body: OpenCodeContractFixtures.v1HealthResponse),
+            "/session/ses_123/todo": .init(statusCode: 200, body: Data(#"""
+            [{"content":"Ship the migration","status":"in_progress","priority":"high"}]
+            """#.utf8)),
+            "/session/ses_123/share": .init(statusCode: 200, body: Data(#"""
+            {"id":"ses_123","title":"Migration","time":{"created":0,"updated":0},"share":{"url":"https://example.com/ses_123"}}
+            """#.utf8)),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        let todos = try await client.listTodos(sessionID: "ses_123")
+        let shared = try await client.shareSession(id: "ses_123")
+
+        #expect(todos.todos.map(\.content) == ["Ship the migration"])
+        #expect(shared.share?.url == "https://example.com/ses_123")
+        #expect(await transport.recordedPaths() == [
+            "/api/info",
+            "/global/health",
+            "/session/ses_123/todo",
+            "/session/ses_123/share",
+        ])
+    }
+
     @Test func v2WorkspaceReadsUseCanonicalLocationAndMapBinaryFilesSafely() async throws {
         let transport = OpenCodeContractTransport(routes: [
             "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),

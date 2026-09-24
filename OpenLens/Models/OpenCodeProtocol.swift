@@ -77,6 +77,14 @@ nonisolated enum OpenCodeCapabilityEvidence: Equatable, Sendable {
     case v2ServerInfo
 }
 
+/// Features outside the core session and chat contract. Availability comes
+/// from the negotiated wire protocol rather than a server-version threshold.
+nonisolated enum OpenCodeOptionalFeature: Sendable {
+    case todos
+    case sessionSharing
+    case synchronousPrompt
+}
+
 /// The result of connection negotiation. Keeping the evidence with the selected
 /// protocol makes compatibility failures diagnosable in tests and logs without
 /// making version numbers part of the selection rule.
@@ -115,5 +123,16 @@ nonisolated struct OpenCodeServerCapabilities: Equatable, Sendable {
     /// retains the explicit health flag from `/global/health`.
     var isHealthy: Bool {
         health?.healthy ?? true
+    }
+
+    func supports(_ feature: OpenCodeOptionalFeature) -> Bool {
+        switch (protocolVersion, feature) {
+        case (.v1, .todos),
+             (.v1, .sessionSharing),
+             (.v1, .synchronousPrompt):
+            true
+        case (.v2, _):
+            false
+        }
     }
 }

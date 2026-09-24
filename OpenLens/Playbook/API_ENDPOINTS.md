@@ -3,7 +3,62 @@
 All endpoints are relative to the server base URL (e.g. `http://192.168.1.50:4096`).
 Authentication uses HTTP Basic Auth via the `Authorization` header when a password is configured.
 
-## Health
+## Runtime protocol negotiation
+
+OpenLens does not infer compatibility from a version threshold. At connection
+time it first requests `GET /api/info`:
+
+| Result | Selected protocol | Follow-up |
+|---|---|---|
+| Valid v2 server-info document | v2 | Use `/api/*` routes and `/api/event` |
+| `404` or `405` | v1 | Probe `GET /global/health`, then use legacy routes and `/event` |
+| Any other transport, auth, or payload failure | None | Surface the failure; do not silently downgrade |
+
+Both direct and Remote Access connections follow the same negotiation. The
+Remote relay forwards only its explicit allowlist, including both
+`/api/info` and `/api/session/active`.
+
+### v2 conventions
+
+- Location-scoped routes include `location[directory]` after the app resolves
+  the canonical location. Session status and message detail requests are not
+  location-scoped.
+- Most v2 projections use `{ "data": ... }`; location-aware projections also
+  include `{ "location": ..., "data": ... }`.
+- Non-2xx v2 responses with an OpenCode error document are surfaced as a typed
+  `OpenCodeError.apiError`, preserving `_tag`, `message`, `kind`, `field`,
+  `resource`, `service`, and `ref`.
+- The v2 active snapshot is sparse: `GET /api/session/active` returns only
+  running sessions. OpenLens maps every returned entry to its `busy` UI state;
+  an omitted session is not busy.
+
+| Capability | v1 | v2 |
+|---|---:|---:|
+| Todo list | `GET /session/:id/todo` | Unavailable; OpenLens shows no todo control and never calls the v1 route |
+| Session sharing | `POST /session/:id/share` | Unavailable; OpenLens returns a clear unavailable-feature error and never calls the v1 route |
+| Synchronous prompt | `POST /session/:id/message` | Unavailable; v2 uses asynchronous prompt admission |
+
+## v2 session and chat routes
+
+| Method | Path | Response | Description |
+|---|---|---|---|
+| GET | `/api/session` | cursor page `{ data, cursor }` | List sessions |
+| GET | `/api/session/:id` | `{ data: OCSession }` | Get a session |
+| POST | `/api/session` | `{ data: OCSession }` or acknowledgement | Create a session |
+| PATCH | `/api/session/:id` | acknowledgement | Update a session title |
+| DELETE | `/api/session/:id` | acknowledgement | Delete a session |
+| GET | `/api/session/active` | `{ data: Record<sessionID, { type: "running" }> }` | Running-session snapshot |
+| GET | `/api/session/:id/message` | cursor page `{ data, cursor }` | List messages |
+| GET | `/api/session/:id/message/:messageID` | `{ data: OCMessageWithParts }` | Get message detail |
+| POST | `/api/session/:id/prompt` | acknowledgement | Admit a `steer` or `queue` prompt |
+| POST | `/api/session/:id/interrupt` | interruption result | Stop a running session |
+
+## Legacy v1 endpoints
+
+V1 remains supported for paired legacy servers. The following tables document
+that compatibility surface; v2 connections must not use these routes.
+
+### Health
 
 | Method | Path | Request | Response | Description |
 |--------|------|---------|----------|-------------|

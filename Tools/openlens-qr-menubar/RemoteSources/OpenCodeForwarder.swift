@@ -180,6 +180,7 @@ final class OpenCodeForwarder: @unchecked Sendable {
         case ("GET", ["global", "health"]),
              ("GET", ["api", "info"]),
              ("GET", ["api", "event"]),
+             ("GET", ["api", "session", "active"]),
              ("GET", ["api", "location"]),
              ("GET", ["api", "project"]),
              ("GET", ["api", "project", "current"]),

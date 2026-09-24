@@ -1767,6 +1767,12 @@ nonisolated struct OCV2Envelope<Value: Decodable & Sendable>: Decodable, Sendabl
     let data: Value
 }
 
+/// A v2 session that currently owns a running turn. The active-session
+/// endpoint is a sparse snapshot: a session is absent when it is not running.
+nonisolated struct OCV2ActiveSession: Decodable, Sendable {
+    let type: String
+}
+
 /// A cursor page returned by the v2 session and session-message endpoints.
 nonisolated struct OCV2CursorPage<Value: Decodable & Sendable>: Decodable, Sendable {
     nonisolated struct Cursor: Decodable, Sendable {

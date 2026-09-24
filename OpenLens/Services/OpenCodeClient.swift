@@ -160,7 +160,21 @@ actor OpenCodeClient {
     }
 
     func getSessionStatus() async throws -> [String: OCSessionStatus] {
-        try await get("/session/status")
+        if usesV2 {
+            let response: OCV2Envelope<[String: OCV2ActiveSession]> = try await getV2(
+                "/api/session/active",
+                includesLocation: false
+            )
+            return Dictionary(
+                uniqueKeysWithValues: response.data.keys.map {
+                    (
+                        $0,
+                        OCSessionStatus(type: .busy, attempt: nil, message: nil, next: nil)
+                    )
+                }
+            )
+        }
+        return try await get("/session/status")
     }
 
     func abortSession(id: String) async throws -> Bool {
@@ -192,12 +206,23 @@ actor OpenCodeClient {
     }
 
     func getMessage(sessionID: String, messageID: String) async throws -> OCMessageWithParts {
-        try await get("/session/\(sessionID)/message/\(messageID)")
+        if usesV2 {
+            let response: OCV2Envelope<OCMessageWithParts> = try await getV2(
+                "/api/session/\(sessionID)/message",
+                pathParameter: messageID,
+                includesLocation: false
+            )
+            return response.data
+        }
+        return try await get("/session/\(sessionID)/message/\(messageID)")
     }
 
     // MARK: - Todos
 
     func listTodos(sessionID: String) async throws -> TodoDisplaySnapshot {
+        guard !usesV2 else {
+            return TodoDisplaySafety.prepare([])
+        }
         let todos: [OCTodo] = try await get("/session/\(sessionID)/todo")
         return TodoDisplaySafety.prepare(todos)
     }
@@ -278,6 +303,9 @@ actor OpenCodeClient {
         agent: String? = nil,
         variant: String? = nil
     ) async throws -> OCMessageWithParts {
+        guard !usesV2 else {
+            throw OpenCodeError.invalidPayload("Synchronous prompts are not available on this v2 OpenCode server.")
+        }
         let part = OCPromptPart(type: "text", text: text)
         let input = OCPromptInput(parts: [part], model: model, agent: agent, messageID: nil, variant: variant)
         return try await postCodable("/session/\(sessionID)/message", body: input)
@@ -333,7 +361,7 @@ actor OpenCodeClient {
     func listProvidersRaw() async throws -> Data {
         let request = makeRequest(path: "/provider", method: "GET")
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return data
     }
 
@@ -735,7 +763,10 @@ actor OpenCodeClient {
     // MARK: - Session actions
 
     func shareSession(id: String) async throws -> OCSession {
-        try await post("/session/\(id)/share", body: [:] as [String: String])
+        guard !usesV2 else {
+            throw OpenCodeError.invalidPayload("Session sharing is not available on this v2 OpenCode server.")
+        }
+        return try await post("/session/\(id)/share", body: [:] as [String: String])
     }
 
     /// Reverts a message and returns the updated session when the server includes
@@ -837,7 +868,7 @@ actor OpenCodeClient {
         )
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return try decode(data)
     }
 
@@ -888,8 +919,8 @@ actor OpenCodeClient {
         )
         request.httpMethod = method
         Logger.api.debug("\(method, privacy: .public) \(request.url?.absoluteString ?? "nil", privacy: .public)")
-        let (_, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response, data: data)
     }
 
     private func sendV2RequestDiscardingResponse<B: Encodable>(
@@ -927,7 +958,7 @@ actor OpenCodeClient {
         }
         Logger.api.debug("\(method, privacy: .public) \(request.url?.absoluteString ?? "nil", privacy: .public)")
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return data
     }
 
@@ -939,7 +970,7 @@ actor OpenCodeClient {
         let request = makeV2Request(path: endpoint, queryPath: path, queryItems: queryItems)
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return try decode(data)
     }
 
@@ -1008,7 +1039,7 @@ actor OpenCodeClient {
     private func readV2FileContent(path: String) async throws -> OCFileContent {
         let request = makeV2Request(path: "/api/fs/read", pathParameter: path)
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
 
         let mimeType = (response as? HTTPURLResponse)?
             .value(forHTTPHeaderField: "Content-Type")?
@@ -1064,7 +1095,7 @@ actor OpenCodeClient {
         let request = makeRequest(path: path, method: "GET")
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return try decode(data)
     }
 
@@ -1073,7 +1104,7 @@ actor OpenCodeClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return try decode(data)
     }
 
@@ -1085,7 +1116,7 @@ actor OpenCodeClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
@@ -1094,7 +1125,7 @@ actor OpenCodeClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         if expect204 {
             guard let result = EmptyResponse() as? T else {
                 throw OpenCodeError.invalidResponse
@@ -1108,8 +1139,8 @@ actor OpenCodeClient {
         var request = makeRequest(path: path, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        let (_, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response, data: data)
     }
 
     private func patch<T: Decodable>(_ path: String, body: Any) async throws -> T {
@@ -1117,14 +1148,14 @@ actor OpenCodeClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return try decode(data)
     }
 
     private func delete<T: Decodable>(_ path: String) async throws -> T {
         let request = makeRequest(path: path, method: "DELETE")
         let (data, response) = try await transport.data(for: request)
-        try validateResponse(response)
+        try validateResponse(response, data: data)
         return try decode(data)
     }
 
@@ -1156,19 +1187,27 @@ actor OpenCodeClient {
         return urlComponents.url ?? url
     }
 
-    private func validateResponse(_ response: URLResponse) throws {
+    private func validateResponse(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else {
             throw OpenCodeError.invalidResponse
         }
         guard (200...299).contains(http.statusCode) else {
+            if let payload = try? JSONDecoder().decode(OpenCodeAPIErrorPayload.self, from: data) {
+                throw OpenCodeError.apiError(statusCode: http.statusCode, payload: payload)
+            }
             throw OpenCodeError.httpError(statusCode: http.statusCode)
         }
     }
 
     private func shouldFallbackToV1(afterV2ProbeError error: Error) -> Bool {
-        if let openCodeError = error as? OpenCodeError,
-           case let .httpError(statusCode) = openCodeError {
-            return statusCode == 404 || statusCode == 405
+        if let openCodeError = error as? OpenCodeError {
+            switch openCodeError {
+            case let .httpError(statusCode),
+                 let .apiError(statusCode, _):
+                return statusCode == 404 || statusCode == 405
+            default:
+                break
+            }
         }
 
         // The pre-v2 remote relay rejects unknown routes before forwarding
@@ -1204,6 +1243,7 @@ actor OpenCodeClient {
 enum OpenCodeError: LocalizedError {
     case invalidResponse
     case httpError(statusCode: Int)
+    case apiError(statusCode: Int, payload: OpenCodeAPIErrorPayload)
     case notConnected
     case invalidURL
     case invalidPayload(String)
@@ -1213,12 +1253,32 @@ enum OpenCodeError: LocalizedError {
         switch self {
         case .invalidResponse: return "Invalid server response."
         case .httpError(let code): return "HTTP error \(code)."
+        case let .apiError(statusCode, payload):
+            return payload.message ?? "\(payload.tag) (HTTP \(statusCode))."
         case .notConnected: return "Not connected to server."
         case .invalidURL: return "Invalid server URL."
         case .invalidPayload(let message): return message
         case .incompleteRevert(_, let reason):
             return "Revert did not finish. The latest session state was refreshed: \(reason)"
         }
+    }
+}
+
+/// Error document returned by OpenCode v2 endpoints. Endpoint-specific
+/// properties are optional so future server errors remain inspectable.
+nonisolated struct OpenCodeAPIErrorPayload: Codable, Equatable, Sendable {
+    let tag: String
+    let message: String?
+    let kind: String?
+    let field: String?
+    let resource: String?
+    let service: String?
+    let reference: String?
+
+    enum CodingKeys: String, CodingKey {
+        case tag = "_tag"
+        case message, kind, field, resource, service
+        case reference = "ref"
     }
 }
 

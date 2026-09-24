@@ -108,8 +108,10 @@ backend for Remote connections.
 - revoke one device, revoke all devices, or stop Remote Access from the Mac
 - keep existing LAN profiles unchanged and separate from Remote profiles
 
-Remote v1 does not provide background push notifications or Live Activity
-updates while the iOS app is closed.
+Remote connections do not provide background push notifications or Live Activity
+updates while the iOS app is closed. The paired relay supports the negotiated
+v1 and v2 OpenCode HTTP protocols, but protocol support does not change this
+iOS background-execution limitation.
 
 ### How it works
 

@@ -250,9 +250,10 @@ struct GatewayIntegrationTests {
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/session/../config"))
     }
 
-    @Test func remoteRouteTableIncludesV2ProbeAndEventWithoutChangingV1() {
+    @Test func remoteRouteTableIncludesV2ProbeActiveSnapshotAndEventWithoutChangingV1() {
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/info"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/event"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/active"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/location"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/project/current"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/fs/list"))
@@ -262,6 +263,7 @@ struct GatewayIntegrationTests {
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/form"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/event"))
         #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/info"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/active"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/%65vent"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/info/../event"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/fs/read/../.env"))

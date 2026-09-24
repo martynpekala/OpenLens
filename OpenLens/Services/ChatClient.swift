@@ -1804,6 +1804,12 @@ final class ChatClient: SSEEventHandlerDelegate {
             Logger.debug.info("[TODO] loadTodos skipped: no session or client")
             return
         }
+        guard connection?.serverCapabilities?.supports(.todos) != false else {
+            todos = []
+            hiddenTodoCount = 0
+            Logger.debug.info("[TODO] loadTodos skipped: unsupported by the active protocol")
+            return
+        }
         do {
             let loaded = try await client.listTodos(sessionID: session.id)
             self.todos = loaded.todos
