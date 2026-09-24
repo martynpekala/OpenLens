@@ -254,6 +254,15 @@ final class OpenCodeForwarder: @unchecked Sendable {
             return true
         }
 
+        if segments.count == 4,
+           method == "POST",
+           segments[0] == "api",
+           segments[1] == "session",
+           isSafeIdentifier(segments[2]),
+           segments[3] == "command" {
+            return true
+        }
+
         if segments.count == 3,
            method == "POST",
            ["permission", "question"].contains(segments[0]),

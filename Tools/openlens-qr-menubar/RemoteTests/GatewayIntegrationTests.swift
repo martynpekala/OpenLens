@@ -266,6 +266,13 @@ struct GatewayIntegrationTests {
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/fs/read/../.env"))
     }
 
+    @Test func remoteRouteTableAllowsV2SessionCommandAdmissionOnly() {
+        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/command"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/command"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/shell"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/../command"))
+    }
+
     @Test func remoteRelayRejectsAmbiguousOrUnregisteredV2WorkspaceLocations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

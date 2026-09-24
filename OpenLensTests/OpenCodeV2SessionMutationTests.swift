@@ -110,6 +110,60 @@ struct OpenCodeV2SessionMutationTests {
         #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
     }
 
+    @Test func v2CommandUsesTheCommandAdmissionRouteAndRequestedDelivery() async throws {
+        let transport = V2SessionMutationTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 204, body: Data()),
+            .init(statusCode: 204, body: Data()),
+            .init(statusCode: 204, body: Data()),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+        _ = try await client.probeCapabilities()
+
+        try await client.sendCommand(
+            sessionID: "ses_1",
+            command: "review",
+            arguments: "--staged",
+            model: .init(providerID: "anthropic", modelID: "claude-sonnet"),
+            agent: "build",
+            variant: "high",
+            files: ["README.md"],
+            agents: ["reviewer"],
+            skills: ["swift"],
+            delivery: .queue
+        )
+
+        let requests = transport.recordedRequests()
+        #expect(requests.map(\.path) == [
+            "/api/info",
+            "/api/session/ses_1/model",
+            "/api/session/ses_1/agent",
+            "/api/session/ses_1/command",
+        ])
+        #expect(requests[1...].allSatisfy { $0.method == "POST" })
+        #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
+
+        let modelPayload = try bodyObject(requests[1])
+        let model = try #require(modelPayload["model"] as? [String: Any])
+        #expect(model["id"] as? String == "claude-sonnet")
+        #expect(model["providerID"] as? String == "anthropic")
+        #expect(model["variant"] as? String == "high")
+        #expect(try bodyObject(requests[2])["agent"] as? String == "build")
+
+        let command = try bodyObject(requests[3])
+        #expect(command["name"] as? String == "review")
+        #expect(command["text"] as? String == "--staged")
+        #expect(command["files"] as? [String] == ["README.md"])
+        #expect(command["agents"] as? [String] == ["reviewer"])
+        #expect(command["skills"] as? [String] == ["swift"])
+        #expect(command["delivery"] as? String == "queue")
+        #expect(command["command"] == nil)
+        #expect(command["arguments"] == nil)
+    }
+
     @Test func v2InterruptUsesTheInterruptRouteAndReturnsTheServerResult() async throws {
         let transport = V2SessionMutationTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),

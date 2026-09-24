@@ -74,21 +74,29 @@ final class MessagesService {
         sessionID: String,
         command: String,
         arguments: String,
-        model: String? = nil,
+        model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
-        variant: String? = nil
+        variant: String? = nil,
+        files: [String] = [],
+        agents: [String] = [],
+        skills: [String] = [],
+        delivery: OCV2PromptInput.Delivery = .steer
     ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        let _ = try await client.sendCommand(
+        try await client.sendCommand(
             sessionID: sessionID,
             command: command,
             arguments: arguments,
             model: model,
             agent: agent,
-            variant: variant
+            variant: variant,
+            files: files,
+            agents: agents,
+            skills: skills,
+            delivery: delivery
         )
     }
 

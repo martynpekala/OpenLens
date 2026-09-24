@@ -29,6 +29,11 @@ struct QueuedPrompt: Identifiable, Equatable {
     }
 }
 
+private struct OptimisticV2CommandMessage {
+    let text: String
+    let knownTranscriptMessageIDs: Set<String>
+}
+
 /// Thin coordinator for the chat interface.
 /// Delegates all IO to domain services (MessagesService, ProvidersService,
 /// QuestionService, SessionsService). Keeps UI state and orchestration only.
@@ -706,6 +711,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// caller-provided ID, allowing the authoritative transcript to replace
     /// the same row when its projector catches up.
     @ObservationIgnored private var optimisticV2UserMessageIDs: Set<String> = []
+    /// The command endpoint does not accept a caller-provided message ID.
+    /// Preserve a local command row until a newly projected matching user
+    /// message confirms that the server transcript has caught up.
+    @ObservationIgnored private var optimisticV2CommandMessages: [String: OptimisticV2CommandMessage] = [:]
     @ObservationIgnored private var locallyStoppedSessionID: String?
     /// A v2 stream has no resume cursor, so a transport or decoding gap must be
     /// reconciled against the session and transcript endpoints. Coalesce gap
@@ -1528,11 +1537,24 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func mergeLoadedMessagesWithLocalMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
-        let localMessageIDs = ignoredAssistantMessageIDs.union(optimisticV2UserMessageIDs)
-        guard !localMessageIDs.isEmpty else { return loaded }
-
         let loadedIDs = Set(loaded.map(\.id))
         optimisticV2UserMessageIDs.subtract(loadedIDs)
+        let projectedCommandIDs = optimisticV2CommandMessages.compactMap { localID, command in
+            let commandWasProjected = loaded.contains { message in
+                message.role == .user &&
+                    message.content == command.text &&
+                    !command.knownTranscriptMessageIDs.contains(message.id)
+            }
+            return commandWasProjected ? localID : nil
+        }
+        for localID in projectedCommandIDs {
+            optimisticV2CommandMessages.removeValue(forKey: localID)
+        }
+
+        let localMessageIDs = ignoredAssistantMessageIDs
+            .union(optimisticV2UserMessageIDs)
+            .union(optimisticV2CommandMessages.keys)
+        guard !localMessageIDs.isEmpty else { return loaded }
 
         var result = loaded.filter { !ignoredAssistantMessageIDs.contains($0.id) }
         let existingIDs = Set(result.map(\.id))
@@ -1987,8 +2009,8 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         if let slashAction = parseSlashAction(text) {
             switch slashAction {
-            case .command(let command, let arguments):
-                sendCommand(text: text, command: command, arguments: arguments)
+            case .command:
+                submitCommandIfPresent(text, delivery: .steer)
             case .agent(let agent, let prompt):
                 sendAgentPrompt(text: text, agent: agent, prompt: prompt)
             }
@@ -2033,6 +2055,10 @@ final class ChatClient: SSEEventHandlerDelegate {
               pendingQuestion == nil,
               canCompose,
               currentSession != nil else {
+            return
+        }
+
+        if usesV2SessionAPI, submitCommandIfPresent(text, delivery: .queue) {
             return
         }
 
@@ -2127,27 +2153,42 @@ final class ChatClient: SSEEventHandlerDelegate {
         scrollAnchor &+= 1
     }
 
-    private func sendCommand(text: String, command: String, arguments: String) {
-        beginResponse()
+    private func sendCommand(
+        text: String,
+        command: String,
+        arguments: String,
+        delivery: OCV2PromptInput.Delivery
+    ) {
+        let startsNewResponse = !isLoading
+        if startsNewResponse {
+            beginResponse()
+        }
 
-        let userMessage = ChatMessage(role: .user, content: text)
+        let userMessage = makeOptimisticCommandUserMessage(text: text)
         messages.append(userMessage)
         inputText = ""
 
-        currentActivity = AgentActivity()
-        currentActivity?.currentLabel = "Running /\(command)..."
-        responseStartDate = Date()
+        if startsNewResponse {
+            currentActivity = AgentActivity()
+            currentActivity?.currentLabel = "Running /\(command)..."
+            responseStartDate = Date()
 
-        liveActivityTracker?.start(
-            agentName: currentSession?.title ?? "OpenCode",
-            userTask: "/\(command)"
-        )
+            liveActivityTracker?.start(
+                agentName: currentSession?.title ?? "OpenCode",
+                userTask: "/\(command)"
+            )
+        }
 
         contentVersion &+= 1
         scrollAnchor &+= 1
 
         Task {
-            await sendCommandAsync(command: command, arguments: arguments)
+            await sendCommandAsync(
+                command: command,
+                arguments: arguments,
+                delivery: delivery,
+                messageID: userMessage.id
+            )
         }
     }
 
@@ -2183,6 +2224,37 @@ final class ChatClient: SSEEventHandlerDelegate {
         return ChatMessage(id: id, role: .user, content: text)
     }
 
+    private func makeOptimisticCommandUserMessage(text: String) -> ChatMessage {
+        let id = usesV2SessionAPI ? "cmd_\(UUID().uuidString)" : UUID().uuidString
+        if usesV2SessionAPI {
+            optimisticV2CommandMessages[id] = .init(
+                text: text,
+                knownTranscriptMessageIDs: Set(messages.map(\.id))
+            )
+        }
+        return ChatMessage(id: id, role: .user, content: text)
+    }
+
+    @discardableResult
+    private func submitCommandIfPresent(
+        _ text: String,
+        delivery: OCV2PromptInput.Delivery
+    ) -> Bool {
+        guard let slashAction = parseSlashAction(text),
+              case let .command(command, arguments) = slashAction
+        else {
+            return false
+        }
+
+        sendCommand(
+            text: text,
+            command: command,
+            arguments: arguments,
+            delivery: delivery
+        )
+        return true
+    }
+
     private var usesV2SessionAPI: Bool {
         connection?.serverCapabilities?.protocolVersion == .v2
     }
@@ -2202,6 +2274,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     func steerPrompt() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, canSteerPrompt else { return }
+
+        if submitCommandIfPresent(text, delivery: .steer) {
+            return
+        }
 
         let userMessage = makeOptimisticUserMessage(text: text)
         messages.append(userMessage)
@@ -2251,7 +2327,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
-    private func sendCommandAsync(command: String, arguments: String) async {
+    private func sendCommandAsync(
+        command: String,
+        arguments: String,
+        delivery: OCV2PromptInput.Delivery,
+        messageID: String
+    ) async {
         guard let session = currentSession else {
             markResponseFailed("Not connected.")
             return
@@ -2262,10 +2343,25 @@ final class ChatClient: SSEEventHandlerDelegate {
                 sessionID: session.id,
                 command: command,
                 arguments: arguments,
-                model: selectedModelCommandValue,
-                variant: selectedVariant
+                model: selectedModelRef,
+                variant: selectedVariant,
+                delivery: delivery
             )
+            guard currentSession?.id == session.id else { return }
+            if usesV2SessionAPI {
+                // Commands are admitted asynchronously just like prompts, but
+                // their v2 endpoint does not accept a caller-provided message
+                // ID. Refresh the authoritative transcript after admission.
+                await loadMessages(syncModelSelection: false)
+            }
         } catch {
+            if usesV2SessionAPI {
+                optimisticV2CommandMessages.removeValue(forKey: messageID)
+            }
+            if delivery == .queue {
+                errorMessage = "Failed to queue /\(command): \(error.localizedDescription)"
+                return
+            }
             guard responseState == .generating else { return }
             markResponseFailed("Failed to run /\(command): \(error.localizedDescription)")
         }
@@ -3281,6 +3377,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         cancelStoppedStateClear()
         ignoredAssistantMessageIDs.removeAll()
         optimisticV2UserMessageIDs.removeAll()
+        optimisticV2CommandMessages.removeAll()
         locallyStoppedSessionID = nil
         demoPlayer?.stop()
         recordedReplayPlayer?.stop()

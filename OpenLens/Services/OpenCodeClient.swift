@@ -370,17 +370,44 @@ actor OpenCodeClient {
         sessionID: String,
         command: String,
         arguments: String,
-        model: String? = nil,
+        model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
-        variant: String? = nil
-    ) async throws -> OCMessageWithParts {
+        variant: String? = nil,
+        files: [String] = [],
+        agents: [String] = [],
+        skills: [String] = [],
+        delivery: OCV2PromptInput.Delivery = .steer
+    ) async throws {
+        if usesV2 {
+            try await applyV2PromptSelection(
+                sessionID: sessionID,
+                model: model,
+                agent: agent,
+                variant: variant
+            )
+            try await sendV2RequestDiscardingResponse(
+                method: "POST",
+                path: "/api/session/\(sessionID)/command",
+                body: OCV2CommandInput(
+                    name: command,
+                    text: arguments,
+                    files: files,
+                    agents: agents,
+                    skills: skills,
+                    delivery: delivery
+                ),
+                includesLocation: false
+            )
+            return
+        }
+
         var body: [String: Any] = [
             "command": command,
             "arguments": arguments,
         ]
 
-        if let model, !model.isEmpty {
-            body["model"] = model
+        if let model {
+            body["model"] = "\(model.providerID)/\(model.modelID)"
         }
         if let agent, !agent.isEmpty {
             body["agent"] = agent
@@ -389,7 +416,7 @@ actor OpenCodeClient {
             body["variant"] = variant
         }
 
-        return try await post("/session/\(sessionID)/command", body: body)
+        let _: OCMessageWithParts = try await post("/session/\(sessionID)/command", body: body)
     }
 
     // MARK: - Files

@@ -1865,6 +1865,18 @@ nonisolated struct OCV2PromptInput: Codable, Sendable {
     }
 }
 
+/// Input accepted by the v2 session command endpoint. Commands execute using
+/// the session's current agent and model selection, so only the command's
+/// supported command inputs are included here.
+nonisolated struct OCV2CommandInput: Codable, Sendable {
+    let name: String
+    let text: String
+    let files: [String]
+    let agents: [String]
+    let skills: [String]
+    let delivery: OCV2PromptInput.Delivery
+}
+
 /// Result returned by the v2 interrupt endpoint.
 nonisolated struct OCV2InterruptResponse: Decodable, Sendable {
     let interrupted: Bool
