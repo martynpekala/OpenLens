@@ -55,7 +55,10 @@ actor OpenCodeClient {
     /// of being hidden by an unsafe downgrade.
     func probeCapabilities() async throws -> OpenCodeServerCapabilities {
         do {
-            let info: OCV2ServerInfo = try await get("/api/info")
+            let info: OCV2ServerInfo = try await getV2(
+                "/api/info",
+                includesLocation: false
+            )
             guard info.isUsable else {
                 throw OpenCodeError.invalidPayload("The v2 server-info response did not contain a usable version.")
             }
@@ -84,7 +87,7 @@ actor OpenCodeClient {
                 order: "desc"
             )
         }
-        try await get("/session")
+        return try await get("/session")
     }
 
     func getSession(id: String) async throws -> OCSession {
@@ -96,10 +99,31 @@ actor OpenCodeClient {
             )
             return response.data
         }
-        try await get("/session/\(id)")
+        return try await get("/session/\(id)")
     }
 
     func createSession(title: String? = nil, parentID: String? = nil) async throws -> OCSession {
+        if usesV2 {
+            // V2 session creation is location-scoped and returns its session
+            // in the standard data envelope. Supplying an ID also lets us
+            // recover the canonical session if a compatible server returns
+            // only a no-content acknowledgement. Parent sessions are a legacy
+            // creation concern and are not part of the v2 create contract.
+            let sessionID = "ses_\(UUID().uuidString)"
+            var body = ["id": sessionID]
+            if let title { body["title"] = title }
+            let data = try await sendV2RequestData(
+                method: "POST",
+                path: "/api/session",
+                body: body
+            )
+            guard !data.isEmpty else {
+                return try await getSession(id: sessionID)
+            }
+            let response: OCV2Envelope<OCSession> = try decode(data)
+            return response.data
+        }
+
         var body: [String: Any] = [:]
         if let title { body["title"] = title }
         if let parentID { body["parentID"] = parentID }
@@ -107,11 +131,32 @@ actor OpenCodeClient {
     }
 
     func deleteSession(id: String) async throws -> Bool {
-        try await delete("/session/\(id)")
+        if usesV2 {
+            try await sendV2RequestDiscardingResponse(
+                method: "DELETE",
+                path: "/api/session",
+                pathParameter: id,
+                includesLocation: false
+            )
+            return true
+        }
+        return try await delete("/session/\(id)")
     }
 
     func updateSession(id: String, title: String) async throws -> OCSession {
-        try await patch("/session/\(id)", body: ["title": title])
+        if usesV2 {
+            // V2 acknowledges this mutation with 204. Fetch the canonical
+            // session afterwards so callers can immediately refresh their UI.
+            try await sendV2RequestDiscardingResponse(
+                method: "PATCH",
+                path: "/api/session",
+                pathParameter: id,
+                body: ["title": title],
+                includesLocation: false
+            )
+            return try await getSession(id: id)
+        }
+        return try await patch("/session/\(id)", body: ["title": title])
     }
 
     func getSessionStatus() async throws -> [String: OCSessionStatus] {
@@ -155,8 +200,44 @@ actor OpenCodeClient {
         text: String,
         model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
-        variant: String? = nil
+        variant: String? = nil,
+        messageID: String? = nil
     ) async throws {
+        if usesV2 {
+            // v2 records selection changes as session mutations. They must be
+            // accepted before the prompt is admitted, otherwise the runner may
+            // begin this turn with the previous selection.
+            if let model {
+                let selection = OCV2ModelRef(
+                    id: model.modelID,
+                    providerID: model.providerID,
+                    variant: variant
+                )
+                try await sendV2RequestDiscardingResponse(
+                    method: "POST",
+                    path: "/api/session/\(sessionID)/model",
+                    body: ["model": selection],
+                    includesLocation: false
+                )
+            }
+            if let agent = agent?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank {
+                try await sendV2RequestDiscardingResponse(
+                    method: "POST",
+                    path: "/api/session/\(sessionID)/agent",
+                    body: ["agent": agent],
+                    includesLocation: false
+                )
+            }
+
+            try await sendV2RequestDiscardingResponse(
+                method: "POST",
+                path: "/api/session/\(sessionID)/prompt",
+                body: OCV2PromptInput(id: messageID, text: text, delivery: .steer),
+                includesLocation: false
+            )
+            return
+        }
+
         let part = OCPromptPart(type: "text", text: text)
         let input = OCPromptInput(parts: [part], model: model, agent: agent, messageID: nil, variant: variant)
         let _: EmptyResponse = try await postCodable("/session/\(sessionID)/prompt_async", body: input, expect204: true)
@@ -229,7 +310,7 @@ actor OpenCodeClient {
                 connected: nil
             )
         }
-        try await get("/provider")
+        return try await get("/provider")
     }
 
     /// Fetch raw JSON from /provider for debugging decode issues.
@@ -246,7 +327,7 @@ actor OpenCodeClient {
         guard !usesV2 else {
             return OCConfig(model: nil, provider: nil, enabledProviders: nil, disabledProviders: nil)
         }
-        try await get("/config")
+        return try await get("/config")
     }
 
     // MARK: - Agents
@@ -502,6 +583,79 @@ actor OpenCodeClient {
         return try decode(data)
     }
 
+    private func sendV2Request<T: Decodable, B: Encodable>(
+        method: String,
+        path: String,
+        pathParameter: String? = nil,
+        body: B,
+        includesLocation: Bool = true
+    ) async throws -> T {
+        let data = try await sendV2RequestData(
+            method: method,
+            path: path,
+            pathParameter: pathParameter,
+            body: body,
+            includesLocation: includesLocation
+        )
+        return try decode(data)
+    }
+
+    private func sendV2RequestDiscardingResponse(
+        method: String,
+        path: String,
+        pathParameter: String? = nil,
+        includesLocation: Bool = true
+    ) async throws {
+        var request = makeV2Request(
+            path: path,
+            pathParameter: pathParameter,
+            includesLocation: includesLocation
+        )
+        request.httpMethod = method
+        Logger.api.debug("\(method, privacy: .public) \(request.url?.absoluteString ?? "nil", privacy: .public)")
+        let (_, response) = try await transport.data(for: request)
+        try validateResponse(response)
+    }
+
+    private func sendV2RequestDiscardingResponse<B: Encodable>(
+        method: String,
+        path: String,
+        pathParameter: String? = nil,
+        body: B,
+        includesLocation: Bool = true
+    ) async throws {
+        _ = try await sendV2RequestData(
+            method: method,
+            path: path,
+            pathParameter: pathParameter,
+            body: body,
+            includesLocation: includesLocation
+        )
+    }
+
+    private func sendV2RequestData<B: Encodable>(
+        method: String,
+        path: String,
+        pathParameter: String? = nil,
+        body: B?,
+        includesLocation: Bool = true
+    ) async throws -> Data {
+        var request = makeV2Request(
+            path: path,
+            pathParameter: pathParameter,
+            includesLocation: includesLocation
+        )
+        request.httpMethod = method
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(body)
+        }
+        Logger.api.debug("\(method, privacy: .public) \(request.url?.absoluteString ?? "nil", privacy: .public)")
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response)
+        return data
+    }
+
     private func getV2Located<T: Decodable>(
         _ endpoint: String,
         path: String? = nil,
@@ -538,11 +692,20 @@ actor OpenCodeClient {
                 queryItems.append(URLQueryItem(name: "order", value: order))
             }
 
-            let page: OCV2CursorPage<[T]> = try await getV2(
-                endpoint,
-                queryItems: queryItems,
-                includesLocation: includesLocation
-            )
+            let page: OCV2CursorPage<[T]>
+            do {
+                page = try await getV2(
+                    endpoint,
+                    queryItems: queryItems,
+                    includesLocation: includesLocation
+                )
+            } catch let error as OpenCodeError {
+                throw error
+            } catch is DecodingError {
+                throw OpenCodeError.invalidPayload("The v2 response did not contain a valid cursor page.")
+            } catch {
+                throw error
+            }
             guard !page.data.isEmpty else {
                 throw OpenCodeError.invalidPayload("The v2 response contained an empty page.")
             }

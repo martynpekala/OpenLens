@@ -302,7 +302,7 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
 
 // MARK: - Message Parts
 
- struct OCMessageWithParts: Codable, Identifiable, Sendable {
+nonisolated struct OCMessageWithParts: Codable, Identifiable, Sendable {
     let info: OCMessage
     let parts: [OCPart]
 
@@ -1751,7 +1751,7 @@ nonisolated struct OCFileDiff: Codable, Sendable {
 
 // MARK: - Agent
 
- struct OCAgent: Codable, Identifiable {
+nonisolated struct OCAgent: Codable, Identifiable, Sendable {
     let id: String
     let name: String?
     let description: String?
@@ -1790,7 +1790,7 @@ nonisolated struct OCFileDiff: Codable, Sendable {
 
 // MARK: - Command
 
- struct OCCommand: Codable, Identifiable {
+nonisolated struct OCCommand: Codable, Identifiable, Sendable {
     let id: String
     let name: String?
     let description: String?
@@ -1849,6 +1849,27 @@ nonisolated struct OCFileDiff: Codable, Sendable {
         let providerID: String
         let modelID: String
     }
+}
+
+/// Input accepted by the v2 session prompt endpoint. Unlike the legacy
+/// prompt endpoint, agent and model selection are applied through dedicated
+/// session mutations before this input is admitted.
+nonisolated struct OCV2PromptInput: Codable, Sendable {
+    let id: String?
+    let text: String
+    let delivery: Delivery
+
+    nonisolated enum Delivery: String, Codable, Sendable {
+        case steer
+    }
+}
+
+/// The v2 session model endpoints use `id`, rather than the legacy
+/// `modelID`, and include the selected reasoning variant in the same object.
+nonisolated struct OCV2ModelRef: Codable, Sendable {
+    let id: String
+    let providerID: String
+    let variant: String?
 }
 
  struct OCPromptPart: Codable {

@@ -700,6 +700,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     @ObservationIgnored private var abortTask: Task<Void, Never>?
     @ObservationIgnored private var stoppedStateClearTask: Task<Void, Never>?
     @ObservationIgnored private var ignoredAssistantMessageIDs: Set<String> = []
+    /// User rows accepted optimistically by v2. The prompt endpoint accepts a
+    /// caller-provided ID, allowing the authoritative transcript to replace
+    /// the same row when its projector catches up.
+    @ObservationIgnored private var optimisticV2UserMessageIDs: Set<String> = []
     @ObservationIgnored private var locallyStoppedSessionID: String?
     /// A v2 stream has no resume cursor, so a transport or decoding gap must be
     /// reconciled against the session and transcript endpoints. Coalesce gap
@@ -1268,13 +1272,13 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     @discardableResult
-    func loadMessages() async -> Bool {
+    func loadMessages(syncModelSelection: Bool = true) async -> Bool {
         guard !isOfflinePreviewMode, let session = currentSession else { return false }
 
         do {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
             guard !Task.isCancelled, currentSession?.id == session.id else { return false }
-            let mergedMessages = mergeLoadedMessagesWithLocallyStoppedMessages(loaded)
+            let mergedMessages = mergeLoadedMessagesWithLocalMessages(loaded)
             let revert = currentSession?.id == session.id
                 ? currentSession?.revert
                 : session.revert
@@ -1282,9 +1286,9 @@ final class ChatClient: SSEEventHandlerDelegate {
             prepareTurnDiffRefresh(for: visibleMessages)
             preserveTurnFileChanges(in: visibleMessages)
             self.messages = visibleMessages
-            if Self.recentSessionModelSelection(from: visibleMessages) != nil {
+            if syncModelSelection, Self.recentSessionModelSelection(from: visibleMessages) != nil {
                 syncSessionModelSelection(from: visibleMessages)
-            } else {
+            } else if syncModelSelection {
                 applyPreferredDefaultModelSelection()
             }
             Logger.debug.info("messages count: \(visibleMessages.count)")
@@ -1517,17 +1521,17 @@ final class ChatClient: SSEEventHandlerDelegate {
         return now.timeIntervalSince(responseStartDate) < Self.statusRefreshIdleGraceInterval
     }
 
-    private func mergeLoadedMessagesWithLocallyStoppedMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
-        guard !ignoredAssistantMessageIDs.isEmpty else { return loaded }
+    private func mergeLoadedMessagesWithLocalMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
+        let localMessageIDs = ignoredAssistantMessageIDs.union(optimisticV2UserMessageIDs)
+        guard !localMessageIDs.isEmpty else { return loaded }
 
-        let localStoppedMessages = messages.filter { ignoredAssistantMessageIDs.contains($0.id) }
-        guard !localStoppedMessages.isEmpty else {
-            return loaded.filter { !ignoredAssistantMessageIDs.contains($0.id) }
-        }
+        let loadedIDs = Set(loaded.map(\.id))
+        optimisticV2UserMessageIDs.subtract(loadedIDs)
 
         var result = loaded.filter { !ignoredAssistantMessageIDs.contains($0.id) }
         let existingIDs = Set(result.map(\.id))
-        result.append(contentsOf: localStoppedMessages.filter { !existingIDs.contains($0.id) })
+        let preservedLocalMessages = messages.filter { localMessageIDs.contains($0.id) }
+        result.append(contentsOf: preservedLocalMessages.filter { !existingIDs.contains($0.id) })
         return result
     }
 
@@ -1988,7 +1992,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         beginResponse()
 
-        let userMessage = ChatMessage(role: .user, content: text)
+        let userMessage = makeOptimisticUserMessage(text: text)
         messages.append(userMessage)
         inputText = ""
 
@@ -2004,7 +2008,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         contentVersion &+= 1
 
         Task {
-            await sendPromptAsync(text: text)
+            await sendPromptAsync(text: text, messageID: userMessage.id)
         }
     }
 
@@ -2128,7 +2132,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     private func sendAgentPrompt(text: String, agent: String, prompt: String) {
         beginResponse()
 
-        let userMessage = ChatMessage(role: .user, content: text)
+        let userMessage = makeOptimisticUserMessage(text: text)
         messages.append(userMessage)
         inputText = ""
 
@@ -2145,11 +2149,23 @@ final class ChatClient: SSEEventHandlerDelegate {
         scrollAnchor &+= 1
 
         Task {
-            await sendPromptAsync(text: prompt, agent: agent)
+            await sendPromptAsync(text: prompt, agent: agent, messageID: userMessage.id)
         }
     }
 
-    private func sendPromptAsync(text: String, agent: String? = nil) async {
+    private func makeOptimisticUserMessage(text: String) -> ChatMessage {
+        let id = usesV2SessionAPI ? "msg_\(UUID().uuidString)" : UUID().uuidString
+        if usesV2SessionAPI {
+            optimisticV2UserMessageIDs.insert(id)
+        }
+        return ChatMessage(id: id, role: .user, content: text)
+    }
+
+    private var usesV2SessionAPI: Bool {
+        connection?.serverCapabilities?.protocolVersion == .v2
+    }
+
+    private func sendPromptAsync(text: String, agent: String? = nil, messageID: String? = nil) async {
         guard let session = currentSession else {
             markResponseFailed("Not connected.")
             return
@@ -2161,9 +2177,22 @@ final class ChatClient: SSEEventHandlerDelegate {
                 text: text,
                 model: selectedModelRef,
                 agent: agent,
-                variant: selectedVariant
+                variant: selectedVariant,
+                messageID: messageID
             )
+            guard currentSession?.id == session.id else { return }
+            if usesV2SessionAPI {
+                // Prompt admission is durable but projection is asynchronous.
+                // Reload now; the merge above keeps the local row visible until
+                // the transcript returns the same caller-provided message ID.
+                await loadMessages(syncModelSelection: false)
+            }
         } catch {
+            if usesV2SessionAPI, let messageID {
+                // Keep the failed row visible for immediate feedback, but do
+                // not preserve it over a later authoritative transcript load.
+                optimisticV2UserMessageIDs.remove(messageID)
+            }
             guard responseState == .generating else { return }
             if let agent, !agent.isEmpty {
                 markResponseFailed("Failed to run /\(agent): \(error.localizedDescription)")
@@ -3189,6 +3218,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         turnFileDetailCacheOrder.removeAll()
         cancelStoppedStateClear()
         ignoredAssistantMessageIDs.removeAll()
+        optimisticV2UserMessageIDs.removeAll()
         locallyStoppedSessionID = nil
         demoPlayer?.stop()
         recordedReplayPlayer?.stop()

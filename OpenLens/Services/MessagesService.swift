@@ -30,13 +30,21 @@ final class MessagesService {
         text: String,
         model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
-        variant: String? = nil
+        variant: String? = nil,
+        messageID: String? = nil
     ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        try await client.sendPromptAsync(sessionID: sessionID, text: text, model: model, agent: agent, variant: variant)
+        try await client.sendPromptAsync(
+            sessionID: sessionID,
+            text: text,
+            model: model,
+            agent: agent,
+            variant: variant,
+            messageID: messageID
+        )
     }
 
     /// Queue a follow-up behind the active session turn.

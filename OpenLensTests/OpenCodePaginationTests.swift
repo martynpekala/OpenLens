@@ -134,12 +134,12 @@ nonisolated private final class V2PaginationTransport: OpenCodeTransport, @unche
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         let url = request.url ?? URL(string: "https://opencode.example.com")!
-        let queryItems = Dictionary(
-            uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).compactMap {
-                guard let value = $0.value else { return nil }
-                return ($0.name, value)
+        let queryItems = (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .reduce(into: [String: String]()) { result, item in
+                if let value = item.value {
+                    result[item.name] = value
+                }
             }
-        )
         let cursor = queryItems["cursor"]
         lock.lock()
         requests.append(.init(cursor: cursor, queryItems: queryItems))
