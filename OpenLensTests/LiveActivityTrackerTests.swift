@@ -26,6 +26,7 @@ struct LiveActivityTrackerTests {
         #expect(waitingUpdate.currentIntentIcon == "terminal")
         #expect(waitingUpdate.pendingUserResponse?.kind == .permission)
         #expect(waitingUpdate.pendingUserResponse?.detail == "bash: npm test")
+        #expect(waitingUpdate.pendingUserResponse?.sessionID == "session-1")
 
         tracker.clearPendingUserResponse()
 

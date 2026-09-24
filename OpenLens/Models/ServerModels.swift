@@ -1138,6 +1138,28 @@ nonisolated struct OCPermissionRequest: Codable, Identifiable, Sendable {
         displayScopeWasTruncated = try container.decodeIfPresent(Bool.self, forKey: .displayScopeWasTruncated) ?? false
     }
 
+    /// Session-scoped v2 permission routes own their session identity even
+    /// when an older server omits it from the response body.
+    func assigned(toSessionID sessionID: String) -> OCPermissionRequest {
+        OCPermissionRequest(
+            id: id,
+            sessionID: sessionID,
+            permission: permission,
+            action: action,
+            patterns: patterns,
+            resources: resources,
+            metadata: metadata,
+            always: always,
+            save: save,
+            toolRef: toolRef,
+            input: input,
+            description: legacyDescription,
+            title: legacyTitle,
+            toolName: legacyToolName,
+            displayScopeWasTruncated: displayScopeWasTruncated
+        )
+    }
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
@@ -1854,6 +1876,10 @@ nonisolated struct OCCommand: Codable, Identifiable, Sendable {
 /// Input accepted by the v2 session prompt endpoint. Unlike the legacy
 /// prompt endpoint, agent and model selection are applied through dedicated
 /// session mutations before this input is admitted.
+nonisolated struct OCV2PermissionReplyInput: Encodable, Sendable {
+    let reply: OCPermissionReply
+}
+
 nonisolated struct OCV2PromptInput: Codable, Sendable {
     let id: String?
     let text: String

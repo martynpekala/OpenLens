@@ -1100,10 +1100,7 @@ struct MicroRootView: View {
 
     private func respondToPermission(_ permission: OCPermissionRequest, reply: OCPermissionReply) async {
         do {
-            try await inboxService.respondToPermission(
-                requestID: permission.id,
-                reply: reply
-            )
+            try await inboxService.respondToPermission(permission, reply: reply)
 
             if chatClient.pendingPermission?.id == permission.id {
                 chatClient.pendingPermission = nil

@@ -59,7 +59,7 @@ final class InboxService {
         }
     }
 
-    func respondToPermission(requestID: String, reply: OCPermissionReply) async throws {
+    func respondToPermission(_ permission: OCPermissionRequest, reply: OCPermissionReply) async throws {
         if ScreenshotFixtures.isEnabled {
             return
         }
@@ -68,7 +68,11 @@ final class InboxService {
             throw OpenCodeError.notConnected
         }
 
-        let _ = try await client.replyToPermission(requestID: requestID, reply: reply)
+        let _ = try await client.replyToPermission(
+            sessionID: permission.sessionID,
+            requestID: permission.id,
+            reply: reply
+        )
     }
 
     func respondToQuestion(requestID: String, answers: [[String]]) async throws {

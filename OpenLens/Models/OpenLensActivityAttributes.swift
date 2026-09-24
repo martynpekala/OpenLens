@@ -62,6 +62,8 @@ struct OpenLensActivityAttributes: ActivityAttributes {
         var kind: Kind
         var detail: String
         var requestID: String?
+        /// Session ownership required by the v2 permission reply endpoint.
+        var sessionID: String?
     }
 
     /// Dynamic state that updates as the agent works.

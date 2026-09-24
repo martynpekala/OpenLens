@@ -81,7 +81,8 @@ final class LiveActivityTracker {
         pendingUserResponse = .init(
             kind: .permission,
             detail: permissionLiveActivityDetail(permission),
-            requestID: permission.id
+            requestID: permission.id,
+            sessionID: permission.sessionID
         )
         pushCurrentState()
     }

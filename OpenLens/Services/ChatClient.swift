@@ -1519,6 +1519,8 @@ final class ChatClient: SSEEventHandlerDelegate {
                     guard await self.loadMessages(), self.currentSession?.id == sessionID else {
                         break
                     }
+                    await self.recoverPendingPermission(sessionID: sessionID)
+                    await self.recoverPendingQuestions()
                 } catch is CancellationError {
                     break
                 } catch {
@@ -2691,13 +2693,14 @@ final class ChatClient: SSEEventHandlerDelegate {
             return false
         }
 
-        let recoverySessionID = pendingPermission?.sessionID ?? currentSession?.id
+        guard let permission = pendingPermission, permission.id == requestID else {
+            errorMessage = "Failed to respond to permission: The request is no longer pending."
+            return false
+        }
+        let recoverySessionID = permission.sessionID ?? currentSession?.id
 
         do {
-            try await questionService.respondToPermission(
-                requestID: requestID,
-                reply: reply
-            )
+            try await questionService.respondToPermission(permission, reply: reply)
 
             if pendingPermission?.id == requestID {
                 pendingPermission = nil

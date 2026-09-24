@@ -541,8 +541,51 @@ actor OpenCodeClient {
 
     // MARK: - Permissions
 
-    func listPermissions() async throws -> [OCPermissionRequest] {
-        let requests: [OCPermissionRequest] = try await get("/permission")
+    func listPermissions(sessionID: String? = nil) async throws -> [OCPermissionRequest] {
+        let requests: [OCPermissionRequest]
+        if usesV2 {
+            if let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank {
+                let response: OCV2Envelope<[OCPermissionRequest]> = try await getV2(
+                    "/api/session/\(sessionID)/permission",
+                    includesLocation: false
+                )
+                requests = response.data.map { $0.assigned(toSessionID: sessionID) }
+            } else {
+                let response: OCV2Located<[OCPermissionRequest]> = try await getV2Located(
+                    "/api/permission/request"
+                )
+                requests = response.data
+            }
+        } else {
+            requests = try await get("/permission")
+        }
+        return sanitizedPermissions(requests)
+    }
+
+    func replyToPermission(
+        sessionID: String?,
+        requestID: String,
+        reply: OCPermissionReply
+    ) async throws -> Bool {
+        if usesV2 {
+            guard let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
+                throw OpenCodeError.invalidPayload("A session ID is required to reply to a v2 permission request.")
+            }
+            try await sendV2RequestDiscardingResponse(
+                method: "POST",
+                path: "/api/session/\(sessionID)/permission/\(requestID)/reply",
+                body: OCV2PermissionReplyInput(reply: reply),
+                includesLocation: false
+            )
+            return true
+        }
+
+        return try await post("/permission/\(requestID)/reply", body: [
+            "reply": reply.rawValue,
+        ] as [String: Any])
+    }
+
+    private func sanitizedPermissions(_ requests: [OCPermissionRequest]) -> [OCPermissionRequest] {
         var safeRequests: [OCPermissionRequest] = []
         safeRequests.reserveCapacity(min(requests.count, Self.maximumPendingPromptCount))
 
@@ -557,12 +600,6 @@ actor OpenCodeClient {
         }
 
         return safeRequests
-    }
-
-    func replyToPermission(requestID: String, reply: OCPermissionReply) async throws -> Bool {
-        try await post("/permission/\(requestID)/reply", body: [
-            "reply": reply.rawValue,
-        ] as [String: Any])
     }
 
     // MARK: - Questions

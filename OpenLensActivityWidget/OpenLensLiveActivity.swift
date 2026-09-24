@@ -112,9 +112,10 @@ struct OpenLensLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.bottom) {
                     if let pendingUserResponse = context.state.pendingUserResponse,
                        pendingUserResponse.kind == .permission,
+                       let sessionID = pendingUserResponse.sessionID,
                        let requestID = pendingUserResponse.requestID {
                         HStack(spacing: 8) {
-                            Button(intent: DenyPermissionIntent(requestID: requestID)) {
+                            Button(intent: DenyPermissionIntent(sessionID: sessionID, requestID: requestID)) {
                                 Text("Deny")
                                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                                     .foregroundStyle(Color.laSecondary)
@@ -124,7 +125,7 @@ struct OpenLensLiveActivity: Widget {
                             }
                             .buttonStyle(.plain)
 
-                            Button(intent: ApprovePermissionIntent(requestID: requestID)) {
+                            Button(intent: ApprovePermissionIntent(sessionID: sessionID, requestID: requestID)) {
                                 Text("Approve")
                                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                                     .foregroundStyle(Color.laPrimary)
@@ -395,9 +396,9 @@ struct PermissionActionCard: View {
                 Spacer(minLength: 0)
             }
 
-            if let requestID = response.requestID {
+            if let sessionID = response.sessionID, let requestID = response.requestID {
                 HStack(spacing: 8) {
-                    Button(intent: DenyPermissionIntent(requestID: requestID)) {
+                    Button(intent: DenyPermissionIntent(sessionID: sessionID, requestID: requestID)) {
                         Text("Deny")
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(Color.laSecondary)
@@ -407,7 +408,7 @@ struct PermissionActionCard: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button(intent: ApprovePermissionIntent(requestID: requestID)) {
+                    Button(intent: ApprovePermissionIntent(sessionID: sessionID, requestID: requestID)) {
                         Text("Approve")
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(Color.laPrimary)

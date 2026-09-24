@@ -30,7 +30,7 @@ final class QuestionService {
             throw OpenCodeError.notConnected
         }
 
-        let pending = try await client.listPermissions()
+        let pending = try await client.listPermissions(sessionID: sessionID)
         guard let sessionID else { return pending.first }
         return pending.first(where: { $0.sessionID == sessionID })
     }
@@ -59,14 +59,15 @@ final class QuestionService {
 
     // MARK: - Permission Response
 
-    /// Reply to a permission request.
-    func respondToPermission(requestID: String, reply: OCPermissionReply) async throws {
+    /// Reply to a permission request using its server-owned session identity.
+    func respondToPermission(_ permission: OCPermissionRequest, reply: OCPermissionReply) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
         let _ = try await client.replyToPermission(
-            requestID: requestID,
+            sessionID: permission.sessionID,
+            requestID: permission.id,
             reply: reply
         )
     }
