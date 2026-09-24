@@ -16,6 +16,7 @@ final class ConnectionManager: ConnectionProviding {
     private(set) var state: State = .disconnected
     private(set) var serverVersion: String?
     private(set) var serverCapabilities: OpenCodeServerCapabilities?
+    private(set) var currentProject: OCProject?
     private(set) var projectName: String?
     private(set) var branch: String?
     private(set) var selectedProjectDirectory: String?
@@ -83,6 +84,7 @@ final class ConnectionManager: ConnectionProviding {
         connectionMethod = method
         localNetworkAccessRequired = false
         serverCapabilities = nil
+        currentProject = nil
 
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -196,6 +198,7 @@ final class ConnectionManager: ConnectionProviding {
         connectionMethod = method
         localNetworkAccessRequired = false
         serverCapabilities = nil
+        currentProject = nil
         state = .connecting
 
         let restoredProjectDirectory = savedConnectionsStore?.connections
@@ -261,6 +264,7 @@ final class ConnectionManager: ConnectionProviding {
         state = .disconnected
         serverVersion = nil
         serverCapabilities = nil
+        currentProject = nil
         projectName = nil
         branch = nil
         selectedProjectDirectory = nil
@@ -324,6 +328,7 @@ final class ConnectionManager: ConnectionProviding {
 
         await client.updateContextDirectory(normalizedDirectory)
         selectedProjectDirectory = normalizedDirectory
+        currentProject = nil
 
         if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
             savedConnectionsStore?.updateProjectSelection(
@@ -341,6 +346,7 @@ final class ConnectionManager: ConnectionProviding {
 
     private func refreshProjectMetadata() async {
         guard let client else {
+            currentProject = nil
             projectName = nil
             branch = nil
             return
@@ -350,8 +356,10 @@ final class ConnectionManager: ConnectionProviding {
         let project = try? await client.getCurrentProject()
 
         if let project {
+            currentProject = project
             projectName = project.displayName ?? project.worktree
         } else {
+            currentProject = nil
             projectName = nil
             Logger.connection.warning("Failed to fetch project info")
         }

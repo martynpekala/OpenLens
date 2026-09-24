@@ -28,11 +28,9 @@ final class SessionsService {
             throw OpenCodeError.notConnected
         }
 
-        async let projectsTask = client.listProjects()
         let sessions = try await client.listSessions()
-        let projects = (try? await projectsTask) ?? []
         return visibleSessions(
-            from: Self.applyingProjectDirectories(sessions, projects: projects)
+            from: resolvingProjectDirectories(in: sessions)
         )
     }
 
@@ -46,7 +44,7 @@ final class SessionsService {
         }
 
         let session = try await client.getSession(id: id)
-        return await resolvingProjectDirectory(for: session, client: client)
+        return resolvingProjectDirectory(for: session)
     }
 
     // MARK: - Create
@@ -78,7 +76,7 @@ final class SessionsService {
         }
 
         let session = try await client.createSession(title: title)
-        return await resolvingProjectDirectory(for: session, client: client)
+        return resolvingProjectDirectory(for: session)
     }
 
     // MARK: - Delete
@@ -118,7 +116,7 @@ final class SessionsService {
         }
 
         let updatedSession = try await client.updateSession(id: session.id, title: newTitle)
-        return await resolvingProjectDirectory(for: updatedSession, client: client)
+        return resolvingProjectDirectory(for: updatedSession)
     }
 
     // MARK: - Ensure Session
@@ -183,17 +181,15 @@ final class SessionsService {
         }
     }
 
-    private func resolvingProjectDirectory(
-        for session: OCSession,
-        client: OpenCodeClient
-    ) async -> OCSession {
-        guard session.directory?.nilIfBlank == nil,
-              session.projectID?.nilIfBlank != nil,
-              let projects = try? await client.listProjects() else {
-            return session
-        }
+    private func resolvingProjectDirectories(in sessions: [OCSession]) -> [OCSession] {
+        Self.applyingProjectDirectories(
+            sessions,
+            projects: connection.currentProject.map { [$0] } ?? []
+        )
+    }
 
-        return Self.applyingProjectDirectories([session], projects: projects)[0]
+    private func resolvingProjectDirectory(for session: OCSession) -> OCSession {
+        resolvingProjectDirectories(in: [session])[0]
     }
 
     // MARK: - Abort

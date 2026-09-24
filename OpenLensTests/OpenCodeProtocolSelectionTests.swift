@@ -107,13 +107,10 @@ struct OpenCodeProtocolSelectionTests {
             "/api/session/ses_123/message/msg_456": .init(statusCode: 200, body: Data(#"""
             {
               "data": {
-                "info": {
-                  "id": "msg_456",
-                  "sessionID": "ses_123",
-                  "role": "assistant",
-                  "time": {"created": 0}
-                },
-                "parts": []
+                "id": "msg_456",
+                "type": "assistant",
+                "time": {"created": 0},
+                "content": [{"type": "text", "text": "Hello"}]
               }
             }
             """#.utf8)),
@@ -175,9 +172,6 @@ struct OpenCodeProtocolSelectionTests {
             "/api/project": .init(statusCode: 200, body: Data(#"""
             [{"id":"openlens","worktree":"/workspace/OpenLens","time":{"created":0}}]
             """#.utf8)),
-            "/api/project/current": .init(statusCode: 200, body: Data(#"""
-            {"id":"openlens","directory":"/workspace/OpenLens","time":{"created":0}}
-            """#.utf8)),
             "/api/model": .init(statusCode: 200, body: Data(#"""
             {
               "location": {"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},
@@ -211,7 +205,7 @@ struct OpenCodeProtocolSelectionTests {
                 headers: ["Content-Type": "image/png"]
             ),
             "/api/vcs": .init(statusCode: 200, body: Data(#"""
-            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":{"branch":"main"}}
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":{"provider":"git","branch":{"current":"main","default":"main"}}}
             """#.utf8)),
             "/api/vcs/status": .init(statusCode: 200, body: Data(#"""
             {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":[{"file":"README.md","additions":2,"deletions":1,"status":"modified"}]}
@@ -264,7 +258,7 @@ struct OpenCodeProtocolSelectionTests {
         #expect(requests.map(\.path) == [
             "/api/info",
             "/api/location",
-            "/api/project/current",
+            "/api/location",
             "/api/project",
             "/api/model",
             "/api/model/default",

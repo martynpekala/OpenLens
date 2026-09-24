@@ -42,20 +42,66 @@ struct OpenCodePaginationTests {
         #expect(transport.recordedRequests().count == 3)
     }
 
-    @Test func v2PaginationRejectsAnEmptyPage() async throws {
+    @Test func v2PaginationAcceptsAnEmptyTerminalContinuationPage() async throws {
         let transport = V2PaginationTransport(pages: [
             .init(path: "/api/session/session-1/message", cursor: nil, body: messagePage(ids: ["message-1"], next: "page-2")),
             .init(path: "/api/session/session-1/message", cursor: "page-2", body: messagePage(ids: [], next: nil)),
         ])
         let client = try await v2Client(transport: transport)
 
-        await #expect(throws: OpenCodeError.self) {
-            _ = try await client.listMessages(sessionID: "session-1")
-        }
+        let messages = try await client.listMessages(sessionID: "session-1")
+
+        #expect(messages.map(\.id) == ["message-1"])
         #expect(transport.recordedRequests().count == 3)
     }
 
-    @Test func v2SessionListAcceptsAnEmptyTerminalPage() async throws {
+    @Test func v2MessageListMapsTaggedTimelineEntriesAndSkipsIdleEntries() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(
+                path: "/api/session/session-1/message",
+                cursor: nil,
+                body: Data(#"""
+                {
+                  "data": [
+                    {
+                      "id": "message-user",
+                      "type": "user",
+                      "time": {"created": 1},
+                      "text": "Hello"
+                    },
+                    {
+                      "id": "message-assistant",
+                      "type": "assistant",
+                      "time": {"created": 2},
+                      "agent": "build",
+                      "model": {"id": "luna", "providerID": "github-copilot"},
+                      "content": [
+                        {"type": "reasoning", "text": "Thinking"},
+                        {"type": "text", "text": "Hi"}
+                      ]
+                    },
+                    {
+                      "id": "message-idle",
+                      "type": "idle",
+                      "time": {"created": 3}
+                    }
+                  ],
+                  "cursor": {"next": null}
+                }
+                """#.utf8)
+            ),
+        ])
+        let client = try await v2Client(transport: transport)
+
+        let messages = try await client.listMessages(sessionID: "session-1")
+
+        #expect(messages.map(\.id) == ["message-user", "message-assistant"])
+        #expect(messages[0].parts.first?.text == "Hello")
+        #expect(messages[1].info.modelDisplayName == "github-copilot/luna")
+        #expect(messages[1].parts.map(\.type) == [.reasoning, .text])
+    }
+
+    @Test func v2SessionListAcceptsAnInitiallyEmptyTerminalPage() async throws {
         let transport = V2PaginationTransport(pages: [
             .init(path: "/api/session", cursor: nil, body: sessionPage(ids: [], next: nil)),
         ])
@@ -64,6 +110,18 @@ struct OpenCodePaginationTests {
         let sessions = try await client.listSessions()
 
         #expect(sessions.isEmpty)
+        #expect(transport.recordedRequests().count == 2)
+    }
+
+    @Test func v2PaginationRejectsAnEmptyPageWithAnotherCursor() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(path: "/api/session", cursor: nil, body: sessionPage(ids: [], next: "page-2")),
+        ])
+        let client = try await v2Client(transport: transport)
+
+        await #expect(throws: OpenCodeError.self) {
+            _ = try await client.listSessions()
+        }
         #expect(transport.recordedRequests().count == 2)
     }
 
@@ -118,7 +176,7 @@ struct OpenCodePaginationTests {
 
     private func messagePage(ids: [String], next: String?) -> Data {
         let data = ids.enumerated().map { index, id in
-            #"{"info":{"id":"\#(id)","sessionID":"session-1","role":"user","time":{"created":\#(index)}},"parts":[]}"#
+            #"{"id":"\#(id)","type":"user","time":{"created":\#(index)},"text":"\#(id)"}"#
         }.joined(separator: ",")
         let nextJSON = next.map { "\"\($0)\"" } ?? "null"
         return Data("{\"data\":[\(data)],\"cursor\":{\"next\":\(nextJSON)}}".utf8)

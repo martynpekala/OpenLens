@@ -165,6 +165,44 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
         case agent, model, system, summary, parentID
     }
 
+    init(
+        id: String,
+        sessionID: String,
+        role: OCMessageRole,
+        time: OCMessageTime? = nil,
+        cost: Double? = nil,
+        tokens: OCTokenUsage? = nil,
+        error: OCAPIError? = nil,
+        modelID: String? = nil,
+        providerID: String? = nil,
+        mode: String? = nil,
+        path: OCMessagePath? = nil,
+        finish: String? = nil,
+        agent: String? = nil,
+        model: OCMessageModelRef? = nil,
+        system: String? = nil,
+        summary: OCMessageSummary? = nil,
+        parentID: String? = nil
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.role = role
+        self.time = time
+        self.cost = cost
+        self.tokens = tokens
+        self.error = error
+        self.modelID = modelID
+        self.providerID = providerID
+        self.mode = mode
+        self.path = path
+        self.finish = finish
+        self.agent = agent
+        self.model = model
+        self.system = system
+        self.summary = summary
+        self.parentID = parentID
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
@@ -1741,8 +1779,29 @@ nonisolated struct OCPathInfo: Codable, Sendable {
     let directory: String?
 }
 
-nonisolated struct OCVCSInfo: Codable, Sendable {
+nonisolated struct OCVCSInfo: Decodable, Sendable {
     let branch: String?
+
+    init(branch: String?) {
+        self.branch = branch
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case branch
+    }
+
+    private struct Branch: Decodable {
+        let current: String?
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let branch = try? container.decodeIfPresent(String.self, forKey: .branch) {
+            self.branch = branch
+        } else {
+            self.branch = try container.decodeIfPresent(Branch.self, forKey: .branch)?.current
+        }
+    }
 }
 
 /// Canonical workspace identity returned by v2 location-scoped endpoints.
@@ -1782,6 +1841,121 @@ nonisolated struct OCV2CursorPage<Value: Decodable & Sendable>: Decodable, Senda
 
     let data: Value
     let cursor: Cursor
+}
+
+/// A tagged message projection returned by v2 session transcript endpoints.
+/// Unsupported timeline entries are decoded but omitted from OpenLens's
+/// two-role chat domain, so newer server entries do not invalidate a page.
+nonisolated struct OCV2SessionMessage: Decodable, Sendable {
+    nonisolated struct Model: Decodable, Sendable {
+        let id: String?
+        let providerID: String?
+    }
+
+    nonisolated struct Content: Decodable, Sendable {
+        let id: String?
+        let type: OCPartType
+        let text: String?
+        let callID: String?
+        let tool: String?
+        let state: OCToolState?
+
+        enum CodingKeys: String, CodingKey {
+            case id, type, text, callID, tool, state
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(String.self, forKey: .id)
+            type = try container.decodeIfPresent(OCPartType.self, forKey: .type) ?? .unknown
+            text = try container.decodeIfPresent(String.self, forKey: .text)
+            callID = try container.decodeIfPresent(String.self, forKey: .callID)
+            tool = try container.decodeIfPresent(String.self, forKey: .tool)
+            state = try? container.decodeIfPresent(OCToolState.self, forKey: .state)
+        }
+    }
+
+    let id: String
+    let type: String
+    let time: OCMessageTime?
+    let text: String?
+    let agent: String?
+    let model: Model?
+    let content: [Content]
+    let cost: Double?
+    let tokens: OCTokenUsage?
+    let finish: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, time, text, agent, model, content, cost, tokens, finish
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        time = try? container.decodeIfPresent(OCMessageTime.self, forKey: .time)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        agent = try container.decodeIfPresent(String.self, forKey: .agent)
+        model = try? container.decodeIfPresent(Model.self, forKey: .model)
+        content = (try? container.decodeIfPresent([Content].self, forKey: .content)) ?? []
+        cost = try container.decodeIfPresent(Double.self, forKey: .cost)
+        tokens = try? container.decodeIfPresent(OCTokenUsage.self, forKey: .tokens)
+        finish = try container.decodeIfPresent(String.self, forKey: .finish)
+    }
+
+    func asMessage(sessionID: String) -> OCMessageWithParts? {
+        let role: OCMessageRole
+        switch type {
+        case "user":
+            role = .user
+        case "assistant":
+            role = .assistant
+        default:
+            return nil
+        }
+
+        let info = OCMessage(
+            id: id,
+            sessionID: sessionID,
+            role: role,
+            time: time,
+            cost: cost,
+            tokens: tokens,
+            modelID: model?.id,
+            providerID: model?.providerID,
+            finish: finish,
+            agent: agent
+        )
+        let parts: [OCPart]
+        if role == .user {
+            parts = text.map {
+                [
+                    OCPart(
+                        id: "\(id)-text",
+                        sessionID: sessionID,
+                        messageID: id,
+                        type: .text,
+                        text: $0
+                    ),
+                ]
+            } ?? []
+        } else {
+            parts = content.enumerated().map { index, item in
+                OCPart(
+                    id: item.id ?? "\(id)-\(index)",
+                    sessionID: sessionID,
+                    messageID: id,
+                    type: item.type,
+                    text: item.text,
+                    callID: item.callID,
+                    tool: item.tool,
+                    state: item.state
+                )
+            }
+        }
+        return OCMessageWithParts(info: info, parts: parts)
+    }
 }
 
 nonisolated struct OCV2FileSystemEntry: Codable, Sendable {

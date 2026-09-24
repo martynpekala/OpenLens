@@ -193,12 +193,13 @@ actor OpenCodeClient {
 
     func listMessages(sessionID: String, limit: Int? = nil) async throws -> [OCMessageWithParts] {
         if usesV2 {
-            return try await getAllV2Pages(
+            let messages: [OCV2SessionMessage] = try await getAllV2Pages(
                 endpoint: "/api/session/\(sessionID)/message",
                 limit: limit ?? Self.v2PageSize,
                 order: "asc",
                 includesLocation: false
             )
+            return messages.compactMap { $0.asMessage(sessionID: sessionID) }
         }
         var path = "/session/\(sessionID)/message"
         if let limit { path += "?limit=\(limit)" }
@@ -207,12 +208,15 @@ actor OpenCodeClient {
 
     func getMessage(sessionID: String, messageID: String) async throws -> OCMessageWithParts {
         if usesV2 {
-            let response: OCV2Envelope<OCMessageWithParts> = try await getV2(
+            let response: OCV2Envelope<OCV2SessionMessage> = try await getV2(
                 "/api/session/\(sessionID)/message",
                 pathParameter: messageID,
                 includesLocation: false
             )
-            return response.data
+            guard let message = response.data.asMessage(sessionID: sessionID) else {
+                throw OpenCodeError.invalidPayload("The v2 response did not contain a supported chat message.")
+            }
+            return message
         }
         return try await get("/session/\(sessionID)/message/\(messageID)")
     }
@@ -508,7 +512,12 @@ actor OpenCodeClient {
 
     func getCurrentProject() async throws -> OCProject {
         if usesV2 {
-            return try await getV2("/api/project/current")
+            let location: OCV2LocationInfo = try await getV2("/api/location")
+            contextDirectory = location.directory
+            guard let project = location.project else {
+                throw OpenCodeError.invalidPayload("The v2 location response did not contain a project.")
+            }
+            return OCProject(id: project.id, worktree: project.directory)
         }
 
         return try await get("/project/current")
@@ -978,10 +987,9 @@ actor OpenCodeClient {
         return try decode(data)
     }
 
-    /// Follows opaque v2 cursors until the server ends the snapshot. A terminal
-    /// empty page represents a valid empty collection; empty continuation
-    /// pages, malformed cursors, and cursor cycles are rejected rather than
-    /// returned as an apparently complete partial snapshot.
+    /// Follows opaque v2 cursors until the server ends the snapshot. Servers
+    /// may return an empty terminal page after a non-empty page, so only an
+    /// empty page with another cursor is invalid.
     private func getAllV2Pages<T: Decodable & Sendable>(
         endpoint: String,
         limit: Int = v2PageSize,
@@ -1028,7 +1036,7 @@ actor OpenCodeClient {
             }
 
             guard !page.data.isEmpty else {
-                guard cursor == nil, next == nil else {
+                guard next == nil else {
                     throw OpenCodeError.invalidPayload("The v2 response contained an empty continuation page.")
                 }
                 return values
