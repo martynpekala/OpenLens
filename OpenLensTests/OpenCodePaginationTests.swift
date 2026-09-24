@@ -44,13 +44,26 @@ struct OpenCodePaginationTests {
 
     @Test func v2PaginationRejectsAnEmptyPage() async throws {
         let transport = V2PaginationTransport(pages: [
-            .init(path: "/api/session/session-1/message", cursor: nil, body: messagePage(ids: [], next: nil)),
+            .init(path: "/api/session/session-1/message", cursor: nil, body: messagePage(ids: ["message-1"], next: "page-2")),
+            .init(path: "/api/session/session-1/message", cursor: "page-2", body: messagePage(ids: [], next: nil)),
         ])
         let client = try await v2Client(transport: transport)
 
         await #expect(throws: OpenCodeError.self) {
             _ = try await client.listMessages(sessionID: "session-1")
         }
+        #expect(transport.recordedRequests().count == 3)
+    }
+
+    @Test func v2SessionListAcceptsAnEmptyTerminalPage() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(path: "/api/session", cursor: nil, body: sessionPage(ids: [], next: nil)),
+        ])
+        let client = try await v2Client(transport: transport)
+
+        let sessions = try await client.listSessions()
+
+        #expect(sessions.isEmpty)
         #expect(transport.recordedRequests().count == 2)
     }
 

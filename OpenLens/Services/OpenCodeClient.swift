@@ -978,7 +978,8 @@ actor OpenCodeClient {
         return try decode(data)
     }
 
-    /// Follows opaque v2 cursors until the server ends the snapshot. Empty
+    /// Follows opaque v2 cursors until the server ends the snapshot. A terminal
+    /// empty page represents a valid empty collection; empty continuation
     /// pages, malformed cursors, and cursor cycles are rejected rather than
     /// returned as an apparently complete partial snapshot.
     private func getAllV2Pages<T: Decodable & Sendable>(
@@ -1016,11 +1017,6 @@ actor OpenCodeClient {
             } catch {
                 throw error
             }
-            guard !page.data.isEmpty else {
-                throw OpenCodeError.invalidPayload("The v2 response contained an empty page.")
-            }
-
-            values.append(contentsOf: page.data)
             let next: String?
             if let rawNext = page.cursor.next {
                 guard let cursor = rawNext.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
@@ -1030,6 +1026,15 @@ actor OpenCodeClient {
             } else {
                 next = nil
             }
+
+            guard !page.data.isEmpty else {
+                guard cursor == nil, next == nil else {
+                    throw OpenCodeError.invalidPayload("The v2 response contained an empty continuation page.")
+                }
+                return values
+            }
+
+            values.append(contentsOf: page.data)
             guard let next else {
                 return values
             }
