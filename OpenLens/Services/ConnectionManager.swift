@@ -141,9 +141,7 @@ final class ConnectionManager: ConnectionProviding {
 
             SharedConnectionStore.save(baseURL: baseURL.absoluteString, authHeader: authHeader)
 
-            if capabilities.protocolVersion == .v1 {
-                await refreshProjectMetadata()
-            }
+            await refreshProjectMetadata()
 
             savedConnectionsStore?.saveConnection(
                 serverURL: urlString,
@@ -225,9 +223,7 @@ final class ConnectionManager: ConnectionProviding {
             selectedProjectDirectory = restoredProjectDirectory
             SharedConnectionStore.clear()
 
-            if capabilities.protocolVersion == .v1 {
-                await refreshProjectMetadata()
-            }
+            await refreshProjectMetadata()
             savedConnectionsStore?.saveRemoteConnection(credential)
             if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
                 savedConnectionsStore?.updateProjectSelection(
@@ -350,36 +346,23 @@ final class ConnectionManager: ConnectionProviding {
             return
         }
 
-        // The v2 workspace/location contract is introduced by the next
-        // migration slice. Never issue v1 metadata requests after a v2 probe.
-        guard serverCapabilities?.protocolVersion != .v2 else {
-            projectName = nil
-            branch = nil
-            return
-        }
+        let pathInfo = try? await client.getPath()
+        let project = try? await client.getCurrentProject()
 
-        if let project = try? await client.getCurrentProject() {
+        if let project {
             projectName = project.displayName ?? project.worktree
         } else {
             projectName = nil
             Logger.connection.warning("Failed to fetch project info")
         }
 
-        do {
-            let vcs = try await client.getVCS()
-            branch = vcs.branch
-        } catch {
-            branch = nil
-            Logger.connection.warning("Failed to fetch VCS info: \(error, privacy: .public)")
-        }
-
-        if selectedProjectDirectory == nil,
-           let pathInfo = try? await client.getPath() {
-            let inferredDirectory = pathInfo.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-            Logger.connection.debug("Inferred project context from /path as \(inferredDirectory ?? "nil", privacy: .public)")
+        if selectedProjectDirectory == nil {
+            let inferredDirectory = pathInfo?.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+                ?? project?.worktree?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            Logger.connection.debug("Inferred project context as \(inferredDirectory ?? "nil", privacy: .public)")
             selectedProjectDirectory = inferredDirectory
 
-            if inferredDirectory != nil {
+            if let inferredDirectory {
                 await client.updateContextDirectory(inferredDirectory)
 
                 if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
@@ -389,6 +372,14 @@ final class ConnectionManager: ConnectionProviding {
                     )
                 }
             }
+        }
+
+        do {
+            let vcs = try await client.getVCS()
+            branch = vcs.branch
+        } catch {
+            branch = nil
+            Logger.connection.warning("Failed to fetch VCS info: \(error, privacy: .public)")
         }
     }
 

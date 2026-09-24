@@ -28,8 +28,12 @@ final class SessionsService {
             throw OpenCodeError.notConnected
         }
 
+        async let projectsTask = client.listProjects()
         let sessions = try await client.listSessions()
-        return visibleSessions(from: sessions)
+        let projects = (try? await projectsTask) ?? []
+        return visibleSessions(
+            from: Self.applyingProjectDirectories(sessions, projects: projects)
+        )
     }
 
     func getSession(id: String) async throws -> OCSession {
@@ -41,7 +45,8 @@ final class SessionsService {
             throw OpenCodeError.notConnected
         }
 
-        return try await client.getSession(id: id)
+        let session = try await client.getSession(id: id)
+        return await resolvingProjectDirectory(for: session, client: client)
     }
 
     // MARK: - Create
@@ -72,7 +77,8 @@ final class SessionsService {
             await connection.setProjectContext(directory: workspaceDirectory)
         }
 
-        return try await client.createSession(title: title)
+        let session = try await client.createSession(title: title)
+        return await resolvingProjectDirectory(for: session, client: client)
     }
 
     // MARK: - Delete
@@ -111,7 +117,8 @@ final class SessionsService {
             throw OpenCodeError.notConnected
         }
 
-        return try await client.updateSession(id: session.id, title: newTitle)
+        let updatedSession = try await client.updateSession(id: session.id, title: newTitle)
+        return await resolvingProjectDirectory(for: updatedSession, client: client)
     }
 
     // MARK: - Ensure Session
@@ -122,16 +129,15 @@ final class SessionsService {
             return ScreenshotFixtures.defaultSession
         }
 
-        guard let client = connection.client else {
+        guard connection.client != nil else {
             throw OpenCodeError.notConnected
         }
 
-        let sessions = try await client.listSessions()
-        let sorted = visibleSessions(from: sessions)
+        let sorted = try await listSessions()
         if let latest = sorted.first {
             return latest
         }
-        return try await client.createSession()
+        return try await createSession()
     }
 
     private func visibleSessions(from sessions: [OCSession]) -> [OCSession] {
@@ -141,6 +147,53 @@ final class SessionsService {
 
         let source = rootSessions.isEmpty ? sessions : rootSessions
         return source.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    static func applyingProjectDirectories(
+        _ sessions: [OCSession],
+        projects: [OCProject]
+    ) -> [OCSession] {
+        var directoriesByProjectID: [String: String] = [:]
+        for project in projects {
+            guard let directory = project.worktree?.nilIfBlank,
+                  directoriesByProjectID[project.id] == nil else {
+                continue
+            }
+            directoriesByProjectID[project.id] = directory
+        }
+
+        return sessions.map { session in
+            guard session.directory?.nilIfBlank == nil,
+                  let projectID = session.projectID?.nilIfBlank,
+                  let directory = directoriesByProjectID[projectID] else {
+                return session
+            }
+
+            return OCSession(
+                id: session.id,
+                projectID: session.projectID,
+                directory: directory,
+                parentID: session.parentID,
+                title: session.title,
+                version: session.version,
+                time: session.time,
+                share: session.share,
+                revert: session.revert
+            )
+        }
+    }
+
+    private func resolvingProjectDirectory(
+        for session: OCSession,
+        client: OpenCodeClient
+    ) async -> OCSession {
+        guard session.directory?.nilIfBlank == nil,
+              session.projectID?.nilIfBlank != nil,
+              let projects = try? await client.listProjects() else {
+            return session
+        }
+
+        return Self.applyingProjectDirectories([session], projects: projects)[0]
     }
 
     // MARK: - Abort
