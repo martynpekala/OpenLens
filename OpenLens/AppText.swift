@@ -99,6 +99,7 @@ enum AppText {
     static func changeQuickActionVariant(_ action: String) -> String { "Change \(action) variant" }
     static func clearQuickActionModel(_ action: String) -> String { "Clear \(action) model" }
     static let queuePrompt = "Queue prompt"
+    static let steerPrompt = "Steer prompt"
     static let queuePromptQueued = "Queued"
     static let queuePromptRunsNext = "Runs next"
     static let queuePromptSubmitting = "Adding to queue..."

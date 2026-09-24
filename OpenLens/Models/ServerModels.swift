@@ -1861,7 +1861,15 @@ nonisolated struct OCV2PromptInput: Codable, Sendable {
 
     nonisolated enum Delivery: String, Codable, Sendable {
         case steer
+        case queue
     }
+}
+
+/// Result returned by the v2 interrupt endpoint.
+nonisolated struct OCV2InterruptResponse: Decodable, Sendable {
+    let interrupted: Bool
+
+    private enum CodingKeys: String, CodingKey { case interrupted }
 }
 
 /// The v2 session model endpoints use `id`, rather than the legacy

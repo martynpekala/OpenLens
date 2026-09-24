@@ -164,7 +164,15 @@ actor OpenCodeClient {
     }
 
     func abortSession(id: String) async throws -> Bool {
-        try await post("/session/\(id)/abort", body: [:] as [String: String])
+        if usesV2 {
+            let response: OCV2InterruptResponse = try await sendV2Request(
+                method: "POST",
+                path: "/api/session/\(id)/interrupt",
+                includesLocation: false
+            )
+            return response.interrupted
+        }
+        return try await post("/session/\(id)/abort", body: [:] as [String: String])
     }
 
     // MARK: - Messages
@@ -207,27 +215,12 @@ actor OpenCodeClient {
             // v2 records selection changes as session mutations. They must be
             // accepted before the prompt is admitted, otherwise the runner may
             // begin this turn with the previous selection.
-            if let model {
-                let selection = OCV2ModelRef(
-                    id: model.modelID,
-                    providerID: model.providerID,
-                    variant: variant
-                )
-                try await sendV2RequestDiscardingResponse(
-                    method: "POST",
-                    path: "/api/session/\(sessionID)/model",
-                    body: ["model": selection],
-                    includesLocation: false
-                )
-            }
-            if let agent = agent?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank {
-                try await sendV2RequestDiscardingResponse(
-                    method: "POST",
-                    path: "/api/session/\(sessionID)/agent",
-                    body: ["agent": agent],
-                    includesLocation: false
-                )
-            }
+            try await applyV2PromptSelection(
+                sessionID: sessionID,
+                model: model,
+                agent: agent,
+                variant: variant
+            )
 
             try await sendV2RequestDiscardingResponse(
                 method: "POST",
@@ -246,7 +239,30 @@ actor OpenCodeClient {
     /// Admit a prompt behind the active session turn without interrupting it.
     /// The scheduler responds with admission metadata. The chat only needs the
     /// successful admission signal, so its response body is intentionally ignored.
-    func queuePrompt(sessionID: String, text: String) async throws {
+    func queuePrompt(
+        sessionID: String,
+        text: String,
+        model: OCPromptInput.OCModelRef? = nil,
+        agent: String? = nil,
+        variant: String? = nil,
+        messageID: String? = nil
+    ) async throws {
+        if usesV2 {
+            try await applyV2PromptSelection(
+                sessionID: sessionID,
+                model: model,
+                agent: agent,
+                variant: variant
+            )
+            try await sendV2RequestDiscardingResponse(
+                method: "POST",
+                path: "/api/session/\(sessionID)/prompt",
+                body: OCV2PromptInput(id: messageID, text: text, delivery: .queue),
+                includesLocation: false
+            )
+            return
+        }
+
         let input = OCQueuedPromptInput(
             prompt: .init(text: text),
             delivery: .queue
@@ -565,6 +581,35 @@ actor OpenCodeClient {
         capabilities?.protocolVersion == .v2
     }
 
+    private func applyV2PromptSelection(
+        sessionID: String,
+        model: OCPromptInput.OCModelRef?,
+        agent: String?,
+        variant: String?
+    ) async throws {
+        if let model {
+            let selection = OCV2ModelRef(
+                id: model.modelID,
+                providerID: model.providerID,
+                variant: variant
+            )
+            try await sendV2RequestDiscardingResponse(
+                method: "POST",
+                path: "/api/session/\(sessionID)/model",
+                body: ["model": selection],
+                includesLocation: false
+            )
+        }
+        if let agent = agent?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank {
+            try await sendV2RequestDiscardingResponse(
+                method: "POST",
+                path: "/api/session/\(sessionID)/agent",
+                body: ["agent": agent],
+                includesLocation: false
+            )
+        }
+    }
+
     private func getV2<T: Decodable>(
         _ path: String,
         pathParameter: String? = nil,
@@ -598,6 +643,23 @@ actor OpenCodeClient {
             includesLocation: includesLocation
         )
         return try decode(data)
+    }
+
+    private func sendV2Request<T: Decodable>(
+        method: String,
+        path: String,
+        pathParameter: String? = nil,
+        includesLocation: Bool = true
+    ) async throws -> T {
+        let data = try await sendV2RequestData(
+            method: method,
+            path: path,
+            pathParameter: pathParameter,
+            body: Optional<EmptyResponse>.none,
+            includesLocation: includesLocation
+        )
+        let response: T = try decode(data)
+        return response
     }
 
     private func sendV2RequestDiscardingResponse(
@@ -946,4 +1008,4 @@ enum OpenCodeError: LocalizedError {
 
 // MARK: - Empty response for 204s
 
-struct EmptyResponse: Decodable {}
+struct EmptyResponse: Codable {}

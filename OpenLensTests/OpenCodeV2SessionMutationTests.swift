@@ -110,6 +110,32 @@ struct OpenCodeV2SessionMutationTests {
         #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
     }
 
+    @Test func v2InterruptUsesTheInterruptRouteAndReturnsTheServerResult() async throws {
+        let transport = V2SessionMutationTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 200, body: Data(#"{"interrupted":false}"#.utf8)),
+            .init(statusCode: 200, body: Data(#"{"interrupted":true}"#.utf8)),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+        _ = try await client.probeCapabilities()
+
+        #expect(try await client.abortSession(id: "ses_idle") == false)
+        #expect(try await client.abortSession(id: "ses_busy") == true)
+
+        let requests = transport.recordedRequests()
+        #expect(requests.map(\.path) == [
+            "/api/info",
+            "/api/session/ses_idle/interrupt",
+            "/api/session/ses_busy/interrupt",
+        ])
+        #expect(requests[1...].allSatisfy { $0.method == "POST" })
+        #expect(requests[1...].allSatisfy { $0.body == nil })
+        #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
+    }
+
     private func sessionEnvelope(id: String, title: String) -> Data {
         Data(#"{"data":{"id":"\#(id)","title":"\#(title)","time":{"created":0,"updated":0}}}"#.utf8)
     }

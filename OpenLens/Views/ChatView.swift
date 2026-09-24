@@ -610,16 +610,38 @@ struct ChatView: View {
         .padding(.horizontal, 16)
     }
 
+    @ViewBuilder
     private var composerActionButton: some View {
-        Button {
-            performComposerAction()
-        } label: {
-            composerActionButtonLabel
-                .animation(.spring(duration: 0.25), value: chatClient.isLoading)
-                .animation(.spring(duration: 0.25), value: chatClient.isQueueingPrompt)
+        if chatClient.isLoading && hasComposerText {
+            Menu {
+                Button(AppText.queuePrompt) {
+                    chatClient.queuePrompt()
+                }
+                if chatClient.canSteerPrompt {
+                    Button(AppText.steerPrompt) {
+                        chatClient.steerPrompt()
+                    }
+                }
+            } label: {
+                animatedComposerActionButtonLabel
+            }
+            .disabled(isComposerActionDisabled)
+            .accessibilityLabel("Choose prompt delivery")
+        } else {
+            Button {
+                performComposerAction()
+            } label: {
+                animatedComposerActionButtonLabel
+            }
+            .disabled(isComposerActionDisabled)
+            .accessibilityLabel(composerActionAccessibilityLabel)
         }
-        .disabled(isComposerActionDisabled)
-        .accessibilityLabel(composerActionAccessibilityLabel)
+    }
+
+    private var animatedComposerActionButtonLabel: some View {
+        composerActionButtonLabel
+            .animation(.spring(duration: 0.25), value: chatClient.isLoading)
+            .animation(.spring(duration: 0.25), value: chatClient.isQueueingPrompt)
     }
 
     private var composerPlaceholder: String {

@@ -48,12 +48,26 @@ final class MessagesService {
     }
 
     /// Queue a follow-up behind the active session turn.
-    func queuePrompt(sessionID: String, text: String) async throws {
+    func queuePrompt(
+        sessionID: String,
+        text: String,
+        model: OCPromptInput.OCModelRef? = nil,
+        agent: String? = nil,
+        variant: String? = nil,
+        messageID: String? = nil
+    ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        try await client.queuePrompt(sessionID: sessionID, text: text)
+        try await client.queuePrompt(
+            sessionID: sessionID,
+            text: text,
+            model: model,
+            agent: agent,
+            variant: variant,
+            messageID: messageID
+        )
     }
 
     func sendCommand(
@@ -81,12 +95,12 @@ final class MessagesService {
     // MARK: - Abort
 
     /// Abort the current generation for a session.
-    func abort(sessionID: String) async throws {
+    func abort(sessionID: String) async throws -> Bool {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        let _ = try await client.abortSession(id: sessionID)
+        return try await client.abortSession(id: sessionID)
     }
 
     // MARK: - Turn Diffs

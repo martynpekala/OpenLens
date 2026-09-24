@@ -3,24 +3,44 @@ import Testing
 @testable import OpenLens
 
 struct QueuedPromptTests {
-    @Test func queuedPromptUsesTheSchedulerQueueContract() async throws {
-        let transport = QueuedPromptTransport()
+    @Test func v2QueuedPromptUsesTheSharedPromptAdmissionContract() async throws {
+        let transport = QueuedPromptTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 204, body: Data()),
+            .init(statusCode: 204, body: Data()),
+            .init(statusCode: 202, body: Data()),
+        ])
         let client = OpenCodeClient(
             baseURL: try #require(URL(string: "https://opencode.example.com")),
             transport: transport
         )
 
-        try await client.queuePrompt(sessionID: "session-1", text: "Run the tests after this finishes.")
+        _ = try await client.probeCapabilities()
+        try await client.queuePrompt(
+            sessionID: "session-1",
+            text: "Run the tests after this finishes.",
+            model: .init(providerID: "anthropic", modelID: "claude-sonnet"),
+            agent: "build",
+            variant: "high",
+            messageID: "msg_queued"
+        )
 
-        let request = try #require(transport.recordedRequest())
+        let requests = transport.recordedRequests()
+        #expect(requests.map { $0.url?.path } == [
+            "/api/info",
+            "/api/session/session-1/model",
+            "/api/session/session-1/agent",
+            "/api/session/session-1/prompt",
+        ])
+        let request = try #require(requests.last)
         #expect(request.httpMethod == "POST")
         #expect(request.url?.path == "/api/session/session-1/prompt")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
 
         let body = try #require(request.httpBody)
         let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-        let prompt = try #require(payload["prompt"] as? [String: String])
-        #expect(prompt["text"] == "Run the tests after this finishes.")
+        #expect(payload["id"] as? String == "msg_queued")
+        #expect(payload["text"] as? String == "Run the tests after this finishes.")
         #expect(payload["delivery"] as? String == "queue")
     }
 
@@ -90,21 +110,32 @@ struct QueuedPromptTests {
 
 nonisolated private final class QueuedPromptTransport: OpenCodeTransport, @unchecked Sendable {
     private let lock = NSLock()
-    private var request: URLRequest?
+    struct Response {
+        let statusCode: Int
+        let body: Data
+    }
+
+    private var requests: [URLRequest] = []
+    private var responses: [Response]
+
+    init(responses: [Response]) {
+        self.responses = responses
+    }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         lock.lock()
-        self.request = request
+        requests.append(request)
+        let response = responses.removeFirst()
         lock.unlock()
 
         let fallbackURL = URL(string: "https://opencode.example.com")!
-        let response = HTTPURLResponse(
+        let urlResponse = HTTPURLResponse(
             url: request.url ?? fallbackURL,
-            statusCode: 202,
+            statusCode: response.statusCode,
             httpVersion: nil,
             headerFields: nil
         )!
-        return (Data("{}".utf8), response)
+        return (response.body, urlResponse)
     }
 
     func makeEventStream(
@@ -115,10 +146,10 @@ nonisolated private final class QueuedPromptTransport: OpenCodeTransport, @unche
         UnusedQueuedPromptEventStream()
     }
 
-    func recordedRequest() -> URLRequest? {
+    func recordedRequests() -> [URLRequest] {
         lock.lock()
         defer { lock.unlock() }
-        return request
+        return requests
     }
 }
 

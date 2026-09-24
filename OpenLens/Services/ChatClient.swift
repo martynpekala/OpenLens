@@ -17,11 +17,13 @@ struct QueuedPrompt: Identifiable, Equatable {
     }
 
     let id: UUID
+    let messageID: String
     let text: String
     var state: State
 
-    init(id: UUID = UUID(), text: String, state: State) {
+    init(id: UUID = UUID(), messageID: String = UUID().uuidString, text: String, state: State) {
         self.id = id
+        self.messageID = messageID
         self.text = text
         self.state = state
     }
@@ -1029,10 +1031,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard locallyStoppedSessionID == sessionID else { return false }
 
         switch responseState {
-        case .stopping, .stopped:
+        case .stopping, .stopped, .idle:
             ignoredAssistantMessageIDs.insert(messageID)
             return true
-        case .idle, .generating, .failed:
+        case .generating, .failed:
             return false
         }
     }
@@ -1278,6 +1280,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         do {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
             guard !Task.isCancelled, currentSession?.id == session.id else { return false }
+            let loadedIDs = Set(loaded.map(\.id))
+            queuedPrompts.removeAll { prompt in
+                prompt.state == .queued && loadedIDs.contains(prompt.messageID)
+            }
             let mergedMessages = mergeLoadedMessagesWithLocalMessages(loaded)
             let revert = currentSession?.id == session.id
                 ? currentSession?.revert
@@ -1944,7 +1950,6 @@ final class ChatClient: SSEEventHandlerDelegate {
             guard let self, self.responseState == .stopped else { return }
 
             self.responseState = .idle
-            self.locallyStoppedSessionID = nil
             self.stoppedStateClearTask = nil
         }
     }
@@ -2031,7 +2036,11 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
-        let queuedPrompt = QueuedPrompt(text: text, state: isDemoMode ? .queued : .submitting)
+        let queuedPrompt = QueuedPrompt(
+            messageID: usesV2SessionAPI ? "msg_\(UUID().uuidString)" : UUID().uuidString,
+            text: text,
+            state: isDemoMode ? .queued : .submitting
+        )
         inputText = ""
         queuedPrompts.append(queuedPrompt)
         contentVersion &+= 1
@@ -2064,9 +2073,18 @@ final class ChatClient: SSEEventHandlerDelegate {
             }
 
             do {
-                try await messagesService.queuePrompt(sessionID: session.id, text: text)
+                try await messagesService.queuePrompt(
+                    sessionID: session.id,
+                    text: text,
+                    model: selectedModelRef,
+                    variant: selectedVariant,
+                    messageID: usesV2SessionAPI ? queuedPrompt.messageID : nil
+                )
                 guard currentSession?.id == session.id else { return }
                 acceptQueuedPrompt(id: queuedPrompt.id)
+                if usesV2SessionAPI {
+                    await loadMessages(syncModelSelection: false)
+                }
             } catch {
                 guard currentSession?.id == session.id else { return }
                 queuedPrompts.removeAll { $0.id == queuedPrompt.id }
@@ -2082,6 +2100,9 @@ final class ChatClient: SSEEventHandlerDelegate {
     private func acceptQueuedPrompt(id: UUID) {
         guard let index = queuedPrompts.firstIndex(where: { $0.id == id }) else { return }
         queuedPrompts[index].state = .queued
+        if usesV2SessionAPI {
+            optimisticV2UserMessageIDs.insert(queuedPrompts[index].messageID)
+        }
 
         // The active turn can finish while the admission request is in flight.
         // Promote immediately in that race; otherwise finishLoading() performs
@@ -2096,6 +2117,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let prompt = queuedPrompts.removeFirst()
         messages.append(
             ChatMessage(
+                id: prompt.messageID,
                 role: .user,
                 content: prompt.text,
                 createdAt: Date()
@@ -2163,6 +2185,33 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     private var usesV2SessionAPI: Bool {
         connection?.serverCapabilities?.protocolVersion == .v2
+    }
+
+    var canSteerPrompt: Bool {
+        usesV2SessionAPI
+            && isLoading
+            && !isStoppingResponse
+            && !isQueueingPrompt
+            && pendingQuestion == nil
+            && canCompose
+            && currentSession != nil
+    }
+
+    /// Sends a busy-session prompt as a v2 steering instruction rather than
+    /// appending it behind the active turn.
+    func steerPrompt() {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, canSteerPrompt else { return }
+
+        let userMessage = makeOptimisticUserMessage(text: text)
+        messages.append(userMessage)
+        inputText = ""
+        contentVersion &+= 1
+        scrollAnchor &+= 1
+
+        Task {
+            await sendPromptAsync(text: text, messageID: userMessage.id)
+        }
     }
 
     private func sendPromptAsync(text: String, agent: String? = nil, messageID: String? = nil) async {
@@ -2291,12 +2340,15 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard let session = currentSession else { return }
 
         beginStoppingResponse(sessionID: session.id)
-        finalizeLocalStoppedTurn()
 
         abortTask = Task { [weak self] in
             do {
-                try await self?.messagesService?.abort(sessionID: session.id)
-                self?.completeStoppedResponse()
+                let interrupted = try await self?.messagesService?.abort(sessionID: session.id)
+                if interrupted == true {
+                    self?.completeStoppedResponse()
+                } else {
+                    self?.completeUninterruptedStop()
+                }
             } catch {
                 self?.failStoppedResponse(error)
             }
@@ -2347,6 +2399,16 @@ final class ChatClient: SSEEventHandlerDelegate {
         finalizeLocalStoppedTurn()
         isLoading = false
         showStoppedResponseState()
+    }
+
+    private func completeUninterruptedStop() {
+        guard responseState == .stopping else { return }
+
+        abortTask = nil
+        isLoading = false
+        locallyStoppedSessionID = nil
+        responseState = .idle
+        synchronizeCurrentSessionFromServer()
     }
 
     private func failStoppedResponse(_ error: Error) {
