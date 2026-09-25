@@ -89,6 +89,54 @@ struct ServerModelsDecodingTests {
         #expect(model.toolCall == false)
     }
 
+    @Test func decodesV2CatalogCapabilitiesAndPriceTiers() throws {
+        let data = Data(
+            #"""
+            {
+              "id": "gpt-5.2",
+              "modelID": "gpt-5.2",
+              "providerID": "openai",
+              "name": "GPT-5.2",
+              "capabilities": {
+                "input": ["text", "image"],
+                "output": ["text"],
+                "tools": true
+              },
+              "cost": [
+                {
+                  "input": 3,
+                  "output": 15,
+                  "cache": {
+                    "read": 0.3,
+                    "write": 3
+                  }
+                },
+                {
+                  "tier": 200000,
+                  "input": 6,
+                  "output": 22,
+                  "cache": {
+                    "read": 0.6,
+                    "write": 6
+                  }
+                }
+              ]
+            }
+            """#.utf8
+        )
+
+        let model = try JSONDecoder().decode(OCV2ModelInfo.self, from: data)
+
+        #expect(model.capabilities?.input == ["text", "image"])
+        #expect(model.capabilities?.output == ["text"])
+        #expect(model.capabilities?.tools == true)
+        #expect(model.costs.map(\.input) == [3, 6])
+        #expect(model.costs.map(\.output) == [15, 22])
+        #expect(model.costs.map(\.tier) == [nil, 200000])
+        #expect(model.costs.first?.cacheRead == 0.3)
+        #expect(model.costs.first?.cacheWrite == 3)
+    }
+
     @Test func decodesCurrentPermissionPayload() throws {
         let data = Data(
             #"""

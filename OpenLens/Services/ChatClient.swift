@@ -201,6 +201,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         let cost: OCModelCost?
         let limit: OCModelLimit?
         let variants: [SelectableVariant]
+        /// Non-text input media explicitly listed by the v2 runtime catalog.
+        /// `nil` preserves the v1 attachment-only presentation.
+        let inputMedia: [String]?
+        /// A runtime catalog can report multiple price tiers. v1 models retain
+        /// their single `cost` value instead.
+        let costTiers: [OCModelCost]
         var id: String { "\(providerID)/\(modelID)" }
 
         // Hashable conformance ignoring cost/limit (non-Hashable)
@@ -210,6 +216,34 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         static func == (lhs: SelectableModel, rhs: SelectableModel) -> Bool {
             lhs.id == rhs.id
+        }
+
+        init(
+            providerID: String,
+            providerName: String,
+            modelID: String,
+            modelName: String,
+            reasoning: Bool,
+            attachment: Bool,
+            toolCall: Bool,
+            cost: OCModelCost?,
+            limit: OCModelLimit?,
+            variants: [SelectableVariant],
+            inputMedia: [String]? = nil,
+            costTiers: [OCModelCost] = []
+        ) {
+            self.providerID = providerID
+            self.providerName = providerName
+            self.modelID = modelID
+            self.modelName = modelName
+            self.reasoning = reasoning
+            self.attachment = attachment
+            self.toolCall = toolCall
+            self.cost = cost
+            self.limit = limit
+            self.variants = variants
+            self.inputMedia = inputMedia
+            self.costTiers = costTiers
         }
     }
 
@@ -320,7 +354,9 @@ final class ChatClient: SSEEventHandlerDelegate {
                     toolCall: model.toolCall ?? false,
                     cost: model.cost,
                     limit: model.limit,
-                    variants: sortedVariants(from: model.variants)
+                    variants: sortedVariants(from: model.variants),
+                    inputMedia: model.inputMedia,
+                    costTiers: model.costTiers ?? []
                 )
             }
         }

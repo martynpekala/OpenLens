@@ -122,6 +122,52 @@ struct ChatClientPreviewModeTests {
     }
 
     @MainActor
+    @Test func modelPickerShowsRuntimeInputMediaAndEveryReportedPriceTier() {
+        let model = ChatClient.SelectableModel(
+            providerID: "openai",
+            providerName: "OpenAI",
+            modelID: "gpt-5.2",
+            modelName: "GPT-5.2",
+            reasoning: false,
+            attachment: true,
+            toolCall: true,
+            cost: nil,
+            limit: nil,
+            variants: [],
+            inputMedia: ["text", "image"],
+            costTiers: [
+                OCModelCost(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3),
+                OCModelCost(tier: 200_000, input: 6, output: 22, cacheRead: 0.6, cacheWrite: 1.25),
+            ]
+        )
+
+        #expect(ModelPickerView.inputMediaLabels(for: model) == ["Image"])
+        #expect(ModelPickerView.priceTierLabels(for: model) == [
+            "$3 in / $15 out / $0.30 cache read / $3 cache write / M",
+            "200K ctx: $6 in / $22 out / $0.60 cache read / $1.25 cache write / M",
+        ])
+    }
+
+    @MainActor
+    @Test func modelPickerKeepsLegacyAttachmentAndPricePresentation() {
+        let model = ChatClient.SelectableModel(
+            providerID: "anthropic",
+            providerName: "Anthropic",
+            modelID: "claude-sonnet",
+            modelName: "Claude Sonnet",
+            reasoning: true,
+            attachment: true,
+            toolCall: true,
+            cost: OCModelCost(input: 3, output: nil),
+            limit: nil,
+            variants: []
+        )
+
+        #expect(ModelPickerView.inputMediaLabels(for: model) == [AppText.files])
+        #expect(ModelPickerView.priceTierLabels(for: model) == ["$3/M"])
+    }
+
+    @MainActor
     @Test func createsDebugPreviewSessionFromSelectedScript() async {
         let client = ChatClient(demoMode: true, script: .debugBaseline)
 

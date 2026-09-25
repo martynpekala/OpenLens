@@ -151,6 +151,11 @@ enum ScreenshotFixtures {
                         attachment: true,
                         reasoning: true,
                         toolCall: true,
+                        inputMedia: ["text", "image"],
+                        costTiers: [
+                            OCModelCost(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3),
+                            OCModelCost(tier: 200_000, input: 6, output: 22, cacheRead: 0.6, cacheWrite: 6)
+                        ],
                         limit: OCModelLimit(context: 200_000, output: 8_192),
                         variants: [
                             "minimal": OCProviderVariant(disabled: false, reasoningEffort: "minimal", effort: nil, budgetTokens: nil, maxReasoningEffort: nil, thinking: nil, thinkingConfig: nil, reasoning: nil, reasoningConfig: nil),

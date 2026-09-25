@@ -175,7 +175,22 @@ struct OpenCodeProtocolSelectionTests {
             "/api/model": .init(statusCode: 200, body: Data(#"""
             {
               "location": {"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},
-              "data": [{"id":"coding-default","modelID":"gpt-5.2","providerID":"anthropic","name":"Claude Sonnet","capabilities":{"reasoning":true,"attachment":true,"toolcall":true},"variants":[]}]
+              "data": [{
+                "id":"coding-default",
+                "modelID":"gpt-5.2",
+                "providerID":"anthropic",
+                "name":"Claude Sonnet",
+                "capabilities":{
+                  "input":["text","image"],
+                  "output":["text"],
+                  "tools":true
+                },
+                "cost":[
+                  {"input":3,"output":15,"cache":{"read":0.3,"write":3}},
+                  {"tier":200000,"input":6,"output":22,"cache":{"read":0.6,"write":6}}
+                ],
+                "variants":[]
+              }]
             }
             """#.utf8)),
             "/api/model/default": .init(statusCode: 200, body: Data(#"""
@@ -241,6 +256,10 @@ struct OpenCodeProtocolSelectionTests {
         #expect(providers.all.first?.name == "Anthropic")
         #expect(providers.all.first?.modelList.map(\.id) == ["coding-default"])
         #expect(providers.all.first?.modelList.first?.legacyModelID == "gpt-5.2")
+        #expect(providers.all.first?.modelList.first?.toolCall == true)
+        #expect(providers.all.first?.modelList.first?.inputMedia == ["text", "image"])
+        #expect(providers.all.first?.modelList.first?.costTiers?.map(\.input) == [3, 6])
+        #expect(providers.all.first?.modelList.first?.costTiers?.map(\.tier) == [nil, 200000])
         #expect(providers.default?["id"] == "anthropic")
         #expect(providers.default?["model"] == "coding-default")
         #expect(agents.map(\.id) == ["build"])

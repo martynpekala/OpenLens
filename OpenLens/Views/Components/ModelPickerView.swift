@@ -687,6 +687,8 @@ struct ModelPickerView: View {
 
     @ViewBuilder
     private func modelMetadata(for model: ChatClient.SelectableModel, isDefault: Bool) -> some View {
+        let prices = Self.priceTierLabels(for: model)
+
         if isRetroChat {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
@@ -696,13 +698,13 @@ struct ModelPickerView: View {
                 }
                 modelCapabilities(for: model)
 
-                HStack(spacing: 8) {
-                    if let costStr = formatCost(model.cost) {
-                        Text(costStr)
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(prices.enumerated()), id: \.offset) { _, price in
+                        Text(price)
                     }
 
                     if let limit = model.limit, let ctx = limit.context, ctx > 0 {
-                        Text("\(formatTokenCount(ctx)) ctx")
+                        Text("\(Self.formatTokenCount(ctx)) ctx")
                     }
                 }
                 .font(RetroChatStyle.smallFont)
@@ -716,16 +718,16 @@ struct ModelPickerView: View {
                     capabilityBadge("star.fill", label: AppText.defaultModel, color: Color.appAccent)
                 }
                 modelCapabilities(for: model)
-                HStack {
-                    if let costStr = formatCost(model.cost) {
-                        Spacer().frame(width: 2)
-                        Text(costStr)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(prices.enumerated()), id: \.offset) { _, price in
+                        Text(price)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
 
                     if let limit = model.limit, let ctx = limit.context, ctx > 0 {
-                        Text("\(formatTokenCount(ctx)) ctx")
+                        Text("\(Self.formatTokenCount(ctx)) ctx")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
@@ -740,9 +742,19 @@ struct ModelPickerView: View {
             if model.reasoning {
                 capabilityBadge("brain", label: AppText.reasoning, color: .purple)
             }
-            if model.attachment {
+
+            if let inputMedia = model.inputMedia {
+                ForEach(Self.supportedInputMedia(from: inputMedia), id: \.self) { medium in
+                    capabilityBadge(
+                        Self.icon(forInputMedium: medium),
+                        label: Self.label(forInputMedium: medium),
+                        color: Self.color(forInputMedium: medium)
+                    )
+                }
+            } else if model.attachment {
                 capabilityBadge("paperclip", label: AppText.files, color: .blue)
             }
+
             if model.toolCall {
                 capabilityBadge("wrench", label: AppText.tools, color: .orange)
             }
@@ -777,17 +789,111 @@ struct ModelPickerView: View {
         }
     }
 
-    /// Format cost as $/M tokens (input). Returns nil if no cost data.
-    private func formatCost(_ cost: OCModelCost?) -> String? {
-        guard let cost, let input = cost.input, input > 0 else { return nil }
-        if input < 1 {
-            return String(format: "$%.2f/M", input)
+    @MainActor
+    static func inputMediaLabels(for model: ChatClient.SelectableModel) -> [String] {
+        if let inputMedia = model.inputMedia {
+            return supportedInputMedia(from: inputMedia).map(label(forInputMedium:))
         }
-        return String(format: "$%.0f/M", input)
+
+        return model.attachment ? [AppText.files] : []
+    }
+
+    @MainActor
+    static func priceTierLabels(for model: ChatClient.SelectableModel) -> [String] {
+        let costs = model.costTiers.isEmpty
+            ? model.cost.map { [$0] } ?? []
+            : model.costTiers
+        return costs.compactMap(formatCost)
+    }
+
+    @MainActor
+    private static func supportedInputMedia(from inputMedia: [String]) -> [String] {
+        var seen = Set<String>()
+        return inputMedia.compactMap { medium in
+            let normalized = medium.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, normalized != "text", seen.insert(normalized).inserted else {
+                return nil
+            }
+            return normalized
+        }
+    }
+
+    @MainActor
+    private static func label(forInputMedium medium: String) -> String {
+        switch medium {
+        case "image": AppText.image
+        case "audio": AppText.audio
+        case "video": AppText.video
+        case "pdf": AppText.pdf
+        case "file": AppText.files
+        default:
+            medium
+                .replacingOccurrences(of: "-", with: " ")
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized
+        }
+    }
+
+    @MainActor
+    private static func icon(forInputMedium medium: String) -> String {
+        switch medium {
+        case "image": "photo"
+        case "audio": "waveform"
+        case "video": "video"
+        case "pdf": "doc.richtext"
+        default: "paperclip"
+        }
+    }
+
+    @MainActor
+    private static func color(forInputMedium medium: String) -> Color {
+        switch medium {
+        case "image": .pink
+        case "audio": .indigo
+        case "video": .teal
+        case "pdf": .red
+        default: .blue
+        }
+    }
+
+    /// Formats reported input/output token prices without filling in any
+    /// missing rate. The tier, when present, is the runtime's context boundary.
+    @MainActor
+    private static func formatCost(_ cost: OCModelCost) -> String? {
+        let input = cost.input.map(formatRate)
+        let output = cost.output.map(formatRate)
+        let cacheRead = cost.cacheRead.map(formatRate)
+        let cacheWrite = cost.cacheWrite.map(formatRate)
+
+        let components = [
+            input.map { "\($0) in" },
+            output.map { "\($0) out" },
+            cacheRead.map { "\($0) cache read" },
+            cacheWrite.map { "\($0) cache write" },
+        ].compactMap(\.self)
+        guard !components.isEmpty else { return nil }
+
+        let price: String
+        if components.count == 1, let input {
+            price = "\(input)/M"
+        } else {
+            price = "\(components.joined(separator: " / ")) / M"
+        }
+        guard let tier = cost.tier, tier > 0 else { return price }
+        return "\(formatTokenCount(tier)) ctx: \(price)"
+    }
+
+    @MainActor
+    private static func formatRate(_ rate: Double) -> String {
+        if rate == rate.rounded() {
+            return String(format: "$%.0f", rate)
+        }
+        return String(format: "$%.2f", rate)
     }
 
     /// Format large token counts compactly (e.g. 200000 -> "200K").
-    private func formatTokenCount(_ count: Int) -> String {
+    @MainActor
+    private static func formatTokenCount(_ count: Int) -> String {
         if count >= 1_000_000 {
             return "\(count / 1_000_000)M"
         } else if count >= 1_000 {

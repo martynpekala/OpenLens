@@ -774,6 +774,11 @@ struct OCProviderModel: Codable, Identifiable, Sendable {
     let temperature: Bool?
     let toolCall: Bool?
     let cost: OCModelCost?
+    /// Runtime-catalog input media. `nil` means the provider exposed only the
+    /// legacy attachment boolean, so the picker keeps its legacy Files badge.
+    let inputMedia: [String]?
+    /// Runtime-catalog prices can have a base rate plus context tiers.
+    let costTiers: [OCModelCost]?
     let limit: OCModelLimit?
     let status: String?
     let variants: [String: OCProviderVariant]?
@@ -789,7 +794,8 @@ struct OCProviderModel: Codable, Identifiable, Sendable {
 
     init(id: String, legacyModelID: String? = nil, name: String, releaseDate: String? = nil, attachment: Bool? = nil,
          reasoning: Bool? = nil, temperature: Bool? = nil, toolCall: Bool? = nil,
-         cost: OCModelCost? = nil, limit: OCModelLimit? = nil, status: String? = nil,
+         cost: OCModelCost? = nil, inputMedia: [String]? = nil, costTiers: [OCModelCost]? = nil,
+         limit: OCModelLimit? = nil, status: String? = nil,
          variants: [String: OCProviderVariant]? = nil) {
         self.id = id
         self.legacyModelID = legacyModelID
@@ -800,6 +806,8 @@ struct OCProviderModel: Codable, Identifiable, Sendable {
         self.temperature = temperature
         self.toolCall = toolCall
         self.cost = cost
+        self.inputMedia = inputMedia
+        self.costTiers = costTiers
         self.limit = limit
         self.status = status
         self.variants = variants
@@ -817,6 +825,8 @@ struct OCProviderModel: Codable, Identifiable, Sendable {
         temperature = try container.decodeIfPresent(Bool.self, forKey: .temperature) ?? capabilities?.temperature
         toolCall = try container.decodeIfPresent(Bool.self, forKey: .toolCall) ?? capabilities?.toolCall
         cost = try container.decodeIfPresent(OCModelCost.self, forKey: .cost)
+        inputMedia = nil
+        costTiers = nil
         limit = try container.decodeIfPresent(OCModelLimit.self, forKey: .limit)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         variants = try container.decodeIfPresent([String: OCProviderVariant].self, forKey: .variants)
@@ -948,16 +958,57 @@ struct OCReasoningConfigVariant: Codable, Hashable, Sendable {
     }
 }
 
- struct OCModelCost: Codable, Sendable {
+struct OCModelCost: Codable, Sendable {
+    let tier: Int?
     let input: Double?
     let output: Double?
     let cacheRead: Double?
     let cacheWrite: Double?
 
     enum CodingKeys: String, CodingKey {
-        case input, output
+        case tier, input, output, cache
         case cacheRead = "cache_read"
         case cacheWrite = "cache_write"
+    }
+
+    private struct Cache: Codable, Sendable {
+        let read: Double?
+        let write: Double?
+    }
+
+    init(
+        tier: Int? = nil,
+        input: Double? = nil,
+        output: Double? = nil,
+        cacheRead: Double? = nil,
+        cacheWrite: Double? = nil
+    ) {
+        self.tier = tier
+        self.input = input
+        self.output = output
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tier = try container.decodeIfPresent(Int.self, forKey: .tier)
+        input = try container.decodeIfPresent(Double.self, forKey: .input)
+        output = try container.decodeIfPresent(Double.self, forKey: .output)
+        let cache = try container.decodeIfPresent(Cache.self, forKey: .cache)
+        let legacyCacheRead = try container.decodeIfPresent(Double.self, forKey: .cacheRead)
+        let legacyCacheWrite = try container.decodeIfPresent(Double.self, forKey: .cacheWrite)
+        cacheRead = cache?.read ?? legacyCacheRead
+        cacheWrite = cache?.write ?? legacyCacheWrite
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(tier, forKey: .tier)
+        try container.encodeIfPresent(input, forKey: .input)
+        try container.encodeIfPresent(output, forKey: .output)
+        try container.encodeIfPresent(cacheRead, forKey: .cacheRead)
+        try container.encodeIfPresent(cacheWrite, forKey: .cacheWrite)
     }
 }
 
@@ -983,11 +1034,12 @@ nonisolated struct OCV2ModelInfo: Decodable, Sendable {
     let providerID: String
     let name: String?
     let capabilities: OCV2ModelCapabilities?
+    let costs: [OCModelCost]
     let limit: OCModelLimit?
     let variants: [String: OCProviderVariant]?
 
     enum CodingKeys: String, CodingKey {
-        case id, modelID, providerID, name, capabilities, limit, variants
+        case id, modelID, providerID, name, capabilities, cost, limit, variants
     }
 
     init(from decoder: Decoder) throws {
@@ -1007,6 +1059,7 @@ nonisolated struct OCV2ModelInfo: Decodable, Sendable {
         self.providerID = providerID
         name = try container.decodeIfPresent(String.self, forKey: .name)?.nilIfBlank
         capabilities = try container.decodeIfPresent(OCV2ModelCapabilities.self, forKey: .capabilities)
+        costs = try container.decodeIfPresent([OCModelCost].self, forKey: .cost) ?? []
         limit = try container.decodeIfPresent(OCModelLimit.self, forKey: .limit)
         if let variantsByID = try? container.decodeIfPresent([String: OCProviderVariant].self, forKey: .variants) {
             variants = variantsByID
@@ -1050,22 +1103,26 @@ private nonisolated struct OCV2ModelVariant: Decodable, Sendable {
 }
 
 nonisolated struct OCV2ModelCapabilities: Decodable, Sendable {
-    let attachment: Bool?
-    let reasoning: Bool?
-    let toolCall: Bool?
+    let input: [String]?
+    let output: [String]?
+    let tools: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case attachment, reasoning
-        case toolCall = "toolcall"
-        case toolCallSnake = "tool_call"
+        case input, output, tools
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        attachment = try container.decodeIfPresent(Bool.self, forKey: .attachment)
-        reasoning = try container.decodeIfPresent(Bool.self, forKey: .reasoning)
-        toolCall = try container.decodeIfPresent(Bool.self, forKey: .toolCall)
-            ?? container.decodeIfPresent(Bool.self, forKey: .toolCallSnake)
+        input = try container.decodeIfPresent([String].self, forKey: .input)
+        output = try container.decodeIfPresent([String].self, forKey: .output)
+        tools = try container.decodeIfPresent(Bool.self, forKey: .tools)
+    }
+
+    var supportsAttachments: Bool {
+        input?.contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare("text") != .orderedSame
+        } ?? false
     }
 }
 

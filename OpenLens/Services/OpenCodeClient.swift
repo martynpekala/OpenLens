@@ -338,9 +338,10 @@ actor OpenCodeClient {
                                         id: model.id,
                                         legacyModelID: model.modelID == model.id ? nil : model.modelID,
                                         name: model.name ?? model.id,
-                                        attachment: model.capabilities?.attachment,
-                                        reasoning: model.capabilities?.reasoning,
-                                        toolCall: model.capabilities?.toolCall,
+                                        attachment: model.capabilities?.supportsAttachments,
+                                        toolCall: model.capabilities?.tools,
+                                        inputMedia: model.capabilities?.input,
+                                        costTiers: model.costs,
                                         limit: model.limit,
                                         variants: model.variants
                                     )
