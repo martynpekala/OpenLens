@@ -4,12 +4,22 @@ import Testing
 
 struct OpenCodeV2RevertTests {
     @Test func v2RevertClearsStaleStateStagesTheSelectedMessageCommitsAndRefreshesSession() async throws {
-        let transport = V2RevertTransport(responses: [
-            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
-            .init(statusCode: 204, body: Data()),
-            .init(statusCode: 200, body: Data(#"{"data":{"messageID":"msg_2"}}"#.utf8)),
-            .init(statusCode: 204, body: Data()),
-            .init(statusCode: 200, body: sessionEnvelope(id: "ses_1", title: "Reverted")),
+        let transport = V2RevertTransport(contract: [
+            .init(method: "GET", path: "/api/info", statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(method: "DELETE", path: "/api/session/ses_1/revert", statusCode: 204, body: Data()),
+            .init(
+                method: "POST",
+                path: "/api/session/ses_1/revert/stage",
+                statusCode: 200,
+                body: Data(#"{"data":{"messageID":"msg_2"}}"#.utf8)
+            ),
+            .init(method: "POST", path: "/api/session/ses_1/revert/commit", statusCode: 204, body: Data()),
+            .init(
+                method: "GET",
+                path: "/api/session/ses_1",
+                statusCode: 200,
+                body: sessionEnvelope(id: "ses_1", title: "Reverted")
+            ),
         ])
         let client = OpenCodeClient(
             baseURL: try #require(URL(string: "https://opencode.example.com")),
@@ -25,10 +35,10 @@ struct OpenCodeV2RevertTests {
         #expect(session.title == "Reverted")
 
         let requests = transport.recordedRequests()
-        #expect(requests.map(\.method) == ["GET", "POST", "POST", "POST", "GET"])
+        #expect(requests.map(\.method) == ["GET", "DELETE", "POST", "POST", "GET"])
         #expect(requests.map(\.path) == [
             "/api/info",
-            "/api/session/ses_1/revert/clear",
+            "/api/session/ses_1/revert",
             "/api/session/ses_1/revert/stage",
             "/api/session/ses_1/revert/commit",
             "/api/session/ses_1",
@@ -44,9 +54,14 @@ struct OpenCodeV2RevertTests {
     }
 
     @Test func v2SessionDiffUsesTheV2RouteAndMessageBoundary() async throws {
-        let transport = V2RevertTransport(responses: [
-            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
-            .init(statusCode: 200, body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[]}"#.utf8)),
+        let transport = V2RevertTransport(contract: [
+            .init(method: "GET", path: "/api/info", statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(
+                method: "GET",
+                path: "/api/session/ses_1/diff",
+                statusCode: 200,
+                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[]}"#.utf8)
+            ),
         ])
         let client = OpenCodeClient(
             baseURL: try #require(URL(string: "https://opencode.example.com")),
@@ -62,12 +77,27 @@ struct OpenCodeV2RevertTests {
     }
 
     @Test func v2IncompleteRevertRefreshesTheCanonicalSessionBeforeSurfacingTheConflict() async throws {
-        let transport = V2RevertTransport(responses: [
-            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
-            .init(statusCode: 204, body: Data()),
-            .init(statusCode: 200, body: Data(#"{"data":{"messageID":"msg_2"}}"#.utf8)),
-            .init(statusCode: 409, body: Data(#"{"error":"SessionBusy"}"#.utf8)),
-            .init(statusCode: 200, body: sessionEnvelope(id: "ses_1", title: "Still busy")),
+        let transport = V2RevertTransport(contract: [
+            .init(method: "GET", path: "/api/info", statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(method: "DELETE", path: "/api/session/ses_1/revert", statusCode: 204, body: Data()),
+            .init(
+                method: "POST",
+                path: "/api/session/ses_1/revert/stage",
+                statusCode: 200,
+                body: Data(#"{"data":{"messageID":"msg_2"}}"#.utf8)
+            ),
+            .init(
+                method: "POST",
+                path: "/api/session/ses_1/revert/commit",
+                statusCode: 409,
+                body: Data(#"{"error":"SessionBusy"}"#.utf8)
+            ),
+            .init(
+                method: "GET",
+                path: "/api/session/ses_1",
+                statusCode: 200,
+                body: sessionEnvelope(id: "ses_1", title: "Still busy")
+            ),
         ])
         let client = OpenCodeClient(
             baseURL: try #require(URL(string: "https://opencode.example.com")),
@@ -92,7 +122,7 @@ struct OpenCodeV2RevertTests {
 
         #expect(transport.recordedRequests().map(\.path) == [
             "/api/info",
-            "/api/session/ses_1/revert/clear",
+            "/api/session/ses_1/revert",
             "/api/session/ses_1/revert/stage",
             "/api/session/ses_1/revert/commit",
             "/api/session/ses_1",
@@ -105,7 +135,9 @@ struct OpenCodeV2RevertTests {
 }
 
 nonisolated private final class V2RevertTransport: OpenCodeTransport, @unchecked Sendable {
-    struct Response: Sendable {
+    struct ContractOperation: Sendable {
+        let method: String
+        let path: String
         let statusCode: Int
         let body: Data
     }
@@ -118,11 +150,11 @@ nonisolated private final class V2RevertTransport: OpenCodeTransport, @unchecked
     }
 
     private let lock = NSLock()
-    private var responses: [Response]
+    private var contract: [ContractOperation]
     private var requests: [RecordedRequest] = []
 
-    init(responses: [Response]) {
-        self.responses = responses
+    init(contract: [ContractOperation]) {
+        self.contract = contract
     }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
@@ -143,16 +175,26 @@ nonisolated private final class V2RevertTransport: OpenCodeTransport, @unchecked
                 body: request.httpBody
             )
         )
-        guard !responses.isEmpty else {
+        guard !contract.isEmpty else {
             lock.unlock()
             throw MissingV2RevertResponse()
         }
-        let response = responses.removeFirst()
+        let operation = contract.removeFirst()
         lock.unlock()
 
+        let statusCode: Int
+        let body: Data
+        if operation.method == request.httpMethod, operation.path == url.path {
+            statusCode = operation.statusCode
+            body = operation.body
+        } else {
+            statusCode = operation.path == url.path ? 405 : 404
+            body = Data(#"{"error":"RouteNotFound"}"#.utf8)
+        }
+
         return (
-            response.body,
-            HTTPURLResponse(url: url, statusCode: response.statusCode, httpVersion: nil, headerFields: nil)!
+            body,
+            HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
         )
     }
 

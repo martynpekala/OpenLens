@@ -788,8 +788,8 @@ actor OpenCodeClient {
                 // boundary. This makes the one-tap action safe to retry after a
                 // disrupted revert attempt.
                 try await sendV2RequestDiscardingResponse(
-                    method: "POST",
-                    path: "/api/session/\(sessionID)/revert/clear",
+                    method: "DELETE",
+                    path: "/api/session/\(sessionID)/revert",
                     includesLocation: false
                 )
                 try await sendV2RequestDiscardingResponse(
