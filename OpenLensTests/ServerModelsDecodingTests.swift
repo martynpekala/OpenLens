@@ -112,7 +112,7 @@ struct ServerModelsDecodingTests {
                   }
                 },
                 {
-                  "tier": 200000,
+                  "tier": {"type":"context","size":200000},
                   "input": 6,
                   "output": 22,
                   "cache": {
@@ -135,6 +135,14 @@ struct ServerModelsDecodingTests {
         #expect(model.costs.map(\.tier) == [nil, 200000])
         #expect(model.costs.first?.cacheRead == 0.3)
         #expect(model.costs.first?.cacheWrite == 3)
+    }
+
+    @Test func v2AssistantExecutionErrorSurvivesTranscriptProjection() throws {
+        let data = Data(#"{"id":"msg_failed","type":"assistant","time":{"created":1},"agent":"build","model":{"id":"test","providerID":"test"},"content":[],"finish":"error","error":{"type":"ProviderError","message":"Quota exceeded","status":429}}"#.utf8)
+        let projection = try JSONDecoder().decode(OCV2SessionMessage.self, from: data)
+        let message = try #require(projection.asMessage(sessionID: "ses_1"))
+        #expect(message.info.error?.name == "ProviderError")
+        #expect(message.info.error?.message == "Quota exceeded")
     }
 
     @Test func decodesCurrentPermissionPayload() throws {

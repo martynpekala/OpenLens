@@ -297,7 +297,8 @@ struct GatewayIntegrationTests {
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/diff"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/permission"))
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/permission/per_456/reply"))
-        #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/revert/clear"))
+        #expect(OpenCodeForwarder.isAllowed(method: "DELETE", path: "/api/session/ses_123/revert"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/revert/clear"))
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/revert/stage"))
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/revert/commit"))
         #expect(!OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/revert/clear"))
@@ -343,8 +344,132 @@ struct GatewayIntegrationTests {
         #expect(response.body == Data(#"{"_tag":"UnauthorizedError","message":"Wrong password"}"#.utf8))
         #expect(forwarded.url?.path == "/api/session/active")
         #expect(forwarded.value(forHTTPHeaderField: "Authorization") == "Basic b3BlbmNvZGU6dGVzdC1wYXNzd29yZA==")
-        #expect(queryItems?["directory"] == root.path)
-        #expect(queryItems?["location[directory]"] == root.path)
+        #expect(queryItems == nil)
+    }
+
+    @Test func v2SessionOperationsRejectForeignOwnershipBeforeForwarding() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+        ForwarderURLProtocol.setResponse(statusCode: 200, body: Data(#"{"data":{"id":"ses_foreign","location":{"directory":"/unregistered"}}}"#.utf8))
+        for method in ["GET", "PATCH", "DELETE"] {
+            await #expect(throws: RemoteProtocolError.invalidRequest) {
+                _ = try await forwarder.perform(RemoteHTTPRequest(method: method, pathAndQuery: "/api/session/ses_foreign"))
+            }
+        }
+        #expect(ForwarderURLProtocol.recordedRequest()?.httpMethod == "GET")
+    }
+
+    @Test func v2ActiveSnapshotFiltersForeignSessionsAndRechecksRegistry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        let workspace = try registry.add(url: root)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+        let allowed = try JSONSerialization.data(withJSONObject: ["data":["id":"ses_allowed", "location":["directory":root.path]]])
+        ForwarderURLProtocol.setRoutes([
+            "/api/session/active": Data(#"{"data":{"ses_allowed":{"type":"running"},"ses_foreign":{"type":"running"}}}"#.utf8),
+            "/api/session/ses_allowed": allowed,
+            "/api/session/ses_foreign": Data(#"{"data":{"id":"ses_foreign","location":{"directory":"/unregistered"}}}"#.utf8)
+        ])
+        let response = try await forwarder.perform(RemoteHTTPRequest(method: "GET", pathAndQuery: "/api/session/active"))
+        let envelope = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        let active = try #require(envelope["data"] as? [String: Any])
+        #expect(Set(active.keys) == ["ses_allowed"])
+        _ = try await forwarder.perform(RemoteHTTPRequest(method: "DELETE", pathAndQuery: "/api/session/ses_allowed"))
+        #expect(ForwarderURLProtocol.recordedRequests().suffix(2).map(\.httpMethod) == ["GET", "DELETE"])
+        ForwarderURLProtocol.setRoutes([
+            "/api/session/ses_allowed": Data(#"{"data":{"id":"ses_allowed","location":{"directory":"/unregistered"}}}"#.utf8)
+        ])
+        await #expect(throws: RemoteProtocolError.invalidRequest) {
+            _ = try await forwarder.perform(RemoteHTTPRequest(method: "POST", pathAndQuery: "/api/session/ses_allowed/prompt"))
+        }
+        #expect(ForwarderURLProtocol.recordedRequests().map(\.httpMethod) == ["GET"])
+        registry.remove(id: workspace.id)
+        await #expect(throws: RemoteProtocolError.invalidRequest) {
+            _ = try await forwarder.perform(RemoteHTTPRequest(method: "DELETE", pathAndQuery: "/api/session/ses_allowed"))
+        }
+    }
+
+    @Test func v2StreamFiltersBeforeForwardingAndBoundsIncompleteRecords() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        let workspace = try registry.add(url: root)
+        let filter = GatewayV2EventFilter(registry: registry)
+        func frame(_ directory: String, _ text: String) throws -> Data {
+            let json = try JSONSerialization.data(withJSONObject: ["type":"session.text.delta", "location":["directory":directory], "data":["sessionID":"ses_1", "delta":text]])
+            return Data("event: message\r\ndata: ".utf8) + json + Data("\r\n\r\n".utf8)
+        }
+        let allowed = try frame(root.path, "Visible")
+        let hidden = try frame("/unregistered", "SECRET")
+        let input = allowed + hidden
+        var output = Data()
+        for byte in input { for frame in try filter.append(Data([byte])) { output.append(frame) } }
+        #expect(String(decoding: output, as: UTF8.self).contains("Visible"))
+        #expect(!String(decoding: output, as: UTF8.self).contains("SECRET"))
+        registry.remove(id: workspace.id)
+        #expect(try filter.append(allowed).isEmpty)
+        #expect(throws: RemoteProtocolError.messageTooLarge) {
+            _ = try filter.append(Data(repeating: 65, count: RemoteProtocolVersion.maximumWireMessageBytes + 1))
+        }
+    }
+
+    @Test func v2SessionCreationPinsAndValidatesBodyLocation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let second = root.appendingPathComponent("Second")
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        _ = try registry.add(url: second)
+        ForwarderURLProtocol.setResponse(statusCode: 200, body: Data(#"{"data":{"id":"ses_1"}}"#.utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+
+        for directory in [nil, second.path] as [String?] {
+            var body: [String: Any] = ["title": "Created remotely"]
+            if let directory { body["location"] = ["directory": directory] }
+            _ = try await forwarder.perform(RemoteHTTPRequest(
+                method: "POST", pathAndQuery: "/api/session",
+                body: try JSONSerialization.data(withJSONObject: body)
+            ))
+            let request = try #require(ForwarderURLProtocol.recordedRequest())
+            let payload = try #require(request.httpBody)
+            let forwarded = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+            #expect(forwarded["location"] as? [String: String] == ["directory": directory ?? root.path])
+            #expect(request.url?.query == nil)
+        }
+
+        for location in [
+            ["directory": root.appendingPathComponent("Unregistered").path],
+            ["directory": root.path, "workspace": "escape"],
+            ["directory": root.path.replacingOccurrences(of: "/", with: "%2F")]
+        ] {
+            await #expect(throws: RemoteProtocolError.invalidRequest) {
+                _ = try await forwarder.perform(RemoteHTTPRequest(
+                    method: "POST", pathAndQuery: "/api/session",
+                    body: try JSONSerialization.data(withJSONObject: ["location": location])
+                ))
+            }
+        }
+        await #expect(throws: RemoteProtocolError.invalidRequest) {
+            _ = try await forwarder.perform(RemoteHTTPRequest(
+                method: "POST", pathAndQuery: "/api/session",
+                headers: ["x-opencode-directory": root.path],
+                body: try JSONSerialization.data(withJSONObject: ["location": ["directory": second.path]])
+            ))
+        }
     }
 
     @Test func remoteRouteTableAllowsOnlyDocumentedV2FormOperations() {
@@ -688,11 +813,30 @@ private final class ForwarderURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var response = Response(statusCode: 200, body: Data())
     nonisolated(unsafe) private static var request: URLRequest?
+    nonisolated(unsafe) private static var routes: [String: Data] = [:]
+    nonisolated(unsafe) private static var history: [URLRequest] = []
+
+    static func setRoutes(_ values: [String: Data]) {
+        lock.lock()
+        routes = values
+        history = []
+        request = nil
+        response = Response(statusCode: 200, body: Data())
+        lock.unlock()
+    }
+
+    static func recordedRequests() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return history
+    }
 
     static func setResponse(statusCode: Int, body: Data) {
         lock.lock()
         response = Response(statusCode: statusCode, body: body)
         request = nil
+        routes = [:]
+        history = []
         lock.unlock()
     }
 
@@ -711,9 +855,23 @@ private final class ForwarderURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func startLoading() {
+        var captured = request
+        if captured.httpBody == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var body = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                body.append(contentsOf: buffer.prefix(count))
+            }
+            captured.httpBody = body
+        }
         Self.lock.lock()
-        Self.request = request
-        let response = Self.response
+        Self.request = captured
+        Self.history.append(captured)
+        let response = Self.routes[request.url?.path ?? ""].map { Response(statusCode: 200, body: $0) } ?? Self.response
         Self.lock.unlock()
 
         let url = request.url ?? URL(string: "http://127.0.0.1")!

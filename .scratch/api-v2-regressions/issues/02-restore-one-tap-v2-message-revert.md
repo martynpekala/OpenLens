@@ -4,9 +4,13 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** contract verified — live-server exercise pending
 
 - [ ] The revert sequence uses operations and methods accepted by the v2.0.16 contract, including its delete-based clear operation, rather than an unrecognized clear route.
 - [ ] Reverting an eligible message updates the visible session, transcript, and diffs without a route-not-found error.
 - [ ] Busy-session or partial-operation failures remain recoverable and report the refreshed state; v1 one-tap revert is unchanged.
 - [ ] A contract-shaped test rejects an unrecognized route or wrong method instead of accepting a fabricated success response.
+
+## Audit evidence — 2026-09-25
+
+Direct clear/stage/commit and partial-failure tests pass. This audit also fixed the Mac relay to allow DELETE /revert and reject POST /revert/clear. No live v2.0.16 revert was performed. See [audit](../AUDIT.md) for test results and remaining release blockers.

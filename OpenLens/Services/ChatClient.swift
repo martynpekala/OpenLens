@@ -1353,11 +1353,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
         let didLoadMessages = await loadMessages()
-        isStreamSynchronized = didLoadMessages
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
-        await recoverPendingPermission()
-        await recoverPendingQuestions()
-        await recoverPendingForms()
+        let permissionRecovered = await recoverPendingPermission()
+        let questionRecovered = await recoverPendingQuestions()
+        let formRecovered = await recoverPendingForms()
+        guard !Task.isCancelled, currentSession?.id == session.id else { return }
+        isStreamSynchronized = didLoadMessages && permissionRecovered && questionRecovered && formRecovered
     }
 
     func restoreProjectContext(for session: OCSession) async {
@@ -1401,9 +1402,9 @@ final class ChatClient: SSEEventHandlerDelegate {
             return false
         }
 
-        await refreshCurrentSessionStatus()
+        let statusRecovered = await refreshCurrentSessionStatus()
         await loadTodos()
-        return true
+        return statusRecovered && !Task.isCancelled && currentSession?.id == session.id
     }
 
     func unloadSession(ifMatching sessionID: String) {
@@ -1549,17 +1550,20 @@ final class ChatClient: SSEEventHandlerDelegate {
         isStreamSynchronized = false
     }
 
-    func refreshCurrentSessionStatus() async {
+    @discardableResult
+    func refreshCurrentSessionStatus() async -> Bool {
         guard !isOfflinePreviewMode,
               let sessionsService,
-              let sessionID = currentSession?.id else { return }
+              let sessionID = currentSession?.id else { return false }
 
         do {
             let statuses = try await sessionsService.getSessionStatuses()
-            guard currentSession?.id == sessionID else { return }
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
             reconcileCurrentSessionStatus(statuses[sessionID])
+            return true
         } catch {
-            Logger.chat.warning("refreshCurrentSessionStatus failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to refresh session status: \(error.localizedDescription)" }
+            return false
         }
     }
 
@@ -1588,6 +1592,8 @@ final class ChatClient: SSEEventHandlerDelegate {
             while !Task.isCancelled {
                 guard self.streamSynchronizationToken == token else { break }
                 let generation = self.streamSynchronizationGeneration
+                let stream = self.connection?.sseClient
+                let gapGeneration = await stream?.synchronizationGeneration()
                 guard let sessionID = self.currentSession?.id,
                       let sessionsService = self.sessionsService
                 else { break }
@@ -1603,9 +1609,15 @@ final class ChatClient: SSEEventHandlerDelegate {
                     guard await self.loadMessages(), self.currentSession?.id == sessionID else {
                         break
                     }
-                    await self.recoverPendingPermission(sessionID: sessionID)
-                    await self.recoverPendingQuestions()
-                    await self.recoverPendingForms()
+                    guard await self.recoverPendingPermission(sessionID: sessionID),
+                          !Task.isCancelled, self.currentSession?.id == sessionID,
+                          self.streamSynchronizationToken == token else { break }
+                    guard await self.recoverPendingQuestions(),
+                          !Task.isCancelled, self.currentSession?.id == sessionID,
+                          self.streamSynchronizationToken == token else { break }
+                    guard await self.recoverPendingForms(),
+                          !Task.isCancelled, self.currentSession?.id == sessionID,
+                          self.streamSynchronizationToken == token else { break }
                 } catch is CancellationError {
                     break
                 } catch {
@@ -1615,7 +1627,19 @@ final class ChatClient: SSEEventHandlerDelegate {
                 }
 
                 guard generation == self.streamSynchronizationGeneration else { continue }
+                if let stream, let gapGeneration {
+                    guard await stream.acknowledgeSynchronization(since: gapGeneration) else { continue }
+                }
+                guard !Task.isCancelled, self.currentSession?.id == sessionID,
+                      self.streamSynchronizationToken == token else { break }
+                guard generation == self.streamSynchronizationGeneration else { continue }
                 self.isStreamSynchronized = true
+                if let error = self.errorMessage, [
+                    "Failed to refresh session status:", "Failed to recover pending interactions:",
+                    "Failed to synchronize chat:", "Failed to load messages:"
+                ].contains(where: { error.hasPrefix($0) }) {
+                    self.errorMessage = nil
+                }
                 break
             }
 
@@ -2688,6 +2712,13 @@ final class ChatClient: SSEEventHandlerDelegate {
         sseClient.onEvent = nil
         sseClient.setRawEventRetentionEnabled(isRecordingStream)
         sseClient.onInboundEvent = { [weak self] inboundEvent in
+            if case .raw(let event) = inboundEvent, event.type == "session.reconcile" {
+                let sessionID = (event.properties?.value as? [String: Any])?["sessionID"] as? String
+                if sessionID == nil || sessionID == self?.currentSession?.id {
+                    self?.synchronizeCurrentSessionFromServer()
+                }
+                return
+            }
             if let rawEvent = inboundEvent.rawEvent {
                 self?.recordIncomingEvent(rawEvent)
             }
@@ -2812,13 +2843,16 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     /// Recover any pending permission from the server for the current session.
-    func recoverPendingPermission(sessionID preferredSessionID: String? = nil) async {
-        guard !isOfflinePreviewMode else { return }
+    @discardableResult
+    func recoverPendingPermission(sessionID preferredSessionID: String? = nil) async -> Bool {
+        guard !isOfflinePreviewMode else { return true }
 
         let sessionID = preferredSessionID ?? currentSession?.id
 
         do {
-            let permission = try await questionService?.recoverPendingPermission(sessionID: sessionID)
+            guard let questionService else { return false }
+            let permission = try await questionService.recoverPendingPermission(sessionID: sessionID)
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
 
             if let permission {
                 pendingPermission = permission
@@ -2827,52 +2861,69 @@ final class ChatClient: SSEEventHandlerDelegate {
                 pendingPermission = nil
                 showPermissionAlert = false
             }
+            return true
         } catch {
             Logger.chat.warning("recoverPendingPermission failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
+            return false
         }
     }
 
     // MARK: - Question Response
 
     /// Recover any pending questions from the server after reconnection.
-    func recoverPendingQuestions() async {
-        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return }
+    @discardableResult
+    func recoverPendingQuestions() async -> Bool {
+        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return false }
 
         do {
-            if let question = try await questionService?.recoverPendingQuestion(sessionID: sessionID) {
+            guard let questionService else { return false }
+            let question = try await questionService.recoverPendingQuestion(sessionID: sessionID)
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
+            if let question {
                 if self.pendingQuestion == nil {
                     self.pendingQuestion = question
                     self.showQuestionSheet = true
                     self.startInteractiveRequestTimeout()
                 }
             }
+            return true
         } catch {
             Logger.chat.warning("recoverPendingQuestions failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
+            return false
         }
     }
 
     /// Recover pending v2 forms after a stream gap or foreground return.
-    func recoverPendingForms() async {
-        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return }
+    @discardableResult
+    func recoverPendingForms() async -> Bool {
+        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return false }
 
         do {
-            if let form = try await questionService?.recoverPendingForm(sessionID: sessionID) {
-                guard pendingQuestion == nil else { return }
+            guard let questionService else { return false }
+            let form = try await questionService.recoverPendingForm(sessionID: sessionID)
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
+            if let form {
+                guard pendingQuestion == nil else { return true }
                 if pendingForm?.id == form.id {
                     if !showFormSheet, !isResolvingForm {
                         showFormSheet = true
                     }
-                    return
+                    return true
                 }
-                guard pendingForm == nil else { return }
+                guard pendingForm == nil else { return true }
                 _ = presentForm(form)
             } else if pendingForm?.sessionID == sessionID {
                 cancelInteractiveRequestTimeout()
                 pendingForm = nil
                 showFormSheet = false
             }
+            return true
         } catch {
             Logger.chat.warning("recoverPendingForms failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
+            return false
         }
     }
 
@@ -3762,6 +3813,15 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     // MARK: - Finish Loading
+
+    /// A native v2 step ends one assistant message without ending the session turn.
+    func finishAssistantStep(messageID: String) {
+        guard let pending = pendingAssistantMessage, pending.id == messageID else { return }
+        let updates = detachBufferedStreamUpdates(for: messageID)
+        finalizePendingAssistantMessage(pending, appendsWhenEmpty: true, bufferedUpdates: updates)
+        continueStreamingFlushIfNeeded()
+        contentVersion &+= 1
+    }
 
     func finishLoading() {
         let completedActiveTurn = isLoading

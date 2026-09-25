@@ -84,7 +84,9 @@ actor OpenCodeClient {
         if usesV2 {
             return try await getAllV2Pages(
                 endpoint: "/api/session",
-                order: "desc"
+                order: "desc",
+                includesLocation: false,
+                queryItems: contextDirectory.map { [URLQueryItem(name: "directory", value: $0)] } ?? []
             )
         }
         return try await get("/session")
@@ -110,12 +112,15 @@ actor OpenCodeClient {
             // only a no-content acknowledgement. Parent sessions are a legacy
             // creation concern and are not part of the v2 create contract.
             let sessionID = "ses_\(UUID().uuidString)"
-            var body = ["id": sessionID]
-            if let title { body["title"] = title }
+            let body = OCV2CreateSessionInput(
+                id: sessionID, title: title,
+                location: contextDirectory.map { OCV2LocationInfo(directory: $0, project: nil) }
+            )
             let data = try await sendV2RequestData(
                 method: "POST",
                 path: "/api/session",
-                body: body
+                body: body,
+                includesLocation: false
             )
             guard !data.isEmpty else {
                 return try await getSession(id: sessionID)
@@ -424,9 +429,9 @@ actor OpenCodeClient {
                 body: OCV2CommandInput(
                     name: command,
                     text: arguments,
-                    files: files,
-                    agents: agents,
-                    skills: skills,
+                    files: files.map { ["uri": $0] },
+                    agents: agents.map { ["name": $0] },
+                    skills: skills.map { ["id": $0] },
                     delivery: delivery
                 ),
                 includesLocation: false
@@ -553,8 +558,7 @@ actor OpenCodeClient {
         let response: OCV2Located<[OCFileDiff]> = try await getV2Located(
             "/api/vcs/diff",
             queryItems: [
-                URLQueryItem(name: "mode", value: "working"),
-                URLQueryItem(name: "format", value: "json")
+                URLQueryItem(name: "mode", value: "working")
             ]
         )
         return response.data
@@ -567,9 +571,10 @@ actor OpenCodeClient {
             // V2 names the selected user-turn boundary `from`; v1 keeps its
             // legacy `messageID` query parameter below.
             let queryItems = messageID.map { [URLQueryItem(name: "from", value: $0)] } ?? []
-            let response: OCV2Located<[OCFileDiff]> = try await getV2Located(
+            let response: OCV2Envelope<[OCFileDiff]> = try await getV2(
                 "/api/session/\(sessionID)/diff",
-                queryItems: queryItems
+                queryItems: queryItems,
+                includesLocation: false
             )
             return response.data
         }
@@ -997,14 +1002,15 @@ actor OpenCodeClient {
         endpoint: String,
         limit: Int = v2PageSize,
         order: String,
-        includesLocation: Bool = true
+        includesLocation: Bool = true,
+        queryItems filters: [URLQueryItem] = []
     ) async throws -> [T] {
         var values: [T] = []
         var cursor: String?
         var seenCursors: Set<String> = []
 
         while true {
-            var queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+            var queryItems = filters + [URLQueryItem(name: "limit", value: String(limit))]
             if let cursor {
                 guard seenCursors.insert(cursor).inserted else {
                     throw OpenCodeError.invalidPayload("The v2 response repeated a pagination cursor.")

@@ -22,6 +22,7 @@ protocol SSEEventHandlerDelegate: AnyObject {
     var hiddenTodoCount: Int { get set }
 
     func finishLoading()
+    func finishAssistantStep(messageID: String)
     func beginExternalResponse()
     /// Applies an explicit server-side message deletion. Implementations can
     /// cancel deferred finalization before mutating their visible history.
@@ -96,6 +97,7 @@ protocol SSEEventHandlerDelegate: AnyObject {
 }
 
 extension SSEEventHandlerDelegate {
+    func finishAssistantStep(messageID: String) {}
     func removeAssistantMessage(messageID: String) {
         if pendingAssistantMessage?.id == messageID {
             pendingAssistantMessage = nil
@@ -387,6 +389,9 @@ final class SSEEventHandler {
                 if !delegate.isLoading {
                     delegate.beginExternalResponse()
                 }
+            }
+            if update.completesStep {
+                delegate.finishAssistantStep(messageID: messageID)
             }
         }
     }

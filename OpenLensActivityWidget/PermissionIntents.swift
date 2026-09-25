@@ -60,24 +60,14 @@ private enum PermissionResponder {
               let baseURLString = SharedConnectionStore.baseURL,
               let baseURL = URL(string: baseURLString) else { return }
 
-        let url = baseURL
-            .appendingPathComponent("api")
-            .appendingPathComponent("session")
-            .appendingPathComponent(sessionID)
-            .appendingPathComponent("permission")
-            .appendingPathComponent(requestID)
-            .appendingPathComponent("reply")
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let authHeader = SharedConnectionStore.authHeader {
-            request.setValue(authHeader, forHTTPHeaderField: "Authorization")
-        }
-        request.httpBody = try JSONEncoder().encode(["reply": approve ? "once" : "reject"])
+        let request = try SharedConnectionStore.permissionReplyRequest(
+            baseURL: baseURL, authHeader: SharedConnectionStore.authHeader,
+            usesV2: SharedConnectionStore.usesV2,
+            sessionID: sessionID, requestID: requestID, approve: approve
+        )
 
         let (_, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 204 else {
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
             throw URLError(.badServerResponse)
         }
     }

@@ -4,8 +4,12 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** contract verified — live-server exercise pending
 
 - [ ] The chosen user message is sent as the v2 turn boundary accepted by the session-diff endpoint; an omitted selection still requests the default diff.
 - [ ] Selecting two different turns with different changes produces the matching review content for each.
 - [ ] A contract-shaped request test prevents use of an unsupported message-boundary parameter; v1 turn diffs keep their existing behavior.
+
+## Audit evidence — 2026-09-25
+
+The from parameter was correct, but the client required a location envelope absent from the actual response. Fixed to decode {data}; tests now return that shape and exercise different selected turns with another active directory. See [audit](../AUDIT.md) for test results and remaining release blockers.

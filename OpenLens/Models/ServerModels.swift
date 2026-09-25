@@ -340,11 +340,19 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decodeIfPresent(String.self, forKey: .name)
+            ?? container.decodeIfPresent(String.self, forKey: .type)
         data = try container.decodeIfPresent(OCAPIErrorData.self, forKey: .data)
+            ?? container.decodeIfPresent(String.self, forKey: .message).map { OCAPIErrorData(message: $0) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(data, forKey: .data)
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, data
+        case name, data, type, message
     }
 }
 
@@ -971,6 +979,10 @@ struct OCModelCost: Codable, Sendable {
         case cacheWrite = "cache_write"
     }
 
+    private struct ContextTier: Decodable {
+        let size: Int
+    }
+
     private struct Cache: Codable, Sendable {
         let read: Double?
         let write: Double?
@@ -992,7 +1004,11 @@ struct OCModelCost: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        tier = try container.decodeIfPresent(Int.self, forKey: .tier)
+        if let legacyTier = try? container.decodeIfPresent(Int.self, forKey: .tier) {
+            tier = legacyTier
+        } else {
+            tier = try container.decodeIfPresent(ContextTier.self, forKey: .tier)?.size
+        }
         input = try container.decodeIfPresent(Double.self, forKey: .input)
         output = try container.decodeIfPresent(Double.self, forKey: .output)
         let cache = try container.decodeIfPresent(Cache.self, forKey: .cache)
@@ -1980,9 +1996,10 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
     let cost: Double?
     let tokens: OCTokenUsage?
     let finish: String?
+    let error: OCAPIError?
 
     enum CodingKeys: String, CodingKey {
-        case id, type, time, text, agent, model, content, cost, tokens, finish
+        case id, type, time, text, agent, model, content, cost, tokens, finish, error
     }
 
     init(from decoder: Decoder) throws {
@@ -1997,6 +2014,7 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
         cost = try container.decodeIfPresent(Double.self, forKey: .cost)
         tokens = try? container.decodeIfPresent(OCTokenUsage.self, forKey: .tokens)
         finish = try container.decodeIfPresent(String.self, forKey: .finish)
+        error = try container.decodeIfPresent(OCAPIError.self, forKey: .error)
     }
 
     func asMessage(sessionID: String) -> OCMessageWithParts? {
@@ -2017,6 +2035,7 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
             time: time,
             cost: cost,
             tokens: tokens,
+            error: error,
             modelID: model?.id,
             providerID: model?.providerID,
             finish: finish,
@@ -2455,10 +2474,18 @@ nonisolated struct OCCommand: Codable, Identifiable, Sendable {
 /// session mutations before this input is admitted.
 nonisolated struct OCV2PermissionReplyInput: Encodable, Sendable {
     let reply: OCPermissionReply
+
+    enum CodingKeys: String, CodingKey { case reply = "decision" }
 }
 
 nonisolated struct OCV2FormReplyInput: Encodable, Sendable {
     let answer: [String: OCFormValue]
+}
+
+nonisolated struct OCV2CreateSessionInput: Encodable, Sendable {
+    let id: String
+    let title: String?
+    let location: OCV2LocationInfo?
 }
 
 nonisolated struct OCV2PromptInput: Codable, Sendable {
@@ -2478,9 +2505,9 @@ nonisolated struct OCV2PromptInput: Codable, Sendable {
 nonisolated struct OCV2CommandInput: Codable, Sendable {
     let name: String
     let text: String
-    let files: [String]
-    let agents: [String]
-    let skills: [String]
+    let files: [[String: String]]
+    let agents: [[String: String]]
+    let skills: [[String: String]]
     let delivery: OCV2PromptInput.Delivery
 }
 

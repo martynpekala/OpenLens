@@ -35,7 +35,8 @@ struct OpenCodeV2SessionMutationTests {
             "/api/session/ses_new",
             "/api/session/ses_new",
         ])
-        #expect(requests[1].queryItems["location[directory]"] == "/workspace/OpenLens")
+        #expect(requests[1].queryItems.isEmpty)
+        #expect(try bodyObject(requests[1])["location"] as? [String: String] == ["directory": "/workspace/OpenLens"])
         #expect(requests[2...].allSatisfy { $0.queryItems["location[directory]"] == nil })
         #expect(try bodyObject(requests[1])["title"] as? String == "New session")
         #expect(try bodyObject(requests[2])["title"] as? String == "Renamed session")
@@ -156,9 +157,9 @@ struct OpenCodeV2SessionMutationTests {
         let command = try bodyObject(requests[3])
         #expect(command["name"] as? String == "review")
         #expect(command["text"] as? String == "--staged")
-        #expect(command["files"] as? [String] == ["README.md"])
-        #expect(command["agents"] as? [String] == ["reviewer"])
-        #expect(command["skills"] as? [String] == ["swift"])
+        #expect(command["files"] as? [[String: String]] == [["uri": "README.md"]])
+        #expect(command["agents"] as? [[String: String]] == [["name": "reviewer"]])
+        #expect(command["skills"] as? [[String: String]] == [["id": "swift"]])
         #expect(command["delivery"] as? String == "queue")
         #expect(command["command"] == nil)
         #expect(command["arguments"] == nil)

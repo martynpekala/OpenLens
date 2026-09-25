@@ -18,6 +18,7 @@ nonisolated struct SSEMessageUpdate {
     let providerID: String?
     let finish: String?
     let parentID: String?
+    let completesStep: Bool
 
     init?(event: OCEvent) {
         guard let properties = event.properties?.value as? [String: Any],
@@ -39,6 +40,7 @@ nonisolated struct SSEMessageUpdate {
 
         self.sessionID = sessionID
         self.messageID = messageID
+        self.completesStep = info["v2StepCompleted"] as? Bool ?? false
         self.role = StreamDisplayValue.preview(info["role"] as? String, maximumBytes: 64)
         self.cost = decodedInfo?.cost ?? info["cost"] as? Double
         self.tokens = decodedInfo?.tokens
@@ -510,6 +512,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// stream as synchronized again.
     enum SynchronizationGap: Equatable {
         case disconnected
+        case reconnected
         case decodeFailure
         case overflow
     }
@@ -772,6 +775,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var authHeader: String?
     private var protocolVersion: OpenCodeProtocol
     private var contextDirectory: String?
+    private var v2EventAdapter = V2EventAdapter()
     private var shouldReconnect = true
     private var reconnectDelay: TimeInterval = 2.0
     /// Recording opts into keeping the original decoded OCEvent alongside a
@@ -842,6 +846,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var mainDeliverySelectionScheduled = false
     private var lastResponseStatusCode: Int?
     private var hasReportedSynchronizationGap = false
+    private var synchronizationGapGeneration: UInt = 0
     private let stateDeliveryGate = StateDeliveryGate()
 #if DEBUG
     private var connectionStartHandlerForTesting: (() -> Void)?
@@ -923,8 +928,24 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         }
     }
 
-    /// Updates the location used by OpenCode's v2 event router. V2 scopes its
-    /// event stream to the requested directory, unlike the legacy global stream.
+    func synchronizationGeneration() async -> UInt {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.synchronizationGapGeneration) }
+        }
+    }
+
+    func acknowledgeSynchronization(since generation: UInt) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let unchanged = generation == self.synchronizationGapGeneration
+                if unchanged { self.hasReportedSynchronizationGap = false }
+                continuation.resume(returning: unchanged)
+            }
+        }
+    }
+
+    /// Replaces the client-side location filter for the global native v2 stream.
+    /// Reconnect also invalidates queued deliveries from the previous location.
     func updateContextDirectory(_ directory: String?) {
         let normalizedDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         queue.async { [self] in
@@ -1026,14 +1047,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
         let eventPath = protocolVersion.eventStreamPath
         let eventURL = baseURL.appending(path: String(eventPath.dropFirst()))
-        var components = URLComponents(url: eventURL, resolvingAgainstBaseURL: false)
-        if protocolVersion == .v2, let contextDirectory {
-            var queryItems = components?.queryItems ?? []
-            queryItems.append(
-                URLQueryItem(name: "directory", value: contextDirectory)
-            )
-            components?.queryItems = queryItems
-        }
+        let components = URLComponents(url: eventURL, resolvingAgainstBaseURL: false)
         let url = components?.url ?? eventURL
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -1048,6 +1062,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         transportTaskSuspendedByBackpressure = false
         oversizedRecordCancellationPending = false
         hasReportedSynchronizationGap = false
+        v2EventAdapter = V2EventAdapter()
         pendingTransportCompletion = nil
         let eventStreamID = UUID()
         activeEventStreamID = eventStreamID
@@ -1149,6 +1164,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             if http.statusCode == 200 {
                 reconnectDelay = Self.initialReconnectDelay
                 updateState(.connected)
+                reportSynchronizationGap(.reconnected)
                 return true
             }
 
@@ -1455,7 +1471,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         }
 
         do {
-            let event = try decodeEvent(data: jsonData, eventName: eventName)
+            guard let event = try decodeEvent(data: jsonData, eventName: eventName) else { return false }
             enqueueEvent(event, sourceByteCount: sourceByteCount)
             return true
         } catch {
@@ -1467,11 +1483,12 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     /// A v2 event stream has no replay cursor. Once a record was dropped or a
     /// transport ended, the only safe way to close the resulting gap is to
-    /// reconcile from REST. Coalesce all causes until the next connection so a
-    /// malformed record followed by the expected disconnect reloads once.
+    /// reconcile from REST. Notifications coalesce, but every gap advances the
+    /// generation so a gap during REST recovery requires another complete pass.
     private func reportSynchronizationGap(_ gap: SynchronizationGap) {
-        guard protocolVersion == .v2, !hasReportedSynchronizationGap else { return }
-
+        guard protocolVersion == .v2 else { return }
+        synchronizationGapGeneration &+= 1
+        guard !hasReportedSynchronizationGap else { return }
         hasReportedSynchronizationGap = true
         let callback = onSynchronizationGap
         DispatchQueue.main.async {
@@ -2396,7 +2413,16 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// V1 embeds the event type and properties in the JSON data object. V2
     /// follows standard SSE framing and carries the event type in `event:`;
     /// its `data:` payload is the event properties object.
-    private func decodeEvent(data: Data, eventName: String?) throws -> OCEvent {
+    private func decodeEvent(data: Data, eventName: String?) throws -> OCEvent? {
+        if protocolVersion == .v2 {
+            var value = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+            if let encoded = value as? String {
+                value = try JSONSerialization.jsonObject(with: Data(encoded.utf8))
+            }
+            if let envelope = value as? [String: Any], envelope["type"] != nil, envelope["data"] != nil {
+                return try v2EventAdapter.event(envelope, directory: contextDirectory)
+            }
+        }
         if let legacyEvent = try? JSONDecoder().decode(OCEvent.self, from: data) {
             return legacyEvent
         }

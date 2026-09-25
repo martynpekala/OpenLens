@@ -57,6 +57,16 @@ final class ConnectionManager: ConnectionProviding {
         self.localNetworkAccessProbe = localNetworkAccessProbe
     }
 
+#if DEBUG
+    /// Installs a negotiated client without opening a live network connection.
+    init(testClient: OpenCodeClient, capabilities: OpenCodeServerCapabilities) {
+        self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+        self.client = testClient
+        self.serverCapabilities = capabilities
+        self.state = .connected
+    }
+#endif
+
     var isConnected: Bool {
         if case .connected = state { return true }
         return false
@@ -141,7 +151,10 @@ final class ConnectionManager: ConnectionProviding {
             self.client = apiClient
             self.selectedProjectDirectory = restoredProjectDirectory?.nilIfBlank
 
-            SharedConnectionStore.save(baseURL: baseURL.absoluteString, authHeader: authHeader)
+            SharedConnectionStore.save(
+                baseURL: baseURL.absoluteString, authHeader: authHeader,
+                protocolVersion: capabilities.protocolVersion.rawValue
+            )
 
             await refreshProjectMetadata()
 

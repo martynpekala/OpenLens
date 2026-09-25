@@ -102,6 +102,118 @@ struct SSEClientHTTPStatusTests {
         #expect(disconnectGaps == [.disconnected])
     }
 
+    @MainActor
+    @Test func nativeV2FramesReachChatAndExcludeOtherLocations() async throws {
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: URL(string: "http://127.0.0.1:1")!)
+        let stream = SSEClient(baseURL: URL(string: "http://127.0.0.1:1")!, protocolVersion: .v2, contextDirectory: "/workspace/allowed")
+        stream.installActiveConnectionForTesting(session: session, task: task)
+        let chat = ChatClient(demoMode: true)
+        chat.currentSession = OCSession(id: "ses_live", title: "Live", time: .init(created: 0, updated: 0))
+        let handler = SSEEventHandler(haptics: HapticController(), liveActivityTracker: LiveActivityTracker(liveActivity: LiveActivityManager()))
+        handler.delegate = chat
+        var events: [OCEvent] = []
+        stream.onEvent = { events.append($0) }
+        stream.onInboundEvent = { handler.handleInboundEvent($0) }
+        let frames: [(String, [String: Any], String)] = [
+            ("session.step.started", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "agent":"build", "model":["id":"test","providerID":"test"], "started":1], "/workspace/allowed"),
+            ("session.text.started", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "ordinal":0], "/workspace/allowed"),
+            ("session.text.delta", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "ordinal":0, "delta":"Hello"], "/workspace/allowed"),
+            ("session.text.delta", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "ordinal":0, "delta":" SECRET"], "/workspace/foreign"),
+            ("session.text.ended", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "ordinal":0, "text":"Hello"], "/workspace/allowed"),
+            ("session.tool.input.started", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "id":"tool_1", "name":"bash"], "/workspace/allowed"),
+            ("session.tool.called", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "id":"tool_1", "input":["command":"pwd"], "executed":true], "/workspace/allowed"),
+            ("session.tool.success", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "id":"tool_1", "content":[["type":"text","text":"/workspace/allowed"]], "executed":true], "/workspace/allowed"),
+            ("session.step.ended", ["sessionID":"ses_live", "assistantMessageID":"msg_live", "finish":"tool-calls", "cost":0], "/workspace/allowed"),
+            ("session.step.started", ["sessionID":"ses_live", "assistantMessageID":"msg_next", "agent":"build", "model":["id":"test","providerID":"test"], "started":2], "/workspace/allowed"),
+            ("session.reasoning.started", ["sessionID":"ses_live", "assistantMessageID":"msg_next", "ordinal":0], "/workspace/allowed"),
+            ("session.reasoning.delta", ["sessionID":"ses_live", "assistantMessageID":"msg_next", "ordinal":0, "delta":"Thinking"], "/workspace/allowed"),
+            ("session.reasoning.ended", ["sessionID":"ses_live", "assistantMessageID":"msg_next", "ordinal":0, "text":"Thinking"], "/workspace/allowed")
+        ]
+        for (type, payload, directory) in frames {
+            let object: [String: Any] = ["id":"evt_1", "created":1, "type":type, "data":payload, "location":["directory":directory]]
+            let json = try JSONSerialization.data(withJSONObject: object)
+            var frame = Data("event: message\ndata: ".utf8)
+            frame.append(json)
+            frame.append(Data("\n\n".utf8))
+            // Exercise arbitrary transport chunk boundaries too.
+            stream.receiveDataForTesting(session: session, task: task, data: frame.prefix(13))
+            stream.receiveDataForTesting(session: session, task: task, data: frame.dropFirst(13))
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        let message = try #require(chat.displayedMessages.first { $0.id == "msg_live" })
+        let textRows = ChatTimeline.items(from: [message], showsThinking: true).compactMap { item -> String? in
+            switch item.content {
+            case .streamingAssistantText(_, let projection): return projection.copyText()
+            case .assistantSegment(_, let segment):
+                if case .text(let text) = segment.kind { return segment.streamingText?.copyText() ?? text }
+                return nil
+            default: return nil
+            }
+        }
+        #expect(textRows == ["Hello"])
+        #expect(chat.messages.contains { $0.id == "msg_live" && !$0.isStreaming })
+        let next = try #require(chat.displayedMessages.first { $0.id == "msg_next" })
+        #expect(next.parts.contains { $0.type == .reasoning })
+        let tools = events.compactMap { event -> OCPart? in
+            guard event.type == "message.part.updated",
+                  let properties = event.properties?.value as? [String: Any],
+                  let part = properties["part"],
+                  let data = try? JSONSerialization.data(withJSONObject: part) else { return nil }
+            return try? JSONDecoder().decode(OCPart.self, from: data)
+        }.filter { $0.type == .tool }
+        #expect(tools.last?.tool == "bash")
+        #expect(tools.last?.state?.status == .completed)
+        #expect(tools.last?.state?.output == "/workspace/allowed")
+        #expect(!events.contains { String(describing: $0.properties?.value).contains("SECRET") })
+        stream.disconnect()
+    }
+
+    @MainActor
+    @Test func v2ConnectionAndLaterDecodeGapEachRequireRecovery() async throws {
+        let connection = makeActiveSSEConnection(protocolVersion: .v2)
+        var gaps: [SSEClient.SynchronizationGap] = []
+        connection.client.onSynchronizationGap = { gaps.append($0) }
+        connection.client.receiveResponseForTesting(
+            session: connection.session, task: connection.task,
+            response: HTTPURLResponse(url: URL(string: "http://127.0.0.1")!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+            completionHandler: { _ in }
+        )
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(gaps == [.reconnected])
+        let generation = await connection.client.synchronizationGeneration()
+        #expect(await connection.client.acknowledgeSynchronization(since: generation))
+        connection.client.receiveDataForTesting(session: connection.session, task: connection.task, data: Data("data: invalid\n\n".utf8))
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(gaps == [.reconnected, .decodeFailure])
+        #expect(await connection.client.acknowledgeSynchronization(since: generation) == false)
+        let current = await connection.client.synchronizationGeneration()
+        #expect(await connection.client.acknowledgeSynchronization(since: current))
+    }
+
+    @Test func nativeV2InteractionsFailuresAndUnknownEventsKeepTheirMeaning() throws {
+        var adapter = V2EventAdapter()
+        func envelope(_ type: String, _ payload: [String: Any]) -> [String: Any] {
+            ["type":type, "data":payload, "location":["directory":"/workspace"]]
+        }
+        func decode(_ value: [String: Any]) throws -> OCEvent? {
+            try adapter.event(value, directory: "/workspace")
+        }
+        let permission = try #require(try decode(envelope("permission.asked", ["id":"per_1", "sessionID":"ses_1", "action":"shell", "resources":["pwd"]])))
+        #expect(SSEPermissionAsked(event: permission)?.request?.id == "per_1")
+        let form = try #require(try decode(envelope("form.created", ["form":["id":"frm_1", "sessionID":"ses_1", "title":"Continue?", "fields":[["key":"answer", "type":"boolean"]]]])))
+        #expect(SSEFormCreated(event: form)?.form?.id == "frm_1")
+        for type in ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "permission.replied"] {
+            let event = try #require(try decode(envelope(type, ["sessionID":"ses_1"])))
+            #expect(event.type == "session.reconcile")
+            #expect((event.properties?.value as? [String: Any])?["sessionID"] as? String == "ses_1")
+        }
+        let unknown = try #require(try decode(envelope("session.text.future", ["sessionID":"ses_1"])))
+        #expect(unknown.type == "session.text.future")
+        let resolved = try #require(try decode(envelope("form.cancelled", ["sessionID":"ses_1", "id":"frm_1"])))
+        #expect(SSEFormResolved(event: resolved)?.formID == "frm_1")
+    }
+
     @Test func treats401AsTerminalAuthFailure() {
         #expect(isTerminalSSEHTTPStatus(401))
     }

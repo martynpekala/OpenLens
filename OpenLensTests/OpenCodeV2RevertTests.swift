@@ -60,25 +60,26 @@ struct OpenCodeV2RevertTests {
                 method: "GET",
                 path: "/api/session/ses_1/diff",
                 statusCode: 200,
-                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[{"path":"Earlier.swift","diff":"-let version = 1\n+let version = 2"}]}"#.utf8),
+                body: Data(#"{"data":[{"file":"Earlier.swift","patch":"-let version = 1\n+let version = 2"}]}"#.utf8),
                 queryItems: ["from": "msg_earlier"]
             ),
             .init(
                 method: "GET",
                 path: "/api/session/ses_1/diff",
                 statusCode: 200,
-                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[{"path":"Later.swift","diff":"-let version = 2\n+let version = 3"}]}"#.utf8),
+                body: Data(#"{"data":[{"file":"Later.swift","patch":"-let version = 2\n+let version = 3"}]}"#.utf8),
                 queryItems: ["from": "msg_later"]
             ),
             .init(
                 method: "GET",
                 path: "/api/session/ses_1/diff",
                 statusCode: 200,
-                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[{"path":"Current.swift","diff":"-let version = 3\n+let version = 4"}]}"#.utf8)
+                body: Data(#"{"data":[{"file":"Current.swift","patch":"-let version = 3\n+let version = 4"}]}"#.utf8)
             ),
         ])
         let client = OpenCodeClient(
             baseURL: try #require(URL(string: "https://opencode.example.com")),
+            contextDirectory: "/workspace/Other",
             transport: transport
         )
         _ = try await client.probeCapabilities()
@@ -87,9 +88,9 @@ struct OpenCodeV2RevertTests {
         let laterDiff = try await client.getSessionDiff(sessionID: "ses_1", messageID: "msg_later")
         let defaultDiff = try await client.getSessionDiff(sessionID: "ses_1")
 
-        #expect(earlierDiff.first?.path == "Earlier.swift")
-        #expect(laterDiff.first?.path == "Later.swift")
-        #expect(defaultDiff.first?.path == "Current.swift")
+        #expect(earlierDiff.first?.file == "Earlier.swift")
+        #expect(laterDiff.first?.file == "Later.swift")
+        #expect(defaultDiff.first?.file == "Current.swift")
 
         let requests = transport.recordedRequests()
         #expect(requests[1...].map(\.path) == Array(repeating: "/api/session/ses_1/diff", count: 3))

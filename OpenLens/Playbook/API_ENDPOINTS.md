@@ -20,11 +20,15 @@ Remote relay forwards only its explicit allowlist, including both
 
 ### v2 conventions
 
-- Direct location-scoped routes include `location[directory]` after the app
-  resolves the canonical location. Direct session-status and message-detail
-  requests are not location-scoped; the Remote relay still injects its
-  authenticated canonical workspace query on every forwarded `/api/*` route
-  to preserve workspace isolation.
+- Location-scoped routes use `location[directory]`. Session lists instead use
+  `directory`, and session creation sends `{location:{directory}}` in its JSON
+  body. Session-owned routes do not take a location query.
+- The relay validates and injects the approved location into session creation.
+  Session-owned requests require a fresh canonical ownership lookup. Global
+  snapshots and bounded native event frames are filtered against the current
+  workspace registry. `/api/event` receives no directory query; the app also
+  filters native events to the selected directory. See
+  [the v2 audit](../../.scratch/api-v2-regressions/AUDIT.md).
 - Most v2 projections use `{ "data": ... }`; location-aware projections also
   include `{ "location": ..., "data": ... }`.
 - Non-2xx v2 responses with an OpenCode error document are surfaced as a typed
@@ -44,9 +48,9 @@ Remote relay forwards only its explicit allowlist, including both
 
 | Method | Path | Response | Description |
 |---|---|---|---|
-| GET | `/api/session` | cursor page `{ data, cursor }` | List sessions |
+| GET | `/api/session` | cursor page `{ data, cursor }` | List sessions; filter with `directory` |
 | GET | `/api/session/:id` | `{ data: OCSession }` | Get a session |
-| POST | `/api/session` | `{ data: OCSession }` or acknowledgement | Create a session |
+| POST | `/api/session` | `{ data: OCSession }` or acknowledgement | Create in body `location.directory` |
 | PATCH | `/api/session/:id` | acknowledgement | Update a session title |
 | DELETE | `/api/session/:id` | acknowledgement | Delete a session |
 | GET | `/api/session/active` | `{ data: Record<sessionID, { type: "running" }> }` | Running-session snapshot |
@@ -54,6 +58,17 @@ Remote relay forwards only its explicit allowlist, including both
 | GET | `/api/session/:id/message/:messageID` | `{ data: OCMessageWithParts }` | Get message detail |
 | POST | `/api/session/:id/prompt` | acknowledgement | Admit a `steer` or `queue` prompt |
 | POST | `/api/session/:id/interrupt` | interruption result | Stop a running session |
+
+| GET | `/api/session/:id/diff?from=:messageID` | `{ data: [FileDiff] }` | Selected user turn; omit `from` for newest turn |
+| DELETE | `/api/session/:id/revert` | 204 | Clear staged revert |
+| POST | `/api/session/:id/revert/stage` | `{ data: Revert }` | Stage `{messageID,files:true}` |
+| POST | `/api/session/:id/revert/commit` | 204 | Commit staged revert |
+| POST | `/api/session/:id/permission/:requestID/reply` | 204 | `{decision:"once"\|"always"\|"reject"}` |
+| GET | `/api/vcs/diff?mode=working` | `{ location, data: [FileDiff] }` | Working-copy patches |
+
+V2 command attachment arrays contain objects (`{uri}`, `{name}`, `{id}` for
+files, agents, and skills respectively). Model cost tiers use
+`{type:"context",size:...}`. Assistant execution errors use `{type,message,status?}`.
 
 ## Legacy v1 endpoints
 

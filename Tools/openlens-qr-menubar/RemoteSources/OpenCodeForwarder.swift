@@ -24,18 +24,77 @@ final class OpenCodeForwarder: @unchecked Sendable {
 
     func perform(_ request: RemoteHTTPRequest) async throws -> RemoteHTTPResponse {
         let localRequest = try makeLocalRequest(from: request, requiresEventStream: false)
-        let (data, response) = try await session.data(for: localRequest)
+        let path = localRequest.url!.path
+        let segments = path.split(separator: "/").map(String.init)
+        let ownedSessionID = segments.count >= 3 && segments[0] == "api" && segments[1] == "session" && segments[2] != "active"
+            ? segments[2] : nil
+        if let ownedSessionID {
+            guard try await ownsSession(ownedSessionID) else { throw RemoteProtocolError.invalidRequest }
+        }
+        let (responseData, response) = try await session.data(for: localRequest)
+        var data = responseData
         guard let http = response as? HTTPURLResponse else {
             throw RemoteProtocolError.remoteError("invalid_local_response")
         }
         guard data.count <= RemoteProtocolVersion.maximumHTTPBodyBytes else {
             throw RemoteProtocolError.messageTooLarge
         }
+        if (200..<300).contains(http.statusCode), !data.isEmpty {
+            if path == "/api/session/active" {
+                guard var envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let active = envelope["data"] as? [String: Any]
+                else { throw RemoteProtocolError.invalidRequest }
+                var allowed: [String: Any] = [:]
+                for (id, value) in active {
+                    if try await ownsSession(id) { allowed[id] = value }
+                }
+                envelope["data"] = allowed
+                data = try JSONSerialization.data(withJSONObject: envelope)
+            } else if path == "/api/session", localRequest.httpMethod == "GET" {
+                guard var envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let sessions = envelope["data"] as? [[String: Any]]
+                else { throw RemoteProtocolError.invalidRequest }
+                envelope["data"] = sessions.filter { ownsLocation($0["location"]) }
+                data = try JSONSerialization.data(withJSONObject: envelope)
+            } else if path == "/api/project" {
+                guard let projects = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+                else { throw RemoteProtocolError.invalidRequest }
+                data = try JSONSerialization.data(withJSONObject: projects.filter {
+                    guard let directory = ($0["directory"] ?? $0["worktree"]) as? String else { return false }
+                    return workspaceRegistry.isAllowed(directory)
+                })
+            } else if ownedSessionID != nil, segments.count == 3, localRequest.httpMethod == "GET" {
+                guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let info = envelope["data"] as? [String: Any], ownsLocation(info["location"])
+                else { throw RemoteProtocolError.invalidRequest }
+            }
+        }
         return RemoteHTTPResponse(
             statusCode: http.statusCode,
             headers: Self.forwardedResponseHeaders(http),
             body: data
         )
+    }
+
+    private func ownsLocation(_ value: Any?) -> Bool {
+        guard let location = value as? [String: Any], let directory = location["directory"] as? String else { return false }
+        return workspaceRegistry.isAllowed(directory)
+    }
+
+    /// No ownership cache: sessions can move and the approved registry can change.
+    private func ownsSession(_ id: String) async throws -> Bool {
+        guard Self.isSafeIdentifier(id) else { return false }
+        let url = URL(string: "http://127.0.0.1:\(RemoteProtocolVersion.openCodePort)/api/session")!.appendingPathComponent(id)
+        var request = URLRequest(url: url)
+        request.setValue(authHeader, forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw RemoteProtocolError.invalidRequest }
+        if response.statusCode == 404 { return false }
+        guard response.statusCode == 200, data.count <= RemoteProtocolVersion.maximumHTTPBodyBytes,
+              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let info = envelope["data"] as? [String: Any], info["id"] as? String == id
+        else { throw RemoteProtocolError.invalidRequest }
+        return ownsLocation(info["location"])
     }
 
     func makeEventStream(
@@ -48,6 +107,7 @@ final class OpenCodeForwarder: @unchecked Sendable {
         let localRequest = try makeLocalRequest(from: request, requiresEventStream: true)
         return GatewayEventStream(
             request: localRequest,
+            eventFilter: localRequest.url?.path == "/api/event" ? GatewayV2EventFilter(registry: workspaceRegistry) : nil,
             deliveryQueue: deliveryQueue,
             onOpened: onOpened,
             onData: onData,
@@ -89,13 +149,42 @@ final class OpenCodeForwarder: @unchecked Sendable {
             throw RemoteProtocolError.invalidRequest
         }
 
+        var forwardedBody = remote.body
+        var createBody: [String: Any]?
+        var bodyDirectory: String?
+        if remote.method == "POST", path == "/api/session" {
+            guard let data = remote.body,
+                  let body = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { throw RemoteProtocolError.invalidRequest }
+            createBody = body
+            if let location = body["location"], !(location is NSNull) {
+                guard let location = location as? [String: Any],
+                      Set(location.keys) == ["directory"],
+                      let directory = location["directory"] as? String
+                else { throw RemoteProtocolError.invalidRequest }
+                bodyDirectory = directory
+            }
+        }
+
         let requestedQueryDirectory = directoryQueryItems.first.map(\.value)
         guard requestedHeaderDirectory == nil || requestedQueryDirectory == nil,
               let allowedDirectory = workspaceRegistry.resolvedPath(
-                  requestedHeaderDirectory ?? requestedQueryDirectory
+                  bodyDirectory ?? requestedHeaderDirectory ?? requestedQueryDirectory
               )
         else {
             throw RemoteProtocolError.invalidRequest
+        }
+
+        if let bodyDirectory {
+            guard workspaceRegistry.resolvedPath(bodyDirectory) == allowedDirectory,
+                  [requestedHeaderDirectory, requestedQueryDirectory].compactMap({ $0 }).allSatisfy({
+                      workspaceRegistry.resolvedPath($0) == allowedDirectory
+                  })
+            else { throw RemoteProtocolError.invalidRequest }
+        }
+        if var body = createBody {
+            body["location"] = ["directory": allowedDirectory]
+            forwardedBody = try JSONSerialization.data(withJSONObject: body)
         }
 
         if path == "/api/fs/list" {
@@ -131,22 +220,29 @@ final class OpenCodeForwarder: @unchecked Sendable {
             .filter { !["directory", "location[directory]"].contains($0.name.lowercased()) }
             .map { $0.rawPair }
             .joined(separator: "&")
-        if path.hasPrefix("/api/") {
-            let v2LocationQuery = try [
-                Self.encodedQueryItem(name: "directory", value: allowedDirectory),
-                Self.encodedQueryItem(name: "location[directory]", value: allowedDirectory),
-            ].joined(separator: "&")
-            components.percentEncodedQuery = [forwardedQuery, v2LocationQuery]
-                .filter { !$0.isEmpty }
-                .joined(separator: "&")
-        } else if !forwardedQuery.isEmpty {
-            components.percentEncodedQuery = forwardedQuery
+        var query = forwardedQuery
+        let locationQueryName: String?
+        if path == "/api/session", remote.method == "GET" {
+            locationQueryName = "directory"
+        } else if path == "/api/event" {
+            locationQueryName = nil
+        } else if path.hasPrefix("/api/"),
+                  !path.hasPrefix("/api/session"),
+                  !["/api/info", "/api/project"].contains(path) {
+            locationQueryName = "location[directory]"
+        } else {
+            locationQueryName = nil
         }
+        if let locationQueryName {
+            query = try [query, Self.encodedQueryItem(name: locationQueryName, value: allowedDirectory)]
+                .filter { !$0.isEmpty }.joined(separator: "&")
+        }
+        components.percentEncodedQuery = query.isEmpty ? nil : query
         guard let url = components.url else { throw RemoteProtocolError.invalidRequest }
 
         var request = URLRequest(url: url)
         request.httpMethod = remote.method
-        request.httpBody = remote.body
+        request.httpBody = forwardedBody
         request.timeoutInterval = requiresEventStream ? .infinity : 30
         request.setValue(authHeader, forHTTPHeaderField: "Authorization")
         if !path.hasPrefix("/api/") {
@@ -285,7 +381,8 @@ final class OpenCodeForwarder: @unchecked Sendable {
            segments[1] == "session",
            isSafeIdentifier(segments[2]) {
             switch (method, segments[3]) {
-            case ("POST", "interrupt"),
+            case ("DELETE", "revert"),
+                 ("POST", "interrupt"),
                  ("GET", "message"),
                  ("POST", "prompt"),
                  ("POST", "model"),
@@ -326,7 +423,7 @@ final class OpenCodeForwarder: @unchecked Sendable {
            segments[1] == "session",
            isSafeIdentifier(segments[2]),
            segments[3] == "revert",
-           ["clear", "stage", "commit"].contains(segments[4]) {
+           ["stage", "commit"].contains(segments[4]) {
             return true
         }
 
@@ -486,6 +583,7 @@ final class OpenCodeForwarder: @unchecked Sendable {
 
 final class GatewayEventStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let request: URLRequest
+    private let eventFilter: GatewayV2EventFilter?
     private let deliveryQueue: DispatchQueue
     private let onOpened: @Sendable (Int, [String: String]) -> Void
     private let onData: @Sendable (Data) -> Void
@@ -495,12 +593,14 @@ final class GatewayEventStream: NSObject, URLSessionDataDelegate, @unchecked Sen
 
     init(
         request: URLRequest,
+        eventFilter: GatewayV2EventFilter? = nil,
         deliveryQueue: DispatchQueue,
         onOpened: @escaping @Sendable (Int, [String: String]) -> Void,
         onData: @escaping @Sendable (Data) -> Void,
         onComplete: @escaping @Sendable (Error?) -> Void
     ) {
         self.request = request
+        self.eventFilter = eventFilter
         self.deliveryQueue = deliveryQueue
         self.onOpened = onOpened
         self.onData = onData
@@ -552,7 +652,16 @@ final class GatewayEventStream: NSObject, URLSessionDataDelegate, @unchecked Sen
             onComplete(RemoteProtocolError.messageTooLarge)
             return
         }
-        onData(data)
+        do {
+            if let eventFilter {
+                for record in try eventFilter.append(data) { onData(record) }
+            } else {
+                onData(data)
+            }
+        } catch {
+            cancel()
+            onComplete(error)
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

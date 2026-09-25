@@ -187,7 +187,7 @@ struct OpenCodeProtocolSelectionTests {
                 },
                 "cost":[
                   {"input":3,"output":15,"cache":{"read":0.3,"write":3}},
-                  {"tier":200000,"input":6,"output":22,"cache":{"read":0.6,"write":6}}
+                  {"tier":{"type":"context","size":200000},"input":6,"output":22,"cache":{"read":0.6,"write":6}}
                 ],
                 "variants":[]
               }]
@@ -294,7 +294,7 @@ struct OpenCodeProtocolSelectionTests {
         #expect(requests.dropFirst(2).allSatisfy { $0.queryItems["location[directory]"] == "/workspace/OpenLens" })
         let workingTreeDiffRequest = try #require(requests.first { $0.path == "/api/vcs/diff" })
         #expect(workingTreeDiffRequest.queryItems["mode"] == "working")
-        #expect(workingTreeDiffRequest.queryItems["format"] == "json")
+        #expect(workingTreeDiffRequest.queryItems["format"] == nil)
     }
 
     @Test func reachableV2ServerIsSelectedFromServerInfoEvidence() async throws {
@@ -394,7 +394,7 @@ struct OpenCodeProtocolSelectionTests {
     }
 
     @MainActor
-    @Test func v2SSEIncludesTheSelectedDirectoryInItsEventRequest() async throws {
+    @Test func v2SSEChangesContextWithoutAnUndocumentedServerFilter() async throws {
         let transport = OpenCodeContractTransport(
             routes: [:],
             eventStreamData: OpenCodeContractFixtures.v2EventStream
@@ -414,7 +414,7 @@ struct OpenCodeProtocolSelectionTests {
 
         let initialRequests = await transport.recordedEventRequests()
         #expect(initialRequests.first?.path == "/api/event")
-        #expect(initialRequests.first?.queryItems["directory"] == "/workspaces/openlens")
+        #expect(initialRequests.first?.queryItems["directory"] == nil)
 
         client.updateContextDirectory("/workspaces/another-project")
         for _ in 0..<40 {
@@ -424,7 +424,7 @@ struct OpenCodeProtocolSelectionTests {
 
         let updatedRequests = await transport.recordedEventRequests()
         #expect(updatedRequests.count >= 2)
-        #expect(updatedRequests.last?.queryItems["directory"] == "/workspaces/another-project")
+        #expect(updatedRequests.last?.queryItems["directory"] == nil)
         client.disconnect()
     }
 

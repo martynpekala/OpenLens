@@ -23,8 +23,8 @@ struct OpenCodePaginationTests {
         #expect(requests[2].queryItems["order"] == "asc")
         #expect(requests[1].queryItems["order"] == nil)
         #expect(requests[3].queryItems["order"] == nil)
-        #expect(requests[0].queryItems["location[directory]"] == "/workspace/OpenLens")
-        #expect(requests[1].queryItems["location[directory]"] == "/workspace/OpenLens")
+        #expect(requests[0].queryItems["directory"] == "/workspace/OpenLens")
+        #expect(requests[1].queryItems["directory"] == "/workspace/OpenLens")
         #expect(requests[2].queryItems["location[directory]"] == nil)
         #expect(requests[3].queryItems["location[directory]"] == nil)
     }

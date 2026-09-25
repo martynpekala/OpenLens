@@ -35,9 +35,9 @@ struct OpenCodeV2PermissionTests {
             "/api/session/ses_1/permission/per_1/reply",
         ])
         #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
-        #expect(try bodyObject(requests[2])["reply"] as? String == "once")
-        #expect(try bodyObject(requests[3])["reply"] as? String == "always")
-        #expect(try bodyObject(requests[4])["reply"] as? String == "reject")
+        #expect(try bodyObject(requests[2])["decision"] as? String == "once")
+        #expect(try bodyObject(requests[3])["decision"] as? String == "always")
+        #expect(try bodyObject(requests[4])["decision"] as? String == "reject")
     }
 
     @Test func v2PermissionInboxRecoveryUsesTheLocationScopedRequestRoute() async throws {
@@ -75,6 +75,19 @@ struct OpenCodeV2PermissionTests {
         }
 
         #expect(transport.recordedRequests().map(\.path) == ["/api/info"])
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func widgetPermissionRepliesUseTheNegotiatedContract(usesV2: Bool, approve: Bool) throws {
+        let request = try SharedConnectionStore.permissionReplyRequest(
+            baseURL: #require(URL(string: "https://example.com")), authHeader: "Basic test",
+            usesV2: usesV2, sessionID: "ses_1", requestID: "per_1", approve: approve
+        )
+        #expect(request.url?.path == (usesV2 ? "/api/session/ses_1/permission/per_1/reply" : "/permission/per_1/reply"))
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Basic test")
+        let body = try JSONDecoder().decode([String: String].self, from: #require(request.httpBody))
+        #expect(body == [usesV2 ? "decision" : "reply": approve ? "once" : "reject"])
     }
 
     private func permissionListEnvelope() -> Data {
