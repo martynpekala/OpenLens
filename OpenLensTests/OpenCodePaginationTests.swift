@@ -153,6 +153,19 @@ struct OpenCodePaginationTests {
         #expect(transport.recordedRequests().count == 2)
     }
 
+    @Test func v2SessionLocationsSurviveListAndDetailDecodingAcrossProjects() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(path: "/api/session", cursor: nil, body: Data(#"{"data":[{"id":"ses_alpha","title":"Alpha","location":{"directory":"/workspace/Alpha","project":{"id":"alpha","directory":"/workspace/Alpha"}},"time":{"created":0,"updated":2}},{"id":"ses_beta","title":"Beta","location":{"directory":"/workspace/Beta","project":{"id":"beta","directory":"/workspace/Beta"}},"time":{"created":0,"updated":1}}],"cursor":{"next":null}}"#.utf8)),
+            .init(path: "/api/session/ses_alpha", cursor: nil, body: Data(#"{"data":{"id":"ses_alpha","title":"Alpha","location":{"directory":"/workspace/Alpha","project":{"id":"alpha","directory":"/workspace/Alpha"}},"time":{"created":0,"updated":2}}}"#.utf8)),
+        ])
+        let client = try await v2Client(transport: transport, contextDirectory: "/workspace/Beta")
+
+        let sessions = try await client.listSessions()
+        #expect(sessions.map(\.directory) == ["/workspace/Alpha", "/workspace/Beta"])
+        #expect(sessions.map(\.projectID) == ["alpha", "beta"])
+        #expect(try await client.getSession(id: "ses_alpha").directory == "/workspace/Alpha")
+    }
+
     private func v2Client(
         transport: V2PaginationTransport,
         contextDirectory: String? = nil

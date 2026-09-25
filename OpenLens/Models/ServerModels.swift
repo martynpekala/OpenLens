@@ -21,7 +21,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     var createdAt: Double { time.created / 1000.0 }
 
     enum CodingKeys: String, CodingKey {
-        case id, projectID, directory, parentID, title, version, time, share, revert
+        case id, projectID, directory, location, parentID, title, version, time, share, revert
     }
 
     init(
@@ -48,15 +48,29 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let location = try container.decodeIfPresent(OCV2LocationInfo.self, forKey: .location)
         id = try container.decode(String.self, forKey: .id)
-        projectID = try container.decodeIfPresent(String.self, forKey: .projectID)
-        directory = try container.decodeIfPresent(String.self, forKey: .directory)
+        projectID = try container.decodeIfPresent(String.self, forKey: .projectID) ?? location?.project?.id
+        directory = try container.decodeIfPresent(String.self, forKey: .directory) ?? location?.directory
         parentID = try container.decodeIfPresent(String.self, forKey: .parentID)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         version = try container.decodeIfPresent(String.self, forKey: .version)
         time = try container.decodeIfPresent(OCSessionTime.self, forKey: .time) ?? OCSessionTime(created: 0, updated: 0)
         share = try container.decodeIfPresent(OCShareInfo.self, forKey: .share)
         revert = try container.decodeIfPresent(OCSessionRevert.self, forKey: .revert)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(projectID, forKey: .projectID)
+        try container.encodeIfPresent(directory, forKey: .directory)
+        try container.encodeIfPresent(parentID, forKey: .parentID)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(version, forKey: .version)
+        try container.encode(time, forKey: .time)
+        try container.encodeIfPresent(share, forKey: .share)
+        try container.encodeIfPresent(revert, forKey: .revert)
     }
 
     func hash(into hasher: inout Hasher) {

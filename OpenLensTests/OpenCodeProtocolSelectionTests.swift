@@ -372,6 +372,41 @@ struct OpenCodeProtocolSelectionTests {
     }
 
     @MainActor
+    @Test func v2SSEIncludesTheSelectedDirectoryInItsEventRequest() async throws {
+        let transport = OpenCodeContractTransport(
+            routes: [:],
+            eventStreamData: OpenCodeContractFixtures.v2EventStream
+        )
+        let client = SSEClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            protocolVersion: .v2,
+            contextDirectory: "/workspaces/openlens",
+            transport: transport
+        )
+        client.connect()
+
+        for _ in 0..<40 {
+            if !(await transport.recordedEventRequests().isEmpty) { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let initialRequests = await transport.recordedEventRequests()
+        #expect(initialRequests.first?.path == "/api/event")
+        #expect(initialRequests.first?.queryItems["directory"] == "/workspaces/openlens")
+
+        client.updateContextDirectory("/workspaces/another-project")
+        for _ in 0..<40 {
+            if await transport.recordedEventRequests().count >= 2 { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let updatedRequests = await transport.recordedEventRequests()
+        #expect(updatedRequests.count >= 2)
+        #expect(updatedRequests.last?.queryItems["directory"] == "/workspaces/another-project")
+        client.disconnect()
+    }
+
+    @MainActor
     @Test func v1SSEFixtureKeepsTheLegacyEventEndpointAndPayload() async throws {
         let transport = OpenCodeContractTransport(
             routes: [:],
@@ -380,6 +415,7 @@ struct OpenCodeProtocolSelectionTests {
         let client = SSEClient(
             baseURL: try #require(URL(string: "http://opencode.example.com")),
             protocolVersion: .v1,
+            contextDirectory: "/workspaces/openlens",
             transport: transport
         )
         var receivedEvent: OCEvent?
@@ -391,7 +427,9 @@ struct OpenCodeProtocolSelectionTests {
         }
 
         let eventPaths = await transport.recordedEventPaths()
+        let eventRequests = await transport.recordedEventRequests()
         #expect(eventPaths == ["/event"])
+        #expect(eventRequests.first?.queryItems["directory"] == nil)
         #expect(receivedEvent?.type == "server.heartbeat")
         let sequence = (receivedEvent?.properties?.value as? [String: Any])?["sequence"] as? Int
         #expect(sequence == 7)
@@ -423,6 +461,7 @@ nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @u
     private let requestRecorder = OpenCodeContractRequestRecorder()
     private let eventStreamData: Data?
     private let eventPathRecorder = OpenCodeContractPathRecorder()
+    private let eventRequestRecorder = OpenCodeContractRequestRecorder()
 
     init(routes: [String: Fixture], eventStreamData: Data? = nil) {
         self.routes = routes
@@ -454,6 +493,7 @@ nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @u
     ) -> any OpenCodeEventStream {
         Task {
             await eventPathRecorder.append(request.url?.path ?? "")
+            await eventRequestRecorder.append(request)
         }
         if let eventStreamData {
             return OpenCodeContractEventStream(
@@ -475,6 +515,10 @@ nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @u
 
     func recordedEventPaths() async -> [String] {
         await eventPathRecorder.values()
+    }
+
+    func recordedEventRequests() async -> [RecordedRequest] {
+        await eventRequestRecorder.values()
     }
 }
 

@@ -771,6 +771,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var baseURL: URL
     private var authHeader: String?
     private var protocolVersion: OpenCodeProtocol
+    private var contextDirectory: String?
     private var shouldReconnect = true
     private var reconnectDelay: TimeInterval = 2.0
     /// Recording opts into keeping the original decoded OCEvent alongside a
@@ -791,6 +792,9 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var pendingTransportCompletion: PendingTransportCompletion?
     private let transport: any OpenCodeTransport
     private var eventStream: (any OpenCodeEventStream)?
+    /// Rejects callbacks from a stream cancelled during a v2 location switch
+    /// after its replacement stream has already started.
+    private var activeEventStreamID: UUID?
     // Retained only by DEBUG lifecycle tests that inject URLSession callbacks
     // directly; production connections are owned by `eventStream`.
     private var task: URLSessionDataTask?
@@ -894,11 +898,13 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         baseURL: URL,
         authHeader: String? = nil,
         protocolVersion: OpenCodeProtocol = .v1,
+        contextDirectory: String? = nil,
         transport: (any OpenCodeTransport)? = nil
     ) {
         self.baseURL = baseURL
         self.authHeader = authHeader
         self.protocolVersion = protocolVersion
+        self.contextDirectory = contextDirectory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         self.transport = transport ?? DirectOpenCodeTransport()
         super.init()
     }
@@ -914,6 +920,27 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             if let protocolVersion {
                 self.protocolVersion = protocolVersion
             }
+        }
+    }
+
+    /// Updates the location used by OpenCode's v2 event router. V2 scopes its
+    /// event stream to the requested directory, unlike the legacy global stream.
+    func updateContextDirectory(_ directory: String?) {
+        let normalizedDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        queue.async { [self] in
+            guard contextDirectory != normalizedDirectory else { return }
+            contextDirectory = normalizedDirectory
+
+            guard protocolVersion == .v2,
+                  shouldReconnect,
+                  (state != .disconnected || eventStream != nil || task != nil || session != nil)
+            else { return }
+
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
+            cleanupConnection()
+            shouldReconnect = true
+            startConnection()
         }
     }
 
@@ -998,7 +1025,16 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 #endif
 
         let eventPath = protocolVersion.eventStreamPath
-        let url = baseURL.appending(path: String(eventPath.dropFirst()))
+        let eventURL = baseURL.appending(path: String(eventPath.dropFirst()))
+        var components = URLComponents(url: eventURL, resolvingAgainstBaseURL: false)
+        if protocolVersion == .v2, let contextDirectory {
+            var queryItems = components?.queryItems ?? []
+            queryItems.append(
+                URLQueryItem(name: "directory", value: contextDirectory)
+            )
+            components?.queryItems = queryItems
+        }
+        let url = components?.url ?? eventURL
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -1013,18 +1049,23 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         oversizedRecordCancellationPending = false
         hasReportedSynchronizationGap = false
         pendingTransportCompletion = nil
+        let eventStreamID = UUID()
+        activeEventStreamID = eventStreamID
         let stream = transport.makeEventStream(
             request: request,
             deliveryQueue: queue,
             callbacks: OpenCodeEventStreamCallbacks(
                 onResponse: { [weak self] response in
-                    self?.receiveTransportResponse(response) ?? false
+                    guard let self, self.activeEventStreamID == eventStreamID else { return false }
+                    return self.receiveTransportResponse(response)
                 },
                 onData: { [weak self] data in
-                    self?.receiveTransportData(data)
+                    guard let self, self.activeEventStreamID == eventStreamID else { return }
+                    self.receiveTransportData(data)
                 },
                 onComplete: { [weak self] error in
-                    self?.completeTransport(error: error)
+                    guard let self, self.activeEventStreamID == eventStreamID else { return }
+                    self.completeTransport(error: error)
                 }
             )
         )
@@ -1053,6 +1094,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         bufferedDrainScheduled = false
         oversizedRecordCancellationPending = false
         pendingTransportCompletion = nil
+        activeEventStreamID = nil
         if discardPendingMainEvents {
             isConsumerBackpressured = false
             clearDeferredInboundDeliveries()

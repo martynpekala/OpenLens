@@ -1298,6 +1298,14 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
+        // Session-scoped API calls can be read without a location, but the chat
+        // toolbar and workspace-dependent controls use the connection's active
+        // project context. Switch it before loading the transcript so a session
+        // opened from another directory does not inherit the previously viewed
+        // project's name, branch, commands, or files.
+        await restoreProjectContext(for: session)
+        guard !Task.isCancelled else { return }
+
         // Drain any in-flight state from the previous session
         resetSessionState()
 
@@ -1314,6 +1322,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         await recoverPendingPermission()
         await recoverPendingQuestions()
         await recoverPendingForms()
+    }
+
+    func restoreProjectContext(for session: OCSession) async {
+        guard let directory = session.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+              connection?.selectedProjectDirectory != directory else { return }
+        await connection?.setProjectContext(directory: directory)
     }
 
     @discardableResult

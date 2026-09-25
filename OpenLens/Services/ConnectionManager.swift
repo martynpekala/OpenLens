@@ -160,7 +160,8 @@ final class ConnectionManager: ConnectionProviding {
             let sse = SSEClient(
                 baseURL: baseURL,
                 authHeader: authHeader,
-                protocolVersion: capabilities.protocolVersion
+                protocolVersion: capabilities.protocolVersion,
+                contextDirectory: selectedProjectDirectory
             )
             self.sseClient = sse
             configureSSECallbacks(sse, isRemote: false)
@@ -238,6 +239,7 @@ final class ConnectionManager: ConnectionProviding {
             let sse = SSEClient(
                 baseURL: credential.endpoint,
                 protocolVersion: capabilities.protocolVersion,
+                contextDirectory: selectedProjectDirectory,
                 transport: transport
             )
             sseClient = sse
@@ -328,6 +330,7 @@ final class ConnectionManager: ConnectionProviding {
 
         await client.updateContextDirectory(normalizedDirectory)
         selectedProjectDirectory = normalizedDirectory
+        sseClient?.updateContextDirectory(normalizedDirectory)
         currentProject = nil
 
         if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
@@ -372,6 +375,7 @@ final class ConnectionManager: ConnectionProviding {
 
             if let inferredDirectory {
                 await client.updateContextDirectory(inferredDirectory)
+                sseClient?.updateContextDirectory(inferredDirectory)
 
                 if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
                     savedConnectionsStore?.updateProjectSelection(

@@ -13,6 +13,7 @@ struct ChatView: View {
     }()
 
     @Bindable var chatClient: ChatClient
+    let initialSession: OCSession?
 
     @FocusState private var isInputFocused: Bool
     @GestureState private var isInputBarPressed = false
@@ -31,6 +32,11 @@ struct ChatView: View {
     @State private var isLoadingCommands = false
     @State private var displayedResponseState: ChatResponseState = .idle
     @State private var isComposerExpanded = false
+
+    init(chatClient: ChatClient, initialSession: OCSession? = nil) {
+        self._chatClient = Bindable(wrappedValue: chatClient)
+        self.initialSession = initialSession
+    }
 
     private static let undoSlashAction = WorkspaceSlashActionItem(
         kind: .command,
@@ -90,10 +96,11 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ChatHeaderToolbar(
-                projectName: chatClient.currentSession?.workspaceDisplayName ?? connection.projectName,
+                projectName: headerSession?.workspaceDisplayName
+                    ?? connection.projectName,
                 branch: connection.branch,
                 connectionState: connection.state,
-                sessionTitle: chatClient.currentSession?.title,
+                sessionTitle: headerSession?.title,
                 showsRecordingControls: chatClient.isRecordingStream || (debugFeaturesEnabled && chatClient.supportsStreamRecording),
                 isRecordingStream: chatClient.isRecordingStream,
                 visualMode: visualMode,
@@ -116,8 +123,10 @@ struct ChatView: View {
         // Initial load: ensure session is loaded when view appears
         .task {
             chatClient.setupSSEHandlers()
+            if initialSession == nil {
+                await chatClient.ensureSession()
+            }
             await loadCommands(force: true)
-            await chatClient.ensureSession()
             await chatClient.recoverPendingPermission()
             await chatClient.recoverPendingQuestions()
             await chatClient.recoverPendingForms()
@@ -214,6 +223,16 @@ struct ChatView: View {
 
     private var visualMode: ChatVisualMode {
         chatEasterEgg.visualMode
+    }
+
+    private var headerSession: OCSession? {
+        guard let initialSession else {
+            return chatClient.currentSession
+        }
+
+        return chatClient.currentSession?.id == initialSession.id
+            ? chatClient.currentSession
+            : initialSession
     }
 
     private var isRetroChat: Bool {
