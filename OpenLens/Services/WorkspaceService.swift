@@ -162,11 +162,13 @@ final class WorkspaceService {
         let contextDirectory = await client.currentContextDirectory() ?? "nil"
         do {
             let diffs = (try? await client.getWorkingTreeDiff()) ?? []
-            if let diff = diffs.first(where: { $0.resolvedPath == summary.path }) {
-                return ReviewFileChange(diff: diff)
+            let matchingDiff = diffs.first(where: { $0.resolvedPath == summary.path })
+                .map(ReviewFileChange.init(diff:))
+            if let matchingDiff, matchingDiff.hasReadableDiff {
+                return matchingDiff
             }
             let content = try await client.readFileContent(path: summary.path)
-            return summary.applying(content: content)
+            return (matchingDiff ?? summary).applying(content: content)
         } catch {
             Logger.api.warning("WorkspaceService failed to load file diff detail for \(summary.path, privacy: .public) in context directory \(contextDirectory, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return summary

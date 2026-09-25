@@ -273,6 +273,9 @@ struct OpenCodeProtocolSelectionTests {
         ])
         #expect(requests[1].queryItems["location[directory]"] == "/workspace/OpenLens-alias")
         #expect(requests.dropFirst(2).allSatisfy { $0.queryItems["location[directory]"] == "/workspace/OpenLens" })
+        let workingTreeDiffRequest = try #require(requests.first { $0.path == "/api/vcs/diff" })
+        #expect(workingTreeDiffRequest.queryItems["mode"] == "working")
+        #expect(workingTreeDiffRequest.queryItems["format"] == "json")
     }
 
     @Test func reachableV2ServerIsSelectedFromServerInfoEvidence() async throws {

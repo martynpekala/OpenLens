@@ -552,7 +552,7 @@ actor OpenCodeClient {
         let response: OCV2Located<[OCFileDiff]> = try await getV2Located(
             "/api/vcs/diff",
             queryItems: [
-                URLQueryItem(name: "mode", value: "worktree"),
+                URLQueryItem(name: "mode", value: "working"),
                 URLQueryItem(name: "format", value: "json")
             ]
         )
