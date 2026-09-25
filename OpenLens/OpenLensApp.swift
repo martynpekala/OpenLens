@@ -482,6 +482,7 @@ struct OpenLensApp: App {
                 }
             }
             .openLensTheme(OpenLensAppearance.fallback.theme)
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .environment(\.liveActivity, liveActivity)
             .environment(\.savedConnections, savedConnectionsStore)
             .environment(\.sessionsService, sessionsService)
