@@ -53,14 +53,28 @@ struct OpenCodeV2RevertTests {
         #expect(stage["files"] as? Bool == true)
     }
 
-    @Test func v2SessionDiffUsesTheV2RouteAndMessageBoundary() async throws {
+    @Test func v2SessionDiffUsesTheV2RouteAndSelectedTurnBoundary() async throws {
         let transport = V2RevertTransport(contract: [
             .init(method: "GET", path: "/api/info", statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
             .init(
                 method: "GET",
                 path: "/api/session/ses_1/diff",
                 statusCode: 200,
-                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[]}"#.utf8)
+                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[{"path":"Earlier.swift","diff":"-let version = 1\n+let version = 2"}]}"#.utf8),
+                queryItems: ["from": "msg_earlier"]
+            ),
+            .init(
+                method: "GET",
+                path: "/api/session/ses_1/diff",
+                statusCode: 200,
+                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[{"path":"Later.swift","diff":"-let version = 2\n+let version = 3"}]}"#.utf8),
+                queryItems: ["from": "msg_later"]
+            ),
+            .init(
+                method: "GET",
+                path: "/api/session/ses_1/diff",
+                statusCode: 200,
+                body: Data(#"{"location":{"directory":"/workspace/OpenLens"},"data":[{"path":"Current.swift","diff":"-let version = 3\n+let version = 4"}]}"#.utf8)
             ),
         ])
         let client = OpenCodeClient(
@@ -69,11 +83,37 @@ struct OpenCodeV2RevertTests {
         )
         _ = try await client.probeCapabilities()
 
-        #expect(try await client.getSessionDiff(sessionID: "ses_1", messageID: "msg_2").isEmpty)
+        let earlierDiff = try await client.getSessionDiff(sessionID: "ses_1", messageID: "msg_earlier")
+        let laterDiff = try await client.getSessionDiff(sessionID: "ses_1", messageID: "msg_later")
+        let defaultDiff = try await client.getSessionDiff(sessionID: "ses_1")
 
-        let request = try #require(transport.recordedRequests().last)
-        #expect(request.path == "/api/session/ses_1/diff")
-        #expect(request.queryItems["messageID"] == "msg_2")
+        #expect(earlierDiff.first?.path == "Earlier.swift")
+        #expect(laterDiff.first?.path == "Later.swift")
+        #expect(defaultDiff.first?.path == "Current.swift")
+
+        let requests = transport.recordedRequests()
+        #expect(requests[1...].map(\.path) == Array(repeating: "/api/session/ses_1/diff", count: 3))
+        #expect(requests[1].queryItems == ["from": "msg_earlier"])
+        #expect(requests[2].queryItems == ["from": "msg_later"])
+        #expect(requests[3].queryItems.isEmpty)
+    }
+
+    @Test func v1SessionDiffKeepsTheLegacyMessageIDBoundary() async throws {
+        let transport = V2RevertTransport(contract: [
+            .init(
+                method: "GET",
+                path: "/session/ses_1/diff",
+                statusCode: 200,
+                body: Data(#"[]"#.utf8),
+                queryItems: ["messageID": "msg_legacy"]
+            ),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+
+        #expect(try await client.getSessionDiff(sessionID: "ses_1", messageID: "msg_legacy").isEmpty)
     }
 
     @Test func v2IncompleteRevertRefreshesTheCanonicalSessionBeforeSurfacingTheConflict() async throws {
@@ -140,6 +180,21 @@ nonisolated private final class V2RevertTransport: OpenCodeTransport, @unchecked
         let path: String
         let statusCode: Int
         let body: Data
+        let queryItems: [String: String]
+
+        init(
+            method: String,
+            path: String,
+            statusCode: Int,
+            body: Data,
+            queryItems: [String: String] = [:]
+        ) {
+            self.method = method
+            self.path = path
+            self.statusCode = statusCode
+            self.body = body
+            self.queryItems = queryItems
+        }
     }
 
     struct RecordedRequest: Sendable {
@@ -184,7 +239,9 @@ nonisolated private final class V2RevertTransport: OpenCodeTransport, @unchecked
 
         let statusCode: Int
         let body: Data
-        if operation.method == request.httpMethod, operation.path == url.path {
+        if operation.method == request.httpMethod,
+           operation.path == url.path,
+           operation.queryItems == queryItems {
             statusCode = operation.statusCode
             body = operation.body
         } else {

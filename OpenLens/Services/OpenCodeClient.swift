@@ -563,7 +563,9 @@ actor OpenCodeClient {
 
     func getSessionDiff(sessionID: String, messageID: String? = nil) async throws -> [OCFileDiff] {
         if usesV2 {
-            let queryItems = messageID.map { [URLQueryItem(name: "messageID", value: $0)] } ?? []
+            // V2 names the selected user-turn boundary `from`; v1 keeps its
+            // legacy `messageID` query parameter below.
+            let queryItems = messageID.map { [URLQueryItem(name: "from", value: $0)] } ?? []
             let response: OCV2Located<[OCFileDiff]> = try await getV2Located(
                 "/api/session/\(sessionID)/diff",
                 queryItems: queryItems
