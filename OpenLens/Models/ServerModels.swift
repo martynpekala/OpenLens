@@ -541,6 +541,15 @@ nonisolated struct OCPart: Codable, Identifiable, Sendable {
 }
 
 nonisolated struct OCToolState: Codable, Sendable {
+    private struct ContentItem: Decodable {
+        let type: OCPartType
+        let text: String?
+    }
+
+    private struct ErrorDetail: Decodable {
+        let message: String?
+    }
+
     let status: OCToolStatus
     let input: AnyCodable?
     let output: String?
@@ -552,6 +561,10 @@ nonisolated struct OCToolState: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case status, input, output, title, error, metadata, time, attachments
+    }
+
+    private enum DecodingKeys: String, CodingKey {
+        case status, input, output, content, title, error, metadata, time, attachments
     }
 
     init(status: OCToolStatus, input: AnyCodable? = nil, output: String? = nil,
@@ -568,12 +581,18 @@ nonisolated struct OCToolState: Codable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
         status = try container.decodeIfPresent(OCToolStatus.self, forKey: .status) ?? .pending
         input = try? container.decodeIfPresent(AnyCodable.self, forKey: .input)
         // output can sometimes be a non-string value; fall back gracefully
         if let str = try? container.decodeIfPresent(String.self, forKey: .output) {
             output = str
+        } else if let content = try? container.decodeIfPresent([ContentItem].self, forKey: .content) {
+            let text = content
+                .filter { $0.type == .text }
+                .compactMap(\.text)
+                .joined(separator: "\n")
+            output = text.isEmpty ? nil : text
         } else if let any = try? container.decodeIfPresent(AnyCodable.self, forKey: .output) {
             output = String(describing: any.value)
         } else {
@@ -583,6 +602,9 @@ nonisolated struct OCToolState: Codable, Sendable {
         // error can sometimes be a non-string value
         if let str = try? container.decodeIfPresent(String.self, forKey: .error) {
             error = str
+        } else if let detail = try? container.decodeIfPresent(ErrorDetail.self, forKey: .error),
+                  let message = detail.message {
+            error = message
         } else if let any = try? container.decodeIfPresent(AnyCodable.self, forKey: .error) {
             error = String(describing: any.value)
         } else {
@@ -1871,11 +1893,12 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
         let type: OCPartType
         let text: String?
         let callID: String?
+        let name: String?
         let tool: String?
         let state: OCToolState?
 
         enum CodingKeys: String, CodingKey {
-            case id, type, text, callID, tool, state
+            case id, type, text, callID, name, tool, state
         }
 
         init(from decoder: Decoder) throws {
@@ -1884,6 +1907,7 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
             type = try container.decodeIfPresent(OCPartType.self, forKey: .type) ?? .unknown
             text = try container.decodeIfPresent(String.self, forKey: .text)
             callID = try container.decodeIfPresent(String.self, forKey: .callID)
+            name = try container.decodeIfPresent(String.self, forKey: .name)
             tool = try container.decodeIfPresent(String.self, forKey: .tool)
             state = try? container.decodeIfPresent(OCToolState.self, forKey: .state)
         }
@@ -1963,7 +1987,7 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
                     type: item.type,
                     text: item.text,
                     callID: item.callID,
-                    tool: item.tool,
+                    tool: item.type == .tool ? item.name ?? item.tool : nil,
                     state: item.state
                 )
             }

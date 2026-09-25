@@ -101,6 +101,128 @@ struct OpenCodePaginationTests {
         #expect(messages[1].parts.map(\.type) == [.reasoning, .text])
     }
 
+    @MainActor
+    @Test func v2TranscriptRestoresNamedToolStepsThroughChatPresentation() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(
+                path: "/api/session/session-1/message",
+                cursor: nil,
+                body: Data(#"""
+                {
+                  "data": [
+                    {
+                      "id": "message-assistant",
+                      "type": "assistant",
+                      "time": {"created": 2},
+                      "content": [
+                        {"id": "text-before", "type": "text", "text": "I will inspect the project."},
+                        {
+                          "id": "read-tool",
+                          "type": "tool",
+                          "name": "read",
+                          "state": {
+                            "status": "running",
+                            "input": {"path": "OpenLens/App.swift"},
+                            "structured": {},
+                            "content": []
+                          }
+                        },
+                        {
+                          "id": "bash-tool",
+                          "type": "tool",
+                          "name": "bash",
+                          "state": {
+                            "status": "completed",
+                            "input": {"command": "swift test"},
+                            "structured": {},
+                            "content": [{"type": "text", "text": "All tests passed."}]
+                          }
+                        },
+                        {
+                          "id": "grep-tool",
+                          "type": "tool",
+                          "name": "grep",
+                          "state": {
+                            "status": "error",
+                            "input": {"pattern": "TODO", "path": "OpenLens"},
+                            "structured": {},
+                            "content": [{"type": "text", "text": "No output."}],
+                            "error": {"type": "unknown", "message": "Permission denied"}
+                          }
+                        },
+                        {
+                          "id": "not-a-tool",
+                          "type": "reasoning",
+                          "name": "bash",
+                          "state": {"status": "running"},
+                          "text": "Checking transcript order."
+                        },
+                        {"id": "text-after", "type": "text", "text": "Finished."}
+                      ]
+                    }
+                  ],
+                  "cursor": {"next": null}
+                }
+                """#.utf8)
+            ),
+        ])
+        let client = try await v2Client(transport: transport)
+
+        let decodedMessage = try #require(
+            try await client.listMessages(sessionID: "session-1").first
+        )
+        let transcript = ChatMessage(
+            id: decodedMessage.info.id,
+            role: decodedMessage.info.role,
+            content: decodedMessage.parts.compactMap(\.renderableText).joined(),
+            parts: decodedMessage.parts
+        )
+        let toolSteps = transcript.persistedToolSteps
+        let timeline = ChatTimeline.items(from: [transcript], showsThinking: true)
+
+        #expect(toolSteps.map(\.toolName) == ["read", "bash", "grep"])
+        #expect(toolSteps.map(\.label) == [
+            "Read OpenLens/App.swift",
+            "Bash swift test",
+            "Grep \"TODO\" in OpenLens",
+        ])
+        #expect(toolSteps.map(\.outputPreview) == [
+            "OpenLens/App.swift",
+            "All tests passed.",
+            "Permission denied",
+        ])
+        #expect(toolSteps.map(\.isError) == [false, false, true])
+        #expect(timeline.map(\.id) == [
+            "message-message-assistant-part-text-before",
+            "message-message-assistant-part-read-tool",
+            "message-message-assistant-part-bash-tool",
+            "message-message-assistant-part-grep-tool",
+            "message-message-assistant-part-not-a-tool",
+            "message-message-assistant-part-text-after",
+        ])
+
+        let v1Transcript = ChatMessage(
+            id: "v1-assistant",
+            role: .assistant,
+            content: "",
+            parts: [
+                OCPart(
+                    id: "v1-bash-tool",
+                    sessionID: "session-1",
+                    messageID: "v1-assistant",
+                    type: .tool,
+                    tool: "bash",
+                    state: OCToolState(
+                        status: .completed,
+                        input: AnyCodable(["command": "swift test"]),
+                        output: "All tests passed."
+                    )
+                ),
+            ]
+        )
+        #expect(v1Transcript.persistedToolSteps.map(\.toolName) == ["bash"])
+    }
+
     @Test func v2SessionListAcceptsAnInitiallyEmptyTerminalPage() async throws {
         let transport = V2PaginationTransport(pages: [
             .init(path: "/api/session", cursor: nil, body: sessionPage(ids: [], next: nil)),
