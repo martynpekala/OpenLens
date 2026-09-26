@@ -85,6 +85,22 @@ This will:
 
 That's it. You're chatting with your AI coding assistant from your phone.
 
+### Pair with OpenCode v2
+
+Run `opencode pair` on your computer. Paste the resulting
+`http://<host>:<port>/auth/connect/<code>` link into OpenLens's server address
+field and tap **Connect**, or scan a QR code containing that link.
+
+OpenLens exchanges the one-time code for a session token and saves it in
+Keychain for subsequent connections. You do not need to enter a password.
+Links expire after five minutes and work once; run `opencode pair` again if
+the link has expired or was already opened in a browser. If the connection
+fails after pairing succeeds, **Try Again** uses the saved token.
+
+Your iPhone must be able to reach the host in the link. A private LAN address
+requires access to that network (directly or through a VPN). OpenCode pairing
+is separate from the OpenLens Remote gateway described below.
+
 
 ## Remote Access Outside Your LAN
 

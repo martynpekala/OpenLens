@@ -76,6 +76,7 @@ struct ConnectView: View {
     @State private var currentConnectionMethod: ConnectionMethod = .manual
     @State private var pendingRemoteOffer: RemotePairingOffer?
     @State private var pendingRemoteCredential: RemoteDeviceCredential?
+    @State private var pendingOpenCodePairingLink: OpenCodePairingLink?
 
     @State private var showQRScanner: Bool = false
     @FocusState private var focusedManualField: ManualConnectionField?
@@ -171,6 +172,8 @@ struct ConnectView: View {
                         applyDeepLink(deepLink)
                     case .remote(let offer):
                         startRemotePairing(offer)
+                    case .openCodePairing(let link):
+                        startOpenCodePairing(link)
                     }
                 },
                 onDismiss: { showQRScanner = false }
@@ -396,6 +399,11 @@ struct ConnectView: View {
                 }
                 .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingServerAddressSuggestions)
                 .animation(.spring(response: 0.22, dampingFraction: 0.9), value: serverAddressSuggestionIDs)
+
+                Text("Enter a server address or paste a link from opencode pair.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.appSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 manualGlassField(systemImage: "person.fill") {
                     TextField("opencode", text: $username)
@@ -885,6 +893,13 @@ struct ConnectView: View {
     // MARK: - Connection Actions
 
     private func startConnect(auto: Bool) {
+        if !auto,
+           let url = URL(string: manualURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+           let link = OpenCodePairingLink(url: url) {
+            startOpenCodePairing(link)
+            return
+        }
+        pendingOpenCodePairingLink = nil
         pendingRemoteOffer = nil
         pendingRemoteCredential = nil
         if auto {
@@ -922,7 +937,60 @@ struct ConnectView: View {
         }
     }
 
+    private func startOpenCodePairing(_ link: OpenCodePairingLink) {
+        connectionTask?.cancel()
+        pendingRemoteOffer = nil
+        pendingRemoteCredential = nil
+        pendingOpenCodePairingLink = link
+        pendingSessionNavigationID = nil
+        manualURL = link.serverURL.absoluteString
+        username = "opencode"
+        password = ""
+        isAutoReconnect = false
+        connectionFailed = false
+        connectionError = nil
+        showConnectionSheet = true
+
+        connectionTask = Task {
+            do {
+                let credential = try await OpenCodePairingClient().pair(using: link)
+                // Persist before connecting: the link is already consumed, even if
+                // the subsequent connection fails or this task is cancelled.
+                savedConnections.saveConnection(
+                    serverURL: credential.serverURL,
+                    username: credential.username,
+                    password: credential.password
+                )
+                guard !Task.isCancelled else { return }
+                pendingOpenCodePairingLink = nil
+                manualURL = credential.serverURL
+                username = credential.username
+                password = credential.password
+                await connection.connect(
+                    url: credential.serverURL,
+                    username: credential.username,
+                    password: credential.password,
+                    method: currentConnectionMethod
+                )
+                guard !Task.isCancelled else { return }
+                if connection.isConnected {
+                    showConnectionSheet = false
+                } else {
+                    if case .error(let message) = connection.state {
+                        connectionError = message
+                    }
+                    connectionFailed = true
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                connectionError = error.localizedDescription
+                connectionFailed = true
+            }
+        }
+    }
+
     private func startRemotePairing(_ offer: RemotePairingOffer) {
+        pendingOpenCodePairingLink = nil
         pendingRemoteOffer = offer
         pendingRemoteCredential = nil
         connectionTask?.cancel()
@@ -949,6 +1017,10 @@ struct ConnectView: View {
     private func retryConnection() {
         connectionFailed = false
         connectionError = nil
+        if let pendingOpenCodePairingLink {
+            startOpenCodePairing(pendingOpenCodePairingLink)
+            return
+        }
         if let pendingRemoteCredential {
             connectionTask?.cancel()
             connectionTask = Task {
@@ -978,6 +1050,7 @@ struct ConnectView: View {
         connectionTask = nil
         pendingRemoteOffer = nil
         pendingRemoteCredential = nil
+        pendingOpenCodePairingLink = nil
         if case .connecting = connection.state {
             connection.disconnect()
         }

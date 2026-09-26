@@ -2,10 +2,23 @@ import SwiftUI
 import AVFoundation
 
 /// Native QR code scanner using AVFoundation camera capture.
-/// Parses direct LAN and physically-present OpenLens Remote pairing codes.
+/// Parses direct LAN, native OpenCode, and OpenLens Remote pairing codes.
 enum ScannedOpenLensCode {
     case direct(DeepLinkConnection)
     case remote(RemotePairingOffer)
+    case openCodePairing(OpenCodePairingLink)
+
+    init?(url: URL) {
+        if let link = OpenCodePairingLink(url: url) {
+            self = .openCodePairing(link)
+        } else if let offer = RemotePairingOffer(url: url) {
+            self = .remote(offer)
+        } else if let connection = DeepLinkConnection(from: url) {
+            self = .direct(connection)
+        } else {
+            return nil
+        }
+    }
 }
 
 struct QRScannerView: View {
@@ -74,28 +87,19 @@ struct QRScannerView: View {
     private func handleCode(_ code: String) {
         guard !hasScanned else { return }
 
-        guard let url = URL(string: code) else {
+        guard let url = URL(string: code.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scannedCode = ScannedOpenLensCode(url: url) else {
             showInvalidCodeError()
             return
         }
 
-        if let offer = RemotePairingOffer(url: url) {
-            guard !offer.isExpired else {
-                errorMessage = RemoteProtocolError.expiredPairingOffer.localizedDescription
-                return
-            }
-            hasScanned = true
-            onScanned(.remote(offer))
-            return
-        }
-
-        guard let deepLink = DeepLinkConnection(from: url) else {
-            showInvalidCodeError()
+        if case .remote(let offer) = scannedCode, offer.isExpired {
+            errorMessage = RemoteProtocolError.expiredPairingOffer.localizedDescription
             return
         }
 
         hasScanned = true
-        onScanned(.direct(deepLink))
+        onScanned(scannedCode)
     }
 
     private func showInvalidCodeError() {
