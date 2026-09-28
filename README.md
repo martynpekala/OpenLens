@@ -88,11 +88,13 @@ That's it. You're chatting with your AI coding assistant from your phone.
 ### Pair with OpenCode v2
 
 Run `opencode pair` on your computer. Paste the resulting
-`http://<host>:<port>/auth/connect/<code>` link into OpenLens's server address
-field and tap **Connect**, or scan a QR code containing that link.
+pairing link into OpenLens's server address field and tap **Connect**, or scan
+its QR code. OpenLens accepts the current
+`http://<host>:<port>/connect#<credentials>` format and legacy
+`http://<host>:<port>/auth/connect/<code>` links.
 
-OpenLens exchanges the one-time code for a session token and saves it in
-Keychain for subsequent connections. You do not need to enter a password.
+OpenLens resolves the pairing credentials and saves them in Keychain for
+subsequent connections. You do not need to enter a password.
 Links expire after five minutes and work once; run `opencode pair` again if
 the link has expired or was already opened in a browser. If the connection
 fails after pairing succeeds, **Try Again** uses the saved token.

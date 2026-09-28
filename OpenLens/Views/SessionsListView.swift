@@ -335,18 +335,6 @@ struct SessionsListView: View {
                         .font(.system(size: 14, design: .rounded))
                         .foregroundStyle(Color.appSecondary)
                 }
-
-                if let workspaceName = session.workspaceDisplayName {
-                    HStack(spacing: 5) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 10, weight: .medium))
-                        Text(workspaceName)
-                            .lineLimit(1)
-                    }
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Color.appSecondary.opacity(0.86))
-                    .accessibilityLabel("\(AppText.workspace): \(workspaceName)")
-                }
             }
 
             Spacer()
@@ -650,9 +638,13 @@ private struct NewSessionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(AppText.cancel) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold))
                     }
+                    .accessibilityLabel(AppText.dismiss)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
@@ -663,9 +655,11 @@ private struct NewSessionSheet: View {
                             ProgressView()
                                 .tint(Color.appAccent)
                         } else {
-                            Text(AppText.create)
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .semibold))
                         }
                     }
+                    .accessibilityLabel(AppText.create)
                     .disabled(!canCreate)
                 }
             }

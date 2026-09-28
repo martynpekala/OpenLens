@@ -184,6 +184,7 @@ final class WorkspaceService {
                 : URL(fileURLWithPath: directory).appendingPathComponent(rawPath).path
             guard let path = WorkspaceSelectionBuilder.normalizedDirectory(absolutePath),
                   path != directory,
+                  !WorkspaceSelectionBuilder.displayName(for: path).hasPrefix("."),
                   seen.insert(path).inserted else { return nil }
             return WorkspaceFileItem(
                 path: path,

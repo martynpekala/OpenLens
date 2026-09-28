@@ -1,6 +1,6 @@
 import Foundation
 
-/// Redeems native OpenCode pairing links using the JSON (non-browser) contract.
+/// Resolves OpenCode pairing links into reusable connection credentials.
 struct OpenCodePairingClient {
     private let session: URLSession
 
@@ -14,6 +14,14 @@ struct OpenCodePairingClient {
     }
 
     func pair(using link: OpenCodePairingLink) async throws -> DeepLinkConnection {
+        if let credentials = link.credentials {
+            return DeepLinkConnection(
+                serverURL: link.serverURL.absoluteString,
+                username: credentials.username,
+                password: credentials.password
+            )
+        }
+
         var request = URLRequest(url: link.url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.httpMethod = "GET"
         request.timeoutInterval = 30

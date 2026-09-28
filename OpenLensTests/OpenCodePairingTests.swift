@@ -20,12 +20,36 @@ struct OpenCodePairingTests {
         #expect(link.serverURL.path.isEmpty)
     }
 
+    @Test func scannerRoutesCurrentCredentialPairingLinks() throws {
+        let payload = #"{"username":"opencode","password":"test-session-token"}"#
+        let fragment = Data(payload.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "="))
+        let url = try #require(URL(string: "http://192.168.1.106:49374/connect#\(fragment)"))
+
+        guard case .openCodePairing(let link) = ScannedOpenLensCode(url: url) else {
+            Issue.record("The QR scanner rejected the current OpenCode pairing link")
+            return
+        }
+
+        #expect(link.serverURL.absoluteString == "http://192.168.1.106:49374")
+        #expect(link.credentials == OpenCodePairingCredentials(
+            username: "opencode",
+            password: "test-session-token"
+        ))
+    }
+
     @Test(arguments: [
         "http://example.com/auth/connect/",
         "http://example.com/auth/connect/code/extra",
         "http://example.com/auth/connect/code/",
         "http://example.com/auth/connect/code?next=elsewhere",
         "http://example.com/auth/connect/code#fragment",
+        "http://example.com/connect",
+        "http://example.com/connect#not-base64",
+        "http://example.com/connect#e30",
         "http://user:password@example.com/auth/connect/code",
         "http://example.com/auth/connect/code%2Fextra",
         "http://example.com/auth/connect/..",
@@ -76,6 +100,25 @@ struct OpenCodePairingTests {
         #expect(store.mostRecent?.password == "test-session-token")
         #expect(saved.authHeader == "Basic " + Data("opencode:test-session-token".utf8).base64EncodedString())
         #expect(!saved.serverURL.contains("auth/connect"))
+    }
+
+    @Test func resolvesCurrentCredentialPairingLinksWithoutNetwork() async throws {
+        let payload = #"{"username":"opencode","password":"test-session-token"}"#
+        let fragment = Data(payload.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "="))
+        let url = try #require(URL(string: "http://pairing.example.com:49374/connect#\(fragment)"))
+        let link = try #require(OpenCodePairingLink(url: url))
+
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let credential = try await OpenCodePairingClient(session: session).pair(using: link)
+
+        #expect(credential.serverURL == "http://pairing.example.com:49374")
+        #expect(credential.username == "opencode")
+        #expect(credential.password == "test-session-token")
     }
 
     @Test(arguments: [401, 403, 404, 410])

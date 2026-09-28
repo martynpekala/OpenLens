@@ -3,11 +3,12 @@ import Testing
 @testable import OpenLens
 
 struct WorkspaceFolderBrowserTests {
-    @Test func folderListingResolvesBothProtocolsAndIncludesIgnoredFolders() {
+    @Test func folderListingResolvesBothProtocolsAndFiltersHiddenFolders() {
         let entries = [
             OCWorkspaceFileEntry(name: "API", path: "API", absolute: nil, type: "directory", ignored: false),
             OCWorkspaceFileEntry(name: "Web", path: "Web", absolute: "/Users/me/Projects/Web", type: "directory", ignored: false),
             OCWorkspaceFileEntry(name: "Cache", path: "/Users/me/Projects/Cache", absolute: nil, type: "directory", ignored: true),
+            OCWorkspaceFileEntry(name: ".git", path: ".git", absolute: nil, type: "directory", ignored: false),
             OCWorkspaceFileEntry(name: "API", path: "API/", absolute: nil, type: "directory", ignored: false),
             OCWorkspaceFileEntry(name: ".", path: ".", absolute: nil, type: "directory", ignored: false),
             OCWorkspaceFileEntry(name: "README.md", path: "README.md", absolute: nil, type: "file", ignored: false),
