@@ -734,11 +734,11 @@ struct ChatView: View {
         if chatClient.isQueueingPrompt {
             ZStack {
                 Circle()
-                    .fill(isRetroChat ? RetroChatStyle.ink : Color.appAccent)
+                    .fill(isRetroChat ? RetroChatStyle.ink : Color.appUserAccent)
 
                 ProgressView()
                     .controlSize(.small)
-                    .tint(isRetroChat ? RetroChatStyle.paper : Color.appOnAccent)
+                    .tint(isRetroChat ? RetroChatStyle.paper : Color.appUserOnAccent)
             }
             .frame(width: 32, height: 32)
             .contentShape(Circle())
@@ -766,8 +766,8 @@ struct ChatView: View {
                 .font(.system(size: isRetroChat ? 28 : 30, weight: isRetroChat ? .bold : .regular))
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(
-                    isRetroChat ? RetroChatStyle.paper : Color.appOnAccent,
-                    isRetroChat ? RetroChatStyle.ink : Color.appAccent
+                    isRetroChat ? RetroChatStyle.paper : Color.appUserOnAccent,
+                    isRetroChat ? RetroChatStyle.ink : Color.appUserAccent
                 )
                 .frame(width: 32, height: 32)
                 .contentShape(Circle())

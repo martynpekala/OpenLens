@@ -116,7 +116,7 @@ struct MessageBubbleView: View {
         VStack(alignment: .trailing, spacing: 4) {
             Text(message.content)
                 .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
-                .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appOnAccent)
+                .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appUserOnAccent)
                 .padding(.horizontal, isRetroChat ? 14 : 16)
                 .padding(.vertical, isRetroChat ? 10 : 11)
                 .background {
@@ -125,7 +125,7 @@ struct MessageBubbleView: View {
                             .fill(RetroChatStyle.playerFill)
                             .shadow(color: RetroChatStyle.shadow, radius: 0, x: 3, y: 3)
                     } else {
-                        bubbleFill(theme.colors.accent.color)
+                        bubbleFill(Color.appUserAccent)
                     }
                 }
                 .overlay {

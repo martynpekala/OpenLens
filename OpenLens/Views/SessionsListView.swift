@@ -83,6 +83,7 @@ struct SessionsListView: View {
     var onDelete: (OCSession) -> Void
 
     @Environment(\.sessionsService) private var sessionsService
+    @Environment(\.connection) private var connection
 
     init(
         initialState: InitialState,
@@ -155,6 +156,7 @@ struct SessionsListView: View {
 
     var body: some View {
         presentationContent
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
         .background(isSidebar ? Color.clear : Color.appBackground)
         .sheet(item: $newSessionRequest) { _ in
             NewSessionSheet { session in
@@ -193,6 +195,12 @@ struct SessionsListView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationTitle(AppText.sessions)
                 .toolbar {
+                    if let host = connection.serverHostDisplay {
+                        ToolbarItem(placement: .principal) {
+                            ConnectedHostCapsule(host: host, isReconnecting: connection.isReconnecting)
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                    }
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             presentNewSessionSheet()
@@ -994,5 +1002,30 @@ private struct NewSessionSheet: View {
         } catch {
             createErrorMessage = error.localizedDescription
         }
+    }
+}
+
+// MARK: - Connected Host Capsule
+
+private struct ConnectedHostCapsule: View {
+    let host: String
+    let isReconnecting: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(isReconnecting ? Color.appWarning : Color.appSuccess)
+                .frame(width: 7, height: 7)
+            Text(host)
+                .font(.subheadline.weight(.medium).monospaced())
+                .foregroundStyle(Color.appPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(AppText.sessions), \(host)")
     }
 }

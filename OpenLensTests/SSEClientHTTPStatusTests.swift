@@ -40,6 +40,43 @@ private func textPartSnapshotRecord(partID: String, text: String) -> String {
 struct SSEClientHTTPStatusTests {
 
     @MainActor
+    @Test func v2CommentKeepAlivesReportLivenessWithoutEvents() async {
+        let connection = makeActiveSSEConnection(protocolVersion: .v2)
+        var livenessReports = 0
+        var events: [OCEvent] = []
+        connection.client.onLiveness = { livenessReports += 1 }
+        connection.client.onEvent = { events.append($0) }
+
+        connection.client.receiveDataForTesting(
+            session: connection.session,
+            task: connection.task,
+            data: Data(": heartbeat\n\n".utf8)
+        )
+
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(livenessReports == 1)
+        #expect(events.isEmpty)
+    }
+
+    @MainActor
+    @Test func livenessReportsAreThrottledAcrossChunks() async {
+        let connection = makeActiveSSEConnection(protocolVersion: .v2)
+        var livenessReports = 0
+        connection.client.onLiveness = { livenessReports += 1 }
+
+        for _ in 0..<10 {
+            connection.client.receiveDataForTesting(
+                session: connection.session,
+                task: connection.task,
+                data: Data(": keep-alive\n\n".utf8)
+            )
+        }
+
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(livenessReports == 1)
+    }
+
+    @MainActor
     @Test func v2FramingAcceptsSplitMultilineDataAndIgnoresUnknownEvents() async {
         let connection = makeActiveSSEConnection(protocolVersion: .v2)
         var synchronizationGaps: [SSEClient.SynchronizationGap] = []

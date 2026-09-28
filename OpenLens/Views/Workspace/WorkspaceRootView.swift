@@ -112,6 +112,7 @@ struct WorkspaceRootView: View {
                 content
             }
         }
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
         .navigationTitle("Workspace")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: browserPath) {

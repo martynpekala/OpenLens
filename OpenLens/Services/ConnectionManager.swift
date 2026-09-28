@@ -21,6 +21,7 @@ final class ConnectionManager: ConnectionProviding {
     private(set) var branch: String?
     private(set) var selectedProjectDirectory: String?
     private(set) var connectionMethod: ConnectionMethod?
+    private(set) var serverURL: URL?
     private(set) var localNetworkAccessRequired: Bool = false
 
     /// Set to `true` when the user explicitly disconnects via Settings.
@@ -38,7 +39,7 @@ final class ConnectionManager: ConnectionProviding {
     /// Resumed once when SSE reports `.connected` or fails to connect.
     private var sseConnectionContinuation: CheckedContinuation<Void, Never>?
 
-    /// Timestamp of the last received `server.heartbeat` or `server.connected` event.
+    /// Timestamp of the last liveness signal: stream bytes or a heartbeat event.
     /// Used by the heartbeat watchdog to detect silently dead connections.
     private var lastHeartbeat: Date = .distantPast
     private var heartbeatWatchdog: Timer?
@@ -66,6 +67,13 @@ final class ConnectionManager: ConnectionProviding {
         self.state = .connected
     }
 #endif
+
+    /// Host (with a non-default port) of the connected server, for compact display.
+    var serverHostDisplay: String? {
+        guard let host = serverURL?.host(percentEncoded: false)?.nilIfBlank else { return nil }
+        if let port = serverURL?.port { return "\(host):\(port)" }
+        return host
+    }
 
     var isConnected: Bool {
         if case .connected = state { return true }
@@ -149,6 +157,7 @@ final class ConnectionManager: ConnectionProviding {
             serverVersion = capabilities.serverVersion
 
             self.client = apiClient
+            self.serverURL = baseURL
             self.selectedProjectDirectory = restoredProjectDirectory?.nilIfBlank
 
             SharedConnectionStore.save(
@@ -237,6 +246,7 @@ final class ConnectionManager: ConnectionProviding {
             serverCapabilities = capabilities
             serverVersion = capabilities.serverVersion
             client = apiClient
+            serverURL = credential.endpoint
             remoteTransport = transport
             selectedProjectDirectory = restoredProjectDirectory
             SharedConnectionStore.clear()
@@ -277,6 +287,7 @@ final class ConnectionManager: ConnectionProviding {
         remoteTransport?.disconnect()
         remoteTransport = nil
         client = nil
+        serverURL = nil
         state = .disconnected
         serverVersion = nil
         serverCapabilities = nil
@@ -308,6 +319,12 @@ final class ConnectionManager: ConnectionProviding {
                     self.enterReconnectingState(trackDisconnection: true)
                 }
             }
+        }
+
+        // Any bytes on the stream (including v2 comment keep-alives) prove
+        // liveness, independently of whether a chat has attached its handler.
+        sse.onLiveness = { [weak self] in
+            self?.receivedHeartbeat()
         }
 
         sse.onTerminalHTTPError = { [weak self] statusCode in
@@ -517,6 +534,7 @@ final class ConnectionManager: ConnectionProviding {
         self.projectName = projectName
         self.branch = branch
         self.serverVersion = "demo"
+        self.serverURL = URL(string: "http://macbook-pro.local:4096")
         self.serverCapabilities = nil
     }
 }

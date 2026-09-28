@@ -767,6 +767,11 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// be relied upon as a complete representation of server state.
     var onSynchronizationGap: ((SynchronizationGap) -> Void)?
 
+    /// Called on the main queue (throttled) whenever the current stream
+    /// receives bytes. Keep-alives sent as SSE comments never become events,
+    /// so liveness must be derived from the transport, not from parsed records.
+    var onLiveness: (() -> Void)?
+
     // MARK: - Private state (protected by `queue`)
 
     private let queue = DispatchQueue(label: "com.opencode.SSEClient", qos: .userInitiated)
@@ -778,6 +783,10 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var v2EventAdapter = V2EventAdapter()
     private var shouldReconnect = true
     private var reconnectDelay: TimeInterval = 2.0
+    /// System uptime of the last `onLiveness` delivery; nil forces the next
+    /// received chunk to report immediately.
+    private var lastLivenessReportUptime: TimeInterval?
+    private static let livenessReportInterval: TimeInterval = 5
     /// Recording opts into keeping the original decoded OCEvent alongside a
     /// prepared projection. The legacy `onEvent` callback opts in separately.
     private var rawEventRetentionEnabled = false
@@ -1163,6 +1172,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
             if http.statusCode == 200 {
                 reconnectDelay = Self.initialReconnectDelay
+                lastLivenessReportUptime = nil
                 updateState(.connected)
                 reportSynchronizationGap(.reconnected)
                 return true
@@ -1185,6 +1195,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private func receiveTransportData(_ data: Data) {
         guard !oversizedRecordCancellationPending else { return }
         ChatStreamInstrumentation.recordSSEReceive(byteCount: data.count)
+        reportLivenessIfNeeded()
         buffer.append(data)
         if buffer.count - bufferedRecordStartOffset > Self.maximumBufferedTransportBytes {
             cancelOversizedIncompleteRecord()
@@ -1192,6 +1203,19 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         }
         guard !isTransportPausedForMainBackpressure else { return }
         processBuffer()
+    }
+
+    private func reportLivenessIfNeeded() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let lastLivenessReportUptime,
+           now - lastLivenessReportUptime < Self.livenessReportInterval {
+            return
+        }
+        lastLivenessReportUptime = now
+        guard let callback = onLiveness else { return }
+        DispatchQueue.main.async {
+            callback()
+        }
     }
 
     private func completeTransport(error: Error?) {

@@ -2842,6 +2842,11 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
+    /// Superseded recovery requests surface as task or URLSession cancellation; they are not user-facing failures.
+    private static func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
     /// Recover any pending permission from the server for the current session.
     @discardableResult
     func recoverPendingPermission(sessionID preferredSessionID: String? = nil) async -> Bool {
@@ -2863,6 +2868,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             }
             return true
         } catch {
+            guard !Self.isCancellation(error) else { return false }
             Logger.chat.warning("recoverPendingPermission failed: \(error, privacy: .public)")
             if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
             return false
@@ -2889,6 +2895,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             }
             return true
         } catch {
+            guard !Self.isCancellation(error) else { return false }
             Logger.chat.warning("recoverPendingQuestions failed: \(error, privacy: .public)")
             if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
             return false
@@ -2921,6 +2928,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             }
             return true
         } catch {
+            guard !Self.isCancellation(error) else { return false }
             Logger.chat.warning("recoverPendingForms failed: \(error, privacy: .public)")
             if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
             return false
