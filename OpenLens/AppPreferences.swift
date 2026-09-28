@@ -1,6 +1,7 @@
 import Foundation
 
 enum AppPreferenceKeys {
+    static let accentColor = "accentColor"
     static let autoReconnect = "autoReconnect"
     static let hapticsEnabled = "hapticsEnabled"
     static let liveActivitiesEnabled = "liveActivitiesEnabled"

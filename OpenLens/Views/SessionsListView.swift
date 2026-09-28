@@ -403,7 +403,7 @@ struct SessionsListView: View {
         guard !Task.isCancelled else { return }
         viewState = .loading
         do {
-            async let sessionList = sessionsService.listSessions()
+            async let sessionList = sessionsService.listAllSessions()
             async let statuses = (try? sessionsService.getSessionStatuses()) ?? [:]
             let (result, statusMap) = try await (sessionList, statuses)
             guard !Task.isCancelled else { return }

@@ -192,6 +192,7 @@ enum AppText {
     static let settingsSupportRepository = "martynpekala/OpenLens"
     static let settingsSupportTitle = "Support OpenLens"
     static let settingsAboutSupport = "About & Support"
+    static let settingsAccentColor = "Accent Color"
     static let settingsAgents = "Agents"
     static let settingsApp = "App"
     static let settingsAppPreferences = "App Preferences"

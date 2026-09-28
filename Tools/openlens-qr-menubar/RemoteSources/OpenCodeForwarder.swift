@@ -56,7 +56,14 @@ final class OpenCodeForwarder: @unchecked Sendable {
                 else { throw RemoteProtocolError.invalidRequest }
                 envelope["data"] = sessions.filter { ownsLocation($0["location"]) }
                 data = try JSONSerialization.data(withJSONObject: envelope)
-            } else if path == "/api/project" {
+            } else if path == "/session", localRequest.httpMethod == "GET" {
+                guard let sessions = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+                else { throw RemoteProtocolError.invalidRequest }
+                data = try JSONSerialization.data(withJSONObject: sessions.filter {
+                    guard let directory = $0["directory"] as? String else { return false }
+                    return workspaceRegistry.isAllowed(directory)
+                })
+            } else if path == "/api/project" || path == "/project" {
                 guard let projects = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
                 else { throw RemoteProtocolError.invalidRequest }
                 data = try JSONSerialization.data(withJSONObject: projects.filter {
@@ -223,7 +230,9 @@ final class OpenCodeForwarder: @unchecked Sendable {
         var query = forwardedQuery
         let locationQueryName: String?
         if path == "/api/session", remote.method == "GET" {
-            locationQueryName = "directory"
+            // An unscoped catalog request is filtered against the workspace
+            // registry in perform(_:). Keep explicit directory requests scoped.
+            locationQueryName = directoryQueryItems.isEmpty ? nil : "directory"
         } else if path == "/api/event" {
             locationQueryName = nil
         } else if path.hasPrefix("/api/"),

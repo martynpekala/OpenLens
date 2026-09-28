@@ -583,7 +583,7 @@ struct OpenLensApp: App {
             let generation = initialSessionsReadiness.beginLoading()
 
             do {
-                let sessions = try await sessionsService.listSessions()
+                let sessions = try await sessionsService.listAllSessions()
                 guard !Task.isCancelled, connection.isConnected else { return }
                 initialSessionsReadiness.succeed(with: sessions, generation: generation)
             } catch is CancellationError {

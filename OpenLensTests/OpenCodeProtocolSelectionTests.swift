@@ -3,6 +3,23 @@ import Testing
 @testable import OpenLens
 
 struct OpenCodeProtocolSelectionTests {
+    @Test func v1SessionCatalogCollectsProjectsWithoutChangingSelectedDirectory() async throws {
+        let transport = LegacySessionCatalogTransport()
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            contextDirectory: "/workspace/Alpha",
+            transport: transport
+        )
+
+        _ = try await client.probeCapabilities()
+        let sessions = try await client.listAllSessions()
+
+        #expect(Set(sessions.map(\.id)) == ["ses_alpha", "ses_beta"])
+        #expect(transport.sessionDirectories() == ["/workspace/Alpha", "/workspace/Beta"])
+        #expect(await client.currentContextDirectory() == "/workspace/Alpha")
+        #expect(try await client.listSessions().map(\.id) == ["ses_alpha"])
+    }
+
     @Test func v2SessionStatusesUseTheActiveSnapshotWithoutV1Routes() async throws {
         let transport = OpenCodeContractTransport(routes: [
             "/api/info": .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
@@ -456,6 +473,51 @@ struct OpenCodeProtocolSelectionTests {
         let sequence = (receivedEvent?.properties?.value as? [String: Any])?["sequence"] as? Int
         #expect(sequence == 7)
         client.disconnect()
+    }
+}
+
+nonisolated private final class LegacySessionCatalogTransport: OpenCodeTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var directories: [String] = []
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let path = request.url?.path ?? ""
+        let status: Int
+        let body: Data
+        switch path {
+        case "/api/info":
+            status = 404
+            body = Data()
+        case "/global/health":
+            status = 200
+            body = OpenCodeContractFixtures.v1HealthResponse
+        case "/project":
+            status = 200
+            body = Data(#"[{"id":"alpha","worktree":"/workspace/Alpha"},{"id":"beta","worktree":"/workspace/Beta"}]"#.utf8)
+        case "/session":
+            status = 200
+            let directory = request.value(forHTTPHeaderField: "x-opencode-directory") ?? ""
+            lock.withLock { directories.append(directory) }
+            body = directory == "/workspace/Beta"
+                ? Data(#"[{"id":"ses_beta","projectID":"beta","directory":"/workspace/Beta","title":"Beta","time":{"created":2,"updated":2}}]"#.utf8)
+                : Data(#"[{"id":"ses_alpha","projectID":"alpha","directory":"/workspace/Alpha","title":"Alpha","time":{"created":1,"updated":1}}]"#.utf8)
+        default:
+            throw MissingOpenCodeContractRoute(path: path)
+        }
+        let url = request.url ?? URL(string: "http://opencode.example.com")!
+        return (body, HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+
+    func makeEventStream(
+        request: URLRequest,
+        deliveryQueue: DispatchQueue,
+        callbacks: OpenCodeEventStreamCallbacks
+    ) -> any OpenCodeEventStream {
+        UnusedOpenCodeContractEventStream()
+    }
+
+    func sessionDirectories() -> [String] {
+        lock.withLock { directories }
     }
 }
 

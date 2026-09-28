@@ -29,6 +29,23 @@ struct OpenCodePaginationTests {
         #expect(requests[3].queryItems["location[directory]"] == nil)
     }
 
+    @Test func v2SessionCatalogIgnoresSelectedDirectoryAndContinuesPastFilteredPages() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(path: "/api/session", cursor: nil, body: Data(#"{"data":[{"id":"ses_alpha","title":"Alpha","location":{"directory":"/workspace/Alpha"},"time":{"created":1,"updated":1}}],"cursor":{"next":"filtered-page"}}"#.utf8)),
+            .init(path: "/api/session", cursor: "filtered-page", body: sessionPage(ids: [], next: "beta-page")),
+            .init(path: "/api/session", cursor: "beta-page", body: Data(#"{"data":[{"id":"ses_beta","title":"Beta","location":{"directory":"/workspace/Beta"},"time":{"created":2,"updated":2}}],"cursor":{"next":null}}"#.utf8)),
+        ])
+        let client = try await v2Client(transport: transport, contextDirectory: "/workspace/Alpha")
+
+        let sessions = try await client.listAllSessions()
+
+        #expect(sessions.map(\.id) == ["ses_alpha", "ses_beta"])
+        #expect(sessions.map(\.directory) == ["/workspace/Alpha", "/workspace/Beta"])
+        let requests = Array(transport.recordedRequests().dropFirst())
+        #expect(requests.map(\.cursor) == [nil, "filtered-page", "beta-page"])
+        #expect(requests.allSatisfy { $0.queryItems["directory"] == nil })
+    }
+
     @Test func v2PaginationRejectsARepeatedCursorWithoutReturningPartialResults() async throws {
         let transport = V2PaginationTransport(pages: [
             .init(path: "/api/session", cursor: nil, body: sessionPage(ids: ["session-2"], next: "repeat")),

@@ -399,6 +399,80 @@ struct GatewayIntegrationTests {
         }
     }
 
+    @Test func v2SessionCatalogForwardsAnUnscopedRequestAndFiltersUnregisteredDirectories() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let second = root.appendingPathComponent("Second")
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        _ = try registry.add(url: second)
+        let body = try JSONSerialization.data(withJSONObject: [
+            "data": [
+                ["id": "ses_first", "location": ["directory": root.path]],
+                ["id": "ses_second", "location": ["directory": second.path]],
+                ["id": "ses_foreign", "location": ["directory": "/unregistered"]],
+            ],
+            "cursor": ["next": "next-page"],
+        ])
+        ForwarderURLProtocol.setResponse(statusCode: 200, body: body)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+
+        let response = try await forwarder.perform(RemoteHTTPRequest(method: "GET", pathAndQuery: "/api/session?limit=100&order=desc"))
+        let request = try #require(ForwarderURLProtocol.recordedRequest())
+        let query = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let envelope = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        let sessions = try #require(envelope["data"] as? [[String: Any]])
+
+        #expect(query.map(\.name).sorted() == ["limit", "order"])
+        #expect(sessions.compactMap { $0["id"] as? String } == ["ses_first", "ses_second"])
+        #expect((envelope["cursor"] as? [String: String])?["next"] == "next-page")
+
+        _ = try await forwarder.perform(RemoteHTTPRequest(method: "GET", pathAndQuery: "/api/session?directory=\(second.path)"))
+        let scopedRequest = try #require(ForwarderURLProtocol.recordedRequest())
+        let scopedQuery = URLComponents(url: try #require(scopedRequest.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(scopedQuery.first(where: { $0.name == "directory" })?.value == second.path)
+    }
+
+    @Test func v1CatalogFiltersProjectsAndSessionsToRegisteredDirectories() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let second = root.appendingPathComponent("Second")
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        _ = try registry.add(url: second)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+
+        let projects = try JSONSerialization.data(withJSONObject: [
+            ["id": "first", "worktree": root.path],
+            ["id": "second", "worktree": second.path],
+            ["id": "foreign", "worktree": "/unregistered"],
+        ])
+        ForwarderURLProtocol.setResponse(statusCode: 200, body: projects)
+        let projectResponse = try await forwarder.perform(RemoteHTTPRequest(method: "GET", pathAndQuery: "/project"))
+        let visibleProjects = try #require(JSONSerialization.jsonObject(with: projectResponse.body) as? [[String: Any]])
+        #expect(visibleProjects.compactMap { $0["id"] as? String } == ["first", "second"])
+
+        let sessions = try JSONSerialization.data(withJSONObject: [
+            ["id": "ses_first", "directory": root.path],
+            ["id": "ses_second", "directory": second.path],
+            ["id": "ses_foreign", "directory": "/unregistered"],
+        ])
+        ForwarderURLProtocol.setResponse(statusCode: 200, body: sessions)
+        let sessionResponse = try await forwarder.perform(RemoteHTTPRequest(
+            method: "GET",
+            pathAndQuery: "/session",
+            headers: ["x-opencode-directory": root.path]
+        ))
+        let visibleSessions = try #require(JSONSerialization.jsonObject(with: sessionResponse.body) as? [[String: Any]])
+        #expect(visibleSessions.compactMap { $0["id"] as? String } == ["ses_first", "ses_second"])
+    }
+
     @Test func v2StreamFiltersBeforeForwardingAndBoundsIncompleteRecords() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -34,6 +34,20 @@ final class SessionsService {
         )
     }
 
+    /// Fetch the session catalog for the Sessions screen, across directories.
+    func listAllSessions() async throws -> [OCSession] {
+        if ScreenshotFixtures.isEnabled {
+            return ScreenshotFixtures.sessions
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        let sessions = try await client.listAllSessions()
+        return visibleSessions(from: resolvingProjectDirectories(in: sessions))
+    }
+
     func getSession(id: String) async throws -> OCSession {
         if ScreenshotFixtures.isEnabled, let session = ScreenshotFixtures.session(withID: id) {
             return session

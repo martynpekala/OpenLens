@@ -95,6 +95,41 @@ actor OpenCodeClient {
         return try await get("/session")
     }
 
+    /// List sessions across every directory known to the connected server.
+    func listAllSessions() async throws -> [OCSession] {
+        guard usesV2 else {
+            let projects = try await listProjects()
+            var directories: [String] = []
+            var seenDirectories = Set<String>()
+            for directory in [contextDirectory].compactMap({ $0 }) + projects.compactMap(\.worktree) {
+                guard let directory = directory.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+                      seenDirectories.insert(directory).inserted else { continue }
+                directories.append(directory)
+            }
+            guard !directories.isEmpty else { return try await listSessions() }
+
+            var sessionsByID: [String: OCSession] = [:]
+            for directory in directories {
+                var request = makeRequest(path: "/session", method: "GET")
+                request.setValue(directory, forHTTPHeaderField: "x-opencode-directory")
+                let (data, response) = try await transport.data(for: request)
+                try validateResponse(response, data: data)
+                let sessions: [OCSession] = try decode(data)
+                for session in sessions where sessionsByID[session.id] == nil {
+                    sessionsByID[session.id] = session
+                }
+            }
+            return Array(sessionsByID.values)
+        }
+
+        return try await getAllV2Pages(
+            endpoint: "/api/session",
+            order: "desc",
+            includesLocation: false,
+            allowsEmptyContinuationPages: true
+        )
+    }
+
     func getSession(id: String) async throws -> OCSession {
         if usesV2 {
             let response: OCV2Envelope<OCSession> = try await getV2(
@@ -1015,14 +1050,14 @@ actor OpenCodeClient {
         return try decode(data)
     }
 
-    /// Follows opaque v2 cursors until the server ends the snapshot. Servers
-    /// may return an empty terminal page after a non-empty page, so only an
-    /// empty page with another cursor is invalid.
+    /// Follows opaque v2 cursors until the server ends the snapshot. A remote
+    /// catalog page may be empty after gateway filtering while more pages remain.
     private func getAllV2Pages<T: Decodable & Sendable>(
         endpoint: String,
         limit: Int = v2PageSize,
         order: String,
         includesLocation: Bool = true,
+        allowsEmptyContinuationPages: Bool = false,
         queryItems filters: [URLQueryItem] = []
     ) async throws -> [T] {
         var values: [T] = []
@@ -1065,10 +1100,12 @@ actor OpenCodeClient {
             }
 
             guard !page.data.isEmpty else {
-                guard next == nil else {
+                guard next == nil || allowsEmptyContinuationPages else {
                     throw OpenCodeError.invalidPayload("The v2 response contained an empty continuation page.")
                 }
-                return values
+                if next == nil { return values }
+                cursor = next
+                continue
             }
 
             values.append(contentsOf: page.data)
