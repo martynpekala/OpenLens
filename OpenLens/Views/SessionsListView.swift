@@ -581,6 +581,11 @@ private struct SessionsLoadErrorView: View {
 }
 
 private struct NewSessionSheet: View {
+    private struct FolderBrowserRequest: Identifiable {
+        let id = UUID()
+        let directory: String
+    }
+
     enum WorkspaceLoadState {
         case idle
         case loading
@@ -604,6 +609,7 @@ private struct NewSessionSheet: View {
     @State private var unavailablePreferredDirectory: String?
     @State private var createErrorMessage: String?
     @State private var isCreating = false
+    @State private var folderBrowserRequest: FolderBrowserRequest?
 
     private var selectedWorkspace: WorkspaceSelectionOption? {
         workspaceOptions.first { $0.id == selectedWorkspaceID }
@@ -665,6 +671,12 @@ private struct NewSessionSheet: View {
             }
             .task {
                 await loadWorkspaceOptions()
+            }
+            .sheet(item: $folderBrowserRequest) { request in
+                WorkspaceFolderBrowser(initialDirectory: request.directory, onSelect: selectBrowsedDirectory)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(Color.appBackground)
             }
         }
     }
@@ -752,6 +764,22 @@ private struct NewSessionSheet: View {
                     .tint(Color.appAccent)
                 }
             }
+
+            Button {
+                folderBrowserRequest = FolderBrowserRequest(
+                    directory: selectedWorkspace?.directory ?? connection.selectedProjectDirectory ?? "/"
+                )
+            } label: {
+                Label(AppText.browseFolders, systemImage: "folder.badge.plus")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.appAccent)
+            .disabled(isCreating || isLoadingWorkspaces)
+            .accessibilityIdentifier("newSession.browseFolders")
         }
     }
 
@@ -897,6 +925,25 @@ private struct NewSessionSheet: View {
         case .serverDefault:
             Color.appSecondary
         }
+    }
+
+    private func selectBrowsedDirectory(_ directory: String) {
+        let option = WorkspaceSelectionOption(
+            id: "directory:\(directory)",
+            directory: directory,
+            projectID: nil,
+            title: WorkspaceSelectionBuilder.displayName(for: directory),
+            subtitle: directory,
+            availability: .available,
+            isCurrent: directory == connection.selectedProjectDirectory,
+            isRecent: false
+        )
+        workspaceOptions.removeAll { $0.id == option.id }
+        workspaceOptions.insert(option, at: 0)
+        selectedWorkspaceID = option.id
+        unavailablePreferredDirectory = nil
+        createErrorMessage = nil
+        workspaceState = .loaded
     }
 
     private func loadWorkspaceOptions() async {

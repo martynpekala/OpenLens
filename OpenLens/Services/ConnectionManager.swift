@@ -219,6 +219,7 @@ final class ConnectionManager: ConnectionProviding {
             .first(where: { $0.id == credential.connectionID })?
             .selectedProjectDirectory?
             .nilIfBlank
+        Logger.connection.debug("Connecting to remote OpenCode with restored project directory \(restoredProjectDirectory ?? "nil", privacy: .public)")
         let transport = RemoteOpenCodeTransport(credential: credential)
         let apiClient = OpenCodeClient(
             baseURL: credential.endpoint,
@@ -335,7 +336,7 @@ final class ConnectionManager: ConnectionProviding {
 
     func setProjectContext(directory: String?) async {
         let normalizedDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-        Logger.connection.debug("Setting project context to \(normalizedDirectory ?? "nil", privacy: .public)")
+        Logger.connection.debug("OpenLens changing active project directory from \(self.selectedProjectDirectory ?? "nil", privacy: .public) to \(normalizedDirectory ?? "nil", privacy: .public)")
         guard let client else {
             selectedProjectDirectory = normalizedDirectory
             return
@@ -371,6 +372,8 @@ final class ConnectionManager: ConnectionProviding {
         let pathInfo = try? await client.getPath()
         let project = try? await client.getCurrentProject()
 
+        Logger.connection.debug("OpenCode reported directory \(pathInfo?.directory ?? "nil", privacy: .public), worktree \(pathInfo?.worktree ?? "nil", privacy: .public), and project worktree \(project?.worktree ?? "nil", privacy: .public)")
+
         if let project {
             currentProject = project
             projectName = project.displayName ?? project.worktree
@@ -381,9 +384,11 @@ final class ConnectionManager: ConnectionProviding {
         }
 
         if selectedProjectDirectory == nil {
-            let inferredDirectory = pathInfo?.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-                ?? project?.worktree?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-            Logger.connection.debug("Inferred project context as \(inferredDirectory ?? "nil", privacy: .public)")
+            let serverDirectory = pathInfo?.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            let projectWorktree = project?.worktree?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            let inferredDirectory = serverDirectory ?? projectWorktree
+            let source = serverDirectory == nil ? "project worktree fallback" : "server directory"
+            Logger.connection.debug("OpenLens initialized active project directory to \(inferredDirectory ?? "nil", privacy: .public) from \(source, privacy: .public)")
             selectedProjectDirectory = inferredDirectory
 
             if let inferredDirectory {
@@ -397,6 +402,8 @@ final class ConnectionManager: ConnectionProviding {
                     )
                 }
             }
+        } else {
+            Logger.connection.debug("OpenLens kept restored/selected project directory \(self.selectedProjectDirectory ?? "nil", privacy: .public)")
         }
 
         do {

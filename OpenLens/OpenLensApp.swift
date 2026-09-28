@@ -87,7 +87,6 @@ private enum ChatPreviewSource {
 }
 
 private enum ReviewPromptTrigger {
-    case completedOnboarding
     case connectedUsage
 
     static let fallbackConnectionThreshold = 3
@@ -95,8 +94,6 @@ private enum ReviewPromptTrigger {
 
     var delayNanoseconds: UInt64 {
         switch self {
-        case .completedOnboarding:
-            return 1_500_000_000
         case .connectedUsage:
             return 750_000_000
         }
@@ -163,7 +160,6 @@ private enum OpenLensRootDestination {
         client: ChatClient,
         connection: ConnectionManager
     )
-    case onboarding
     case connected(initialSessions: SessionsListView.InitialState)
     case connect
 }
@@ -244,10 +240,6 @@ struct OpenLensApp: App {
                 client: previewClient,
                 connection: previewConnection
             )
-        }
-
-        if !screenshotModeEnabled && !onboardingCompleted {
-            return .onboarding
         }
 
         if (connection.isConnected || connection.isReconnecting),
@@ -449,10 +441,6 @@ struct OpenLensApp: App {
                             .environment(\.connection, previewConnection)
                     }
 
-                case .onboarding:
-                    OnboardingView(onDone: { onboardingCompleted = true })
-                        .transition(.opacity)
-
                 case .connected(let initialSessions):
                     ConnectedRootView(
                         chatClient: chatClient,
@@ -548,6 +536,10 @@ struct OpenLensApp: App {
                 }
             }
             .onChange(of: connection.state) { oldState, newState in
+                if newState == .connected {
+                    onboardingCompleted = true
+                }
+
                 if shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
                     reviewPromptSuccessfulConnections += 1
                     requestReviewIfNeeded(for: .connectedUsage)
@@ -559,10 +551,6 @@ struct OpenLensApp: App {
                         await openDeepLinkedSessionIfNeeded()
                     }
                 }
-            }
-            .onChange(of: onboardingCompleted) { _, completed in
-                guard completed else { return }
-                requestReviewIfNeeded(for: .completedOnboarding)
             }
             .alert(
                 AppText.switchServerTitle,
@@ -704,8 +692,6 @@ struct OpenLensApp: App {
         }
 
         switch trigger {
-        case .completedOnboarding:
-            guard reviewPromptAttemptCount == 0 else { return }
         case .connectedUsage:
             guard reviewPromptSuccessfulConnections >= ReviewPromptTrigger.fallbackConnectionThreshold,
                   reviewPromptAttemptCount < ReviewPromptTrigger.maximumAttempts

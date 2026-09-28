@@ -7,12 +7,14 @@ func shouldAttemptAutoReconnect(
     isConnectionSheetPresented: Bool,
     isQRScannerPresented: Bool,
     didManuallyDisconnect: Bool,
-    savedConnection: SavedConnection?
+    savedConnection: SavedConnection?,
+    isConnectionSetupInProgress: Bool = false
 ) -> Bool {
     guard isEnabled,
           !isConnected,
           !isConnectionSheetPresented,
           !isQRScannerPresented,
+          !isConnectionSetupInProgress,
           !didManuallyDisconnect,
           savedConnection?.isConfigured == true
     else {
@@ -49,7 +51,7 @@ private enum ManualConnectionField: Hashable {
     case password
 }
 
-/// Initial connection screen with manual entry, QR scanning, mDNS discovery, and last-connection prefill.
+/// Guided computer pairing with the existing manual connection screen as a fallback.
 struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
@@ -79,6 +81,7 @@ struct ConnectView: View {
     @State private var pendingOpenCodePairingLink: OpenCodePairingLink?
 
     @State private var showQRScanner: Bool = false
+    @State private var connectionPath: [ConnectionSetupDestination] = []
     @FocusState private var focusedManualField: ManualConnectionField?
 
     @Environment(\.connection) private var connection
@@ -89,53 +92,25 @@ struct ConnectView: View {
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 22) {
-                    manualConnectionSection
-
-                    connectionChoiceSeparator
-                    qrScanSection
-
-                    discoveredServersSection
-
-                    if showsPreviewModesSection {
-                        previewModesSection
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 24)
-            }
-            .background(Color.appBackground)
-            .background {
-                KeyboardDismissTapInstaller {
-                    focusedManualField = nil
-                }
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        startNearbyDiscovery()
-                    } label: {
-                        Image(systemName: "antenna.radiowaves.left.and.right")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
-                            .symbolEffect(.breathe, isActive: discovery.isSearching)
-                    }
-                    .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
-                    .accessibilityHint("Searches for nearby OpenCode servers on your local network")
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showOnboarding = true
-                    } label: {
-                        Text(AppText.help)
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                    }
+        NavigationStack(path: $connectionPath) {
+            ConnectionWelcomeView(
+                onContinue: { connectionPath.append(.pairingInstructions) },
+                onManualConnection: { connectionPath.append(.manual) }
+            )
+            .navigationDestination(for: ConnectionSetupDestination.self) { destination in
+                switch destination {
+                case .pairingInstructions:
+                    OpenCodePairingInstructionsView(
+                        onScan: { connectionPath.append(.scanner) }
+                    )
+                case .scanner:
+                    ConnectionPairingScannerView(
+                        isActive: !showConnectionSheet,
+                        onScanned: handleScannedCode,
+                        onManualPairing: { connectionPath.append(.manual) }
+                    )
+                case .manual:
+                    manualConnectionContent
                 }
             }
         }
@@ -146,7 +121,8 @@ struct ConnectView: View {
                 isConnectionSheetPresented: showConnectionSheet,
                 isQRScannerPresented: showQRScanner,
                 didManuallyDisconnect: connection.didManuallyDisconnect,
-                savedConnection: savedConnections.mostRecent
+                savedConnection: savedConnections.mostRecent,
+                isConnectionSetupInProgress: !connectionPath.isEmpty
             ) {
                 startConnect(auto: true)
             }
@@ -164,18 +140,7 @@ struct ConnectView: View {
         }
         .fullScreenCover(isPresented: $showQRScanner) {
             QRScannerView(
-                onScanned: { code in
-                    showQRScanner = false
-                    currentConnectionMethod = .qr
-                    switch code {
-                    case .direct(let deepLink):
-                        applyDeepLink(deepLink)
-                    case .remote(let offer):
-                        startRemotePairing(offer)
-                    case .openCodePairing(let link):
-                        startOpenCodePairing(link)
-                    }
-                },
+                onScanned: handleScannedCode,
                 onDismiss: { showQRScanner = false }
             )
         }
@@ -191,6 +156,70 @@ struct ConnectView: View {
             pendingDeepLink = nil
             currentConnectionMethod = .deepLink
             applyDeepLink(deepLink)
+        }
+    }
+
+    private var manualConnectionContent: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+                manualConnectionSection
+
+                connectionChoiceSeparator
+                qrScanSection
+
+                discoveredServersSection
+
+                if showsPreviewModesSection {
+                    previewModesSection
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 24)
+        }
+        .background(Color.appBackground)
+        .background {
+            KeyboardDismissTapInstaller {
+                focusedManualField = nil
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    startNearbyDiscovery()
+                } label: {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
+                        .symbolEffect(.breathe, isActive: discovery.isSearching)
+                }
+                .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
+                .accessibilityHint("Searches for nearby OpenCode servers on your local network")
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showOnboarding = true
+                } label: {
+                    Text(AppText.help)
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                }
+            }
+        }
+    }
+
+    private func handleScannedCode(_ code: ScannedOpenLensCode) {
+        showQRScanner = false
+        currentConnectionMethod = .qr
+        switch code {
+        case .direct(let deepLink):
+            applyDeepLink(deepLink)
+        case .remote(let offer):
+            startRemotePairing(offer)
+        case .openCodePairing(let link):
+            startOpenCodePairing(link)
         }
     }
 

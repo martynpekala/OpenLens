@@ -459,7 +459,7 @@ struct OpenCodeProtocolSelectionTests {
     }
 }
 
-nonisolated private final class OpenCodeContractTransport: OpenCodeTransport, @unchecked Sendable {
+nonisolated final class OpenCodeContractTransport: OpenCodeTransport, @unchecked Sendable {
     struct RecordedRequest: Sendable {
         let path: String
         let queryItems: [String: String]

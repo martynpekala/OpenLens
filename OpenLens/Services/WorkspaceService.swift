@@ -63,6 +63,11 @@ struct WorkspaceSnapshot: Sendable {
     let workingTreeSource: WorkspaceWorkingTreeSource
 }
 
+struct WorkspaceFolderSnapshot: Sendable {
+    let directory: String
+    let folders: [WorkspaceFileItem]
+}
+
 final class WorkspaceService {
 
     private struct WorkingTreeSnapshot: Sendable {
@@ -139,6 +144,55 @@ final class WorkspaceService {
             projects: projects,
             pathInfo: pathInfo
         )
+    }
+
+    func loadFolders(in directory: String) async throws -> WorkspaceFolderSnapshot {
+        guard directory.hasPrefix("/"),
+              let directory = WorkspaceSelectionBuilder.normalizedDirectory(directory) else {
+            throw OpenCodeError.invalidPayload("Choose an absolute folder path on the connected computer.")
+        }
+
+        if ScreenshotFixtures.isEnabled {
+            return ScreenshotFixtures.folderSnapshot(directory: directory)
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        // Listing "." in a per-request context also supports servers that
+        // only accept workspace-relative file paths.
+        let entries = try await client.listFiles(path: ".", directory: directory)
+        return WorkspaceFolderSnapshot(
+            directory: directory,
+            folders: Self.folderItems(from: entries, directory: directory)
+        )
+    }
+
+    static func folderItems(from entries: [OCWorkspaceFileEntry], directory: String) -> [WorkspaceFileItem] {
+        var seen = Set<String>()
+        return entries.compactMap { entry in
+            guard entry.type?.lowercased() == "directory" else { return nil }
+            let rawPath: String
+            if let absolute = entry.absolute, absolute.hasPrefix("/") {
+                rawPath = absolute
+            } else {
+                rawPath = entry.path
+            }
+            let absolutePath = rawPath.hasPrefix("/")
+                ? rawPath
+                : URL(fileURLWithPath: directory).appendingPathComponent(rawPath).path
+            guard let path = WorkspaceSelectionBuilder.normalizedDirectory(absolutePath),
+                  path != directory,
+                  seen.insert(path).inserted else { return nil }
+            return WorkspaceFileItem(
+                path: path,
+                name: WorkspaceSelectionBuilder.displayName(for: path),
+                absolutePath: path,
+                kind: .directory
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     func loadCommands() async -> [WorkspaceCommandItem] {

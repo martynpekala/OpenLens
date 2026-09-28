@@ -472,6 +472,25 @@ enum ScreenshotFixtures {
         return trimmed ?? "."
     }
 
+    static func folderSnapshot(directory: String) -> WorkspaceFolderSnapshot {
+        let names: [String]
+        switch directory {
+        case "/": names = ["workspace"]
+        case "/workspace": names = ["OpenLens", "OpenLens-release", "Projects"]
+        case "/workspace/Projects": names = ["Weather"]
+        case projectPath: names = ["OpenLens", "OpenLensTests"]
+        case projectPath + "/OpenLens": names = ["Services", "Views"]
+        default: names = []
+        }
+        return WorkspaceFolderSnapshot(
+            directory: directory,
+            folders: names.map { name in
+                let path = URL(fileURLWithPath: directory).appendingPathComponent(name).path
+                return WorkspaceFileItem(path: path, name: name, absolutePath: path, kind: .directory)
+            }
+        )
+    }
+
     private static func fileItems(for path: String) -> [WorkspaceFileItem] {
         switch path {
         case ".":

@@ -34,7 +34,9 @@ actor OpenCodeClient {
     }
 
     func updateContextDirectory(_ directory: String?) {
-        self.contextDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        let normalizedDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        Logger.api.debug("OpenCode client context directory changed from \(self.contextDirectory ?? "nil", privacy: .public) to \(normalizedDirectory ?? "nil", privacy: .public)")
+        self.contextDirectory = normalizedDirectory
     }
 
     func currentContextDirectory() -> String? {
@@ -81,6 +83,7 @@ actor OpenCodeClient {
     // MARK: - Sessions
 
     func listSessions() async throws -> [OCSession] {
+        Logger.api.debug("Listing sessions with directory context \(self.contextDirectory ?? "nil", privacy: .public)")
         if usesV2 {
             return try await getAllV2Pages(
                 endpoint: "/api/session",
@@ -105,6 +108,7 @@ actor OpenCodeClient {
     }
 
     func createSession(title: String? = nil, parentID: String? = nil) async throws -> OCSession {
+        Logger.api.debug("Creating session with directory context \(self.contextDirectory ?? "nil", privacy: .public)")
         if usesV2 {
             // V2 session creation is location-scoped and returns its session
             // in the standard data envelope. Supplying an ID also lets us
@@ -459,11 +463,15 @@ actor OpenCodeClient {
 
     // MARK: - Files
 
-    func listFiles(path: String? = nil) async throws -> [OCWorkspaceFileEntry] {
+    /// A directory override applies only to this request, so a folder picker
+    /// can browse without changing the active chat or workspace context.
+    func listFiles(path: String? = nil, directory: String? = nil) async throws -> [OCWorkspaceFileEntry] {
         if usesV2 {
             let response: OCV2Located<[OCV2FileSystemEntry]> = try await getV2Located(
                 "/api/fs/list",
-                path: path
+                path: path,
+                queryItems: directory.map { [URLQueryItem(name: "location[directory]", value: $0)] } ?? [],
+                includesLocation: directory == nil
             )
             return response.data.map { entry in
                 OCWorkspaceFileEntry(
@@ -478,7 +486,13 @@ actor OpenCodeClient {
 
         var urlPath = "/file"
         if let path { urlPath += "?path=\(path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path)" }
-        return try await get(urlPath)
+        var request = makeRequest(path: urlPath, method: "GET")
+        if let directory {
+            request.setValue(directory, forHTTPHeaderField: "x-opencode-directory")
+        }
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response, data: data)
+        return try decode(data)
     }
 
     func listFileStatus() async throws -> [OCWorkspaceFileStatus] {
@@ -986,9 +1000,15 @@ actor OpenCodeClient {
     private func getV2Located<T: Decodable>(
         _ endpoint: String,
         path: String? = nil,
-        queryItems: [URLQueryItem] = []
+        queryItems: [URLQueryItem] = [],
+        includesLocation: Bool = true
     ) async throws -> OCV2Located<T> {
-        let request = makeV2Request(path: endpoint, queryPath: path, queryItems: queryItems)
+        let request = makeV2Request(
+            path: endpoint,
+            queryPath: path,
+            queryItems: queryItems,
+            includesLocation: includesLocation
+        )
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
         let (data, response) = try await transport.data(for: request)
         try validateResponse(response, data: data)

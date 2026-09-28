@@ -138,6 +138,23 @@ struct OpenLensAppConnectionStateTests {
         ) == "HTTP error 401.")
     }
 
+    @Test func returningToActiveSetupDoesNotReconnectToThePreviousComputer() {
+        #expect(!shouldAttemptAutoReconnect(
+            isEnabled: true,
+            isConnected: false,
+            isConnectionSheetPresented: false,
+            isQRScannerPresented: false,
+            didManuallyDisconnect: false,
+            savedConnection: SavedConnection(
+                id: "previous-computer",
+                serverURL: "http://192.168.1.50:4096",
+                username: "opencode",
+                password: ""
+            ),
+            isConnectionSetupInProgress: true
+        ))
+    }
+
     @Test func autoReconnectFailureUsesGenericCopyWhenNoErrorIsAvailable() {
         #expect(connectionFailureMessage(
             localNetworkAccessRequired: false,
