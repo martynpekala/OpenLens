@@ -137,7 +137,7 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - $(inherited)
           - "@executable_path/Frameworks"
-        MARKETING_VERSION: 1.13
+        MARKETING_VERSION: 1.14
         PRODUCT_BUNDLE_IDENTIFIER: "$(OPENLENS_APP_BUNDLE_ID)"
         PRODUCT_NAME: "$(TARGET_NAME)"
         REGISTER_APP_GROUPS: YES
@@ -179,7 +179,7 @@ targets:
           - $(inherited)
           - "@executable_path/Frameworks"
           - "@executable_path/../../Frameworks"
-        MARKETING_VERSION: 1.13
+        MARKETING_VERSION: 1.14
         PRODUCT_BUNDLE_IDENTIFIER: "$(OPENLENS_WIDGET_BUNDLE_ID)"
         PRODUCT_NAME: "$(TARGET_NAME)"
         SKIP_INSTALL: YES

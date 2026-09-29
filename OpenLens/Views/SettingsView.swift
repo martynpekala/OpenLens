@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.connection) private var connection
     @Environment(\.liveActivity) private var liveActivity
     @Environment(\.requestReviewPrompt) private var requestReviewPrompt
+    @Environment(\.gitHubStarsService) private var gitHubStars
 
     @State private var showDisconnectConfirmation = false
 
@@ -45,20 +46,23 @@ struct SettingsView: View {
             }
 
             Section {
+                if gitHubStars.state != .failed {
+                    starGoalRow
+                }
                 Link(destination: repositoryURL) {
                     Label(AppText.settingsSupportGitHubCTA, systemImage: "arrow.up.right.square")
                 }
+                .tint(Color.appUserAccent)
                 Button {
                     requestReviewPrompt()
                 } label: {
                     Label(AppText.settingsSupportReviewCTA, systemImage: "star.bubble.fill")
                 }
-                detailRow(AppText.settingsApp, value: appVersionBuild)
             } header: {
                 Text(AppText.settingsAboutSupport)
-            } footer: {
-                Text(AppText.settingsSupportBody)
             }
+
+            Text(appVersionBuild)
 
             #if DEBUG
             Section(AppText.developer) {
@@ -119,6 +123,38 @@ struct SettingsView: View {
                 liveActivity.endActivity()
             }
         }
+        .task {
+            await gitHubStars.refresh()
+        }
+    }
+
+    private var starGoalRow: some View {
+        let isLoaded = gitHubStars.starCount != nil
+        let count = gitHubStars.starCount ?? 0
+
+        return VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label(AppText.settingsStarGoalTitle, systemImage: "star.fill")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(AppText.settingsStarGoalProgress(count, goal: gitHubStars.goal))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                ProgressView(value: gitHubStars.progress)
+                    .tint(Color.appUserAccent)
+            }
+            .redacted(reason: isLoaded ? [] : .placeholder)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(AppText.settingsStarGoalTitle)
+            .accessibilityValue(isLoaded ? AppText.settingsStarGoalProgress(count, goal: gitHubStars.goal) : "")
+
+            Text(AppText.settingsStarGoalBody(goal: gitHubStars.goal))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
     }
 
     private func preferenceLabel(_ title: String, subtitle: String, icon: String) -> some View {
@@ -159,6 +195,6 @@ struct SettingsView: View {
         guard let build, !build.isEmpty, build != version else {
             return version
         }
-        return "\(version) (\(build))"
+        return "Version \(version) (\(build))"
     }
 }

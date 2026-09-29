@@ -181,15 +181,12 @@ struct WorkspaceRootView: View {
                 }
             }
 
-            projectSection
             sourceControlSection
             actionsSection
             changedFilesSection
-            activitySection
-            insightsSection
             filesSection
-            commandsSection
         }
+        .padding(.bottom)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
@@ -266,8 +263,6 @@ struct WorkspaceRootView: View {
             }
         } header: {
             Text("Source Control")
-        } footer: {
-            Text(sourceControlDescription)
         }
         .monospacedDigit()
     }
@@ -338,7 +333,14 @@ struct WorkspaceRootView: View {
     }
 
     private func changedFileRow(_ file: ReviewFileChange) -> some View {
-        LabeledContent {
+        VStack(alignment: .leading) {
+            Text(file.path)
+                .font(.body.monospaced())
+                .lineLimit(2)
+                .truncationMode(.middle)
+            Text(file.statusLabel.capitalized)
+                .foregroundStyle(.secondary)
+
             HStack(spacing: 8) {
                 Text("+\(file.additions)")
                     .foregroundStyle(.green)
@@ -346,13 +348,8 @@ struct WorkspaceRootView: View {
                     .foregroundStyle(.red)
             }
             .monospacedDigit()
-        } label: {
-            Text(file.path)
-                .font(.body.monospaced())
-                .lineLimit(2)
-                .truncationMode(.middle)
-            Text(file.statusLabel.capitalized)
         }
+        .font(.footnote.monospaced())
     }
 
     // MARK: - Activity & Insights
@@ -365,6 +362,7 @@ struct WorkspaceRootView: View {
                 projectName: currentProjectName,
                 refreshToken: activityRefreshToken
             )
+            .tint(Color.appUserAccent)
             .padding(.vertical, 4)
         } header: {
             Text("Activity")

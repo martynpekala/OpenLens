@@ -162,10 +162,6 @@ enum AppText {
     static let reconnecting = "Reconnecting..."
     static let reconnectingSubtitle = "Reconnecting to your saved server"
     static let refreshProviders = "Refresh Providers"
-    static let reviewRequestBody = "I build this app with a lot of care in my spare time. \nIf OpenLens makes your OpenCode flow better, an App Store rating with even a one-line review like “works really well” would help a lot."
-    static let reviewRequestLater = "Maybe Later"
-    static let reviewRequestPrimaryAction = "Write a Short Review"
-    static let reviewRequestSubtitle = "Hey, Martyn here, the solo developer behind OpenLens."
     static let scanPrompt = "Scan for nearby servers"
     static let searchingServers = "Searching for servers..."
     static let server = "Server"
@@ -188,6 +184,13 @@ enum AppText {
     static let settingsForgetDialogTitle = "Forget Connection"
     static let settingsSupportBody = "OpenLens is open source. If the app helps you, visiting the GitHub repo and leaving a star is a simple way to support development."
     static let settingsSupportGitHubCTA = "View and Star on GitHub"
+    static let settingsStarGoalTitle = "GitHub Star Goal"
+    static func settingsStarGoalBody(goal: Int) -> String {
+        "Reaching \(goal.formatted()) stars is my goal for OpenLens — you can help me get there by starring the repo."
+    }
+    static func settingsStarGoalProgress(_ count: Int, goal: Int) -> String {
+        "\(count.formatted()) / \(goal.formatted())"
+    }
     static let settingsSupportReviewCTA = "Review on the App Store"
     static let settingsSupportRepository = "martynpekala/OpenLens"
     static let settingsSupportTitle = "Support OpenLens"

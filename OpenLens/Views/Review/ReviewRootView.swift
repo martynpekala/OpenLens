@@ -68,6 +68,7 @@ struct ReviewRootView: View {
         Group {
             content
         }
+        .padding(.bottom)
         .toolbarTitleDisplayMode(.inline)
         .task {
             await refreshInboxBadgeCount()
@@ -320,21 +321,6 @@ struct ReviewRootView: View {
             }
             .font(.footnote.monospaced())
         }
-//        LabeledContent {
-//            HStack(spacing: 8) {
-//                Text("+\(file.additions)")
-//                    .foregroundStyle(.green)
-//                Text("-\(file.deletions)")
-//                    .foregroundStyle(.red)
-//            }
-//            .monospacedDigit()
-//        } label: {
-//            Text(file.path)
-//                .font(.footnote.monospaced())
-//                .lineLimit(2)
-//                .truncationMode(.middle)
-//            Text(fileStatusLabel(file.status))
-//        }
     }
 
     private func revertSection(_ changeSet: ReviewChangeSet) -> some View {

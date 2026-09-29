@@ -86,20 +86,6 @@ private enum ChatPreviewSource {
     }
 }
 
-private enum ReviewPromptTrigger {
-    case connectedUsage
-
-    static let fallbackConnectionThreshold = 3
-    static let maximumAttempts = 2
-
-    var delayNanoseconds: UInt64 {
-        switch self {
-        case .connectedUsage:
-            return 750_000_000
-        }
-    }
-}
-
 struct InitialSessionsReadiness: Equatable {
     enum State: Equatable {
         case idle
@@ -195,6 +181,7 @@ struct OpenLensApp: App {
     private let inboxService: InboxService
     private let workspaceService: WorkspaceService
     private let sessionInsightsService: SessionInsightsService
+    private let gitHubStarsService: GitHubStarsService
     private let savedConnectionsStore: SavedConnectionsStore
     private let recordedReplayStore: RecordedReplayStore
     private let chatEasterEgg: ChatEasterEggController
@@ -208,8 +195,6 @@ struct OpenLensApp: App {
 
     @AppStorage("onboardingCompleted") private var onboardingCompleted: Bool = false
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
-    @AppStorage("reviewPromptAttemptCount") private var reviewPromptAttemptCount: Int = 0
-    @AppStorage("reviewPromptSuccessfulConnections") private var reviewPromptSuccessfulConnections: Int = 0
 
     /// Deep link connection received via `openlens://connect` URL.
     @State private var pendingDeepLink: DeepLinkConnection?
@@ -217,8 +202,6 @@ struct OpenLensApp: App {
 
     /// Alert shown when a deep link arrives while already connected.
     @State private var showDeepLinkSwitch: Bool = false
-    @State private var reviewPromptTask: Task<Void, Never>?
-    @State private var showReviewPrePrompt = false
     @State private var initialSessionsReadiness: InitialSessionsReadiness
 
     private var resolvedInitialSessions: SessionsListView.InitialState? {
@@ -335,6 +318,7 @@ struct OpenLensApp: App {
         let inbox = InboxService(connection: connection)
         let workspace = WorkspaceService(connection: connection)
         let sessionInsights = SessionInsightsService()
+        let gitHubStars = GitHubStarsService()
         let recordedReplayStore = RecordedReplayStore()
         let chatEasterEgg = ChatEasterEggController()
 
@@ -348,6 +332,7 @@ struct OpenLensApp: App {
         self.inboxService = inbox
         self.workspaceService = workspace
         self.sessionInsightsService = sessionInsights
+        self.gitHubStarsService = gitHubStars
         self.recordedReplayStore = recordedReplayStore
         self.chatEasterEgg = chatEasterEgg
 
@@ -481,10 +466,11 @@ struct OpenLensApp: App {
             .environment(\.inboxService, inboxService)
             .environment(\.workspaceService, workspaceService)
             .environment(\.sessionInsightsService, sessionInsightsService)
+            .environment(\.gitHubStarsService, gitHubStarsService)
             .environment(\.recordedReplayStore, recordedReplayStore)
             .environment(\.chatEasterEgg, chatEasterEgg)
             .environment(\.requestReviewPrompt, {
-                presentReviewPrePrompt()
+                presentSystemReviewPrompt()
             })
             .task(id: connection.state) {
                 await prepareInitialSessions(for: connection.state)
@@ -512,19 +498,6 @@ struct OpenLensApp: App {
                     }
                 }
             }
-//            .sheet(isPresented: $showReviewPrePrompt) {
-//                ReviewRequestSheet(
-//                    onReview: {
-//                        presentSystemReviewPrompt()
-//                    },
-//                    onNotNow: {
-//                        showReviewPrePrompt = false
-//                    }
-//                )
-//                .presentationDetents([.fraction(0.7)])
-//                .presentationDragIndicator(.visible)
-//                .presentationBackground(Color.appBackground)
-//            }
             .onOpenURL { url in
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
@@ -541,8 +514,6 @@ struct OpenLensApp: App {
                 }
 
                 if shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
-                    reviewPromptSuccessfulConnections += 1
-                    requestReviewIfNeeded(for: .connectedUsage)
                     router.selectedTab = .chat
                 }
 
@@ -683,129 +654,14 @@ struct OpenLensApp: App {
         }
     }
 
-    private func requestReviewIfNeeded(for trigger: ReviewPromptTrigger) {
+    private func presentSystemReviewPrompt() {
         guard onboardingCompleted,
               !screenshotModeEnabled,
-              !isPreviewMode
+              !isPreviewMode,
+              let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene
         else {
             return
         }
-
-        switch trigger {
-        case .connectedUsage:
-            guard reviewPromptSuccessfulConnections >= ReviewPromptTrigger.fallbackConnectionThreshold,
-                  reviewPromptAttemptCount < ReviewPromptTrigger.maximumAttempts
-            else {
-                return
-            }
-        }
-
-        scheduleReviewPrompt(for: trigger)
-    }
-
-    private func scheduleReviewPrompt(for trigger: ReviewPromptTrigger) {
-        reviewPromptAttemptCount += 1
-        reviewPromptTask?.cancel()
-        reviewPromptTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: trigger.delayNanoseconds)
-
-            guard !Task.isCancelled,
-                  onboardingCompleted,
-                  !screenshotModeEnabled,
-                  !isPreviewMode,
-                  !showReviewPrePrompt
-            else {
-                return
-            }
-
-            presentReviewPrePrompt()
-            reviewPromptTask = nil
-        }
-    }
-
-    private func presentReviewPrePrompt() {
-        guard !showReviewPrePrompt else { return }
-        showReviewPrePrompt = true
-    }
-
-    private func presentSystemReviewPrompt() {
-        showReviewPrePrompt = false
-
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard onboardingCompleted,
-                  !screenshotModeEnabled,
-                  !isPreviewMode
-            else {
-                return
-            }
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-                AppStore.requestReview(in: windowScene)
-            }
-        }
-    }
-}
-
-private struct ReviewRequestSheet: View {
-    let onReview: () -> Void
-    let onNotNow: () -> Void
-
-    var body: some View {
-        VStack(spacing: 22) {
-            VStack(spacing: 16) {
-                Image("ReviewPanda")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 116, height: 116)
-                    .shadow(color: Color.appAccent.opacity(0.16), radius: 18, x: 0, y: 8)
-                    .accessibilityHidden(true)
-
-                Text(AppText.reviewRequestSubtitle)
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(Color.appPrimary)
-                    .multilineTextAlignment(.center)
-                    .padding(.bottom, 16)
-                
-                Text(AppText.reviewRequestBody)
-                    .font(.system(size: 15, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-
-            Spacer()
-
-            VStack(spacing: 10) {
-                Button {
-                    onReview()
-                } label: {
-                    Label(AppText.reviewRequestPrimaryAction, systemImage: "star.bubble.fill")
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(Color.appOnAccent)
-                .tint(Color.appAccent)
-                .controlSize(.large)
-
-                Button {
-                    onNotNow()
-                } label: {
-                    Text(AppText.reviewRequestLater)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.appSecondary)
-                .padding(.vertical, 6)
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.appBackground)
-        .accessibilityElement(children: .contain)
+        AppStore.requestReview(in: windowScene)
     }
 }
