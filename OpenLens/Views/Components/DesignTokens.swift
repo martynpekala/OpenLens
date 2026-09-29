@@ -400,8 +400,13 @@ final class AccentColorPreference {
             c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
         }
         let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
-        return luminance > 0.179
+        return luminance > lightColorLuminanceThreshold
     }
+
+    /// Relative luminance above which the accent counts as light enough for a dark foreground.
+    /// Deliberately above the 0.179 black/white contrast crossover so mid-tones such as iOS blue,
+    /// orange, and green keep a white arrow/text; only genuinely pale colors switch to dark.
+    private static let lightColorLuminanceThreshold: CGFloat = 0.5
 }
 
 private struct OpenLensThemeKey: EnvironmentKey {
