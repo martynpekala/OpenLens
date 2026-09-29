@@ -308,21 +308,33 @@ struct ReviewRootView: View {
     }
 
     private func fileRow(_ file: ReviewFileChange) -> some View {
-        LabeledContent {
+        VStack(alignment: .leading) {
+            Text(file.path)
+                .font(.footnote.monospaced())
+                .lineLimit(2)
             HStack(spacing: 8) {
                 Text("+\(file.additions)")
                     .foregroundStyle(.green)
                 Text("-\(file.deletions)")
                     .foregroundStyle(.red)
             }
-            .monospacedDigit()
-        } label: {
-            Text(file.path)
-                .font(.footnote.monospaced())
-                .lineLimit(2)
-                .truncationMode(.middle)
-            Text(fileStatusLabel(file.status))
+            .font(.footnote.monospaced())
         }
+//        LabeledContent {
+//            HStack(spacing: 8) {
+//                Text("+\(file.additions)")
+//                    .foregroundStyle(.green)
+//                Text("-\(file.deletions)")
+//                    .foregroundStyle(.red)
+//            }
+//            .monospacedDigit()
+//        } label: {
+//            Text(file.path)
+//                .font(.footnote.monospaced())
+//                .lineLimit(2)
+//                .truncationMode(.middle)
+//            Text(fileStatusLabel(file.status))
+//        }
     }
 
     private func revertSection(_ changeSet: ReviewChangeSet) -> some View {

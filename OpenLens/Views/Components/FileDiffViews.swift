@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct FileChangeRow: View {
     let file: ReviewFileChange
@@ -236,21 +237,46 @@ struct FileDiffDetailView: View {
     }
 }
 
+/// Code never wraps: every line stays on one row and the listing scrolls
+/// horizontally. Rows are built lazily, so each one reserves the width of the
+/// longest line (known up front, since the font is monospaced) to keep the
+/// row backgrounds the same width without laying every line out first.
+private enum CodeFont {
+    static let size: CGFloat = 12
+
+    static let columnWidth: CGFloat = {
+        let font = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        return ("0" as NSString).size(withAttributes: [.font: font]).width
+    }()
+
+    static func width(forColumns columns: Int) -> CGFloat {
+        CGFloat(columns) * columnWidth
+    }
+}
+
+private extension View {
+    func unwrappedCodeLine(minWidth: CGFloat) -> some View {
+        self
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: minWidth, alignment: .leading)
+    }
+}
+
 private struct CodeListingView: View {
     let text: String
     let tint: Color
-    @State private var lines: [String]
-
-    init(text: String, tint: Color) {
-        self.text = text
-        self.tint = tint
-        _lines = State(initialValue: Self.makeLines(from: text))
-    }
 
     var body: some View {
+        // Split in `body` rather than `init`: SwiftUI skips `body` when the
+        // inputs are unchanged, but `init` runs on every parent update.
+        let lines = Self.makeLines(from: text)
+        let codeWidth = CodeFont.width(forColumns: lines.map(\.utf16.count).max() ?? 0)
+
         ScrollView(.horizontal, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+            LazyVStack(alignment: .leading, spacing: 4) {
+                ForEach(lines.indices, id: \.self) { index in
+                    let line = lines[index]
                     HStack(alignment: .top, spacing: 12) {
                         Text("\(index + 1)")
                             .font(.system(size: 11, design: .monospaced))
@@ -258,10 +284,10 @@ private struct CodeListingView: View {
                             .frame(width: 36, alignment: .trailing)
 
                         Text(line.isEmpty ? " " : line)
-                            .font(.system(size: 12, design: .monospaced))
+                            .font(.system(size: CodeFont.size, design: .monospaced))
                             .foregroundStyle(Color.appPrimary)
                             .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .unwrappedCodeLine(minWidth: codeWidth)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -271,9 +297,6 @@ private struct CodeListingView: View {
                     )
                 }
             }
-        }
-        .onChange(of: text) { _, newText in
-            lines = Self.makeLines(from: newText)
         }
     }
 
@@ -285,58 +308,73 @@ private struct CodeListingView: View {
 
 struct UnifiedDiffView: View {
     let file: ReviewFileChange
-    @State private var hunks: [UnifiedDiffHunk]
-
-    init(file: ReviewFileChange) {
-        self.file = file
-        _hunks = State(initialValue: UnifiedDiffBuilder.makeHunks(file: file))
-    }
+    /// `nil` until the diff for `file` has been built.
+    @State private var hunks: [UnifiedDiffHunk]?
 
     var body: some View {
         Group {
-            if hunks.isEmpty {
-                SurfaceCard {
-                    Text("No line-level diff available for this file.")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.appSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            if let hunks {
+                diff(hunks)
             } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(hunks) { hunk in
-                        SurfaceCard(padding: 0) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(hunk.header)
-                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(Color.appSecondary)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 12)
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            }
+        }
+        .task(id: file) {
+            // Files without a server patch fall back to an O(n·m) line diff,
+            // so build it off the main thread and outside `init` (which runs
+            // on every parent update) to let the sheet appear immediately.
+            let file = file
+            hunks = await Task.detached(priority: .userInitiated) {
+                UnifiedDiffBuilder.makeHunks(file: file)
+            }.value
+        }
+    }
 
-                                SurfaceDivider()
+    @ViewBuilder
+    private func diff(_ hunks: [UnifiedDiffHunk]) -> some View {
+        if hunks.isEmpty {
+            SurfaceCard {
+                Text("No line-level diff available for this file.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.appSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(hunks) { hunk in
+                    SurfaceCard(padding: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(hunk.header)
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.appSecondary)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
 
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        ForEach(hunk.lines) { line in
-                                            UnifiedDiffLineRow(line: line)
-                                        }
+                            SurfaceDivider()
+
+                            let codeWidth = CodeFont.width(forColumns: hunk.maxLineLength)
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                LazyVStack(alignment: .leading, spacing: 2) {
+                                    ForEach(hunk.lines) { line in
+                                        UnifiedDiffLineRow(line: line, codeWidth: codeWidth)
                                     }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 10)
                                 }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 10)
                             }
                         }
                     }
                 }
             }
         }
-        .onChange(of: file) { _, newFile in
-            hunks = UnifiedDiffBuilder.makeHunks(file: newFile)
-        }
     }
 }
 
 private struct UnifiedDiffLineRow: View {
     let line: UnifiedDiffLine
+    let codeWidth: CGFloat
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -356,10 +394,10 @@ private struct UnifiedDiffLineRow: View {
                 .frame(width: 38, alignment: .trailing)
 
             Text(line.text.isEmpty ? " " : line.text)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.system(size: CodeFont.size, design: .monospaced))
                 .foregroundStyle(Color.appPrimary)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .unwrappedCodeLine(minWidth: codeWidth)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -392,13 +430,22 @@ private struct UnifiedDiffLineRow: View {
     }
 }
 
-private struct UnifiedDiffHunk: Identifiable {
+nonisolated struct UnifiedDiffHunk: Identifiable {
     let id: String
     let header: String
     let lines: [UnifiedDiffLine]
+    /// Length of the longest line, in characters (UTF-16 units).
+    let maxLineLength: Int
+
+    init(id: String, header: String, lines: [UnifiedDiffLine]) {
+        self.id = id
+        self.header = header
+        self.lines = lines
+        self.maxLineLength = lines.map(\.text.utf16.count).max() ?? 0
+    }
 }
 
-private struct UnifiedDiffLine: Identifiable {
+nonisolated struct UnifiedDiffLine: Identifiable {
     enum Kind {
         case context
         case added
@@ -423,7 +470,7 @@ private struct UnifiedDiffLine: Identifiable {
     }
 }
 
-private enum UnifiedDiffBuilder {
+nonisolated enum UnifiedDiffBuilder {
     private enum DiffOperation {
         case equal(String)
         case added(String)
@@ -432,32 +479,32 @@ private enum UnifiedDiffBuilder {
 
     static func makeHunks(file: ReviewFileChange, contextSize: Int = 3) -> [UnifiedDiffHunk] {
         if !file.patchHunks.isEmpty {
-            return makePatchHunks(file.patchHunks)
+            return makePatchHunks(file.patchHunks, contextSize: contextSize)
         }
 
         return makeHunks(before: file.beforeText, after: file.afterText, contextSize: contextSize)
     }
 
     static func makeHunks(before: String?, after: String?, contextSize: Int = 3) -> [UnifiedDiffHunk] {
-        let beforeLines = splitLines(before)
-        let afterLines = splitLines(after)
-        let operations = buildOperations(before: beforeLines, after: afterLines)
-        let diffLines = annotateLines(operations)
+        let operations = buildOperations(before: splitLines(before), after: splitLines(after))
+        return windowedHunks(from: annotateLines(operations), idPrefix: "hunk", contextSize: contextSize)
+    }
 
-        guard diffLines.contains(where: { $0.kind != .context }) else {
-            return diffLines.isEmpty ? [] : [
-                UnifiedDiffHunk(
-                    id: "hunk-0",
-                    header: makeHeader(diffLines),
-                    lines: diffLines
-                )
-            ]
-        }
-
-        let changeIndexes = diffLines.indices.filter { diffLines[$0].kind != .context }
+    /// Keeps only the changed lines plus `contextSize` lines around them, and
+    /// starts a new hunk wherever the unchanged stretch between two changes is
+    /// longer than that. Like a GitHub diff, an unchanged file yields no hunks.
+    ///
+    /// `fullHeader` is kept when nothing had to be trimmed, so a server patch
+    /// that is already tight renders exactly as it was sent.
+    private static func windowedHunks(
+        from diffLines: [UnifiedDiffLine],
+        idPrefix: String,
+        fullHeader: String? = nil,
+        contextSize: Int
+    ) -> [UnifiedDiffHunk] {
         var ranges: [ClosedRange<Int>] = []
 
-        for index in changeIndexes {
+        for index in diffLines.indices where diffLines[index].kind != .context {
             let start = max(diffLines.startIndex, index - contextSize)
             let end = min(diffLines.index(before: diffLines.endIndex), index + contextSize)
 
@@ -470,16 +517,17 @@ private enum UnifiedDiffBuilder {
 
         return ranges.enumerated().map { offset, range in
             let lines = Array(diffLines[range])
+            let keepsFullHunk = ranges.count == 1 && lines.count == diffLines.count
             return UnifiedDiffHunk(
-                id: "hunk-\(offset)",
-                header: makeHeader(lines),
+                id: "\(idPrefix)-\(offset)",
+                header: keepsFullHunk ? fullHeader ?? makeHeader(lines) : makeHeader(lines),
                 lines: lines
             )
         }
     }
 
-    private static func makePatchHunks(_ patchHunks: [ReviewFilePatchHunk]) -> [UnifiedDiffHunk] {
-        patchHunks.enumerated().map { offset, hunk in
+    private static func makePatchHunks(_ patchHunks: [ReviewFilePatchHunk], contextSize: Int) -> [UnifiedDiffHunk] {
+        patchHunks.enumerated().flatMap { offset, hunk in
             var oldLineNumber = hunk.oldStart
             var newLineNumber = hunk.newStart
 
@@ -523,10 +571,13 @@ private enum UnifiedDiffBuilder {
                 }
             }
 
-            return UnifiedDiffHunk(
-                id: "patch-hunk-\(offset)",
-                header: "@@ -\(hunk.oldStart),\(hunk.oldLines) +\(hunk.newStart),\(hunk.newLines) @@",
-                lines: lines
+            // A server patch may carry far more context than is useful (up to
+            // the whole file), so trim it the same way as a locally built diff.
+            return windowedHunks(
+                from: lines,
+                idPrefix: "patch-hunk-\(offset)",
+                fullHeader: "@@ -\(hunk.oldStart),\(hunk.oldLines) +\(hunk.newStart),\(hunk.newLines) @@",
+                contextSize: contextSize
             )
         }
     }
@@ -541,6 +592,29 @@ private enum UnifiedDiffBuilder {
     }
 
     private static func buildOperations(before: [String], after: [String]) -> [DiffOperation] {
+        // Most edits touch a small part of a file. Matching the shared head and
+        // tail directly keeps the O(n·m) table limited to the lines in between.
+        let maxShared = min(before.count, after.count)
+        var prefixCount = 0
+        while prefixCount < maxShared, before[prefixCount] == after[prefixCount] {
+            prefixCount += 1
+        }
+        var suffixCount = 0
+        while suffixCount < maxShared - prefixCount,
+              before[before.count - 1 - suffixCount] == after[after.count - 1 - suffixCount] {
+            suffixCount += 1
+        }
+
+        let head = before[..<prefixCount].map(DiffOperation.equal)
+        let tail = before[(before.count - suffixCount)...].map(DiffOperation.equal)
+        let middle = buildOperationsWithTable(
+            before: Array(before[prefixCount..<(before.count - suffixCount)]),
+            after: Array(after[prefixCount..<(after.count - suffixCount)])
+        )
+        return head + middle + tail
+    }
+
+    private static func buildOperationsWithTable(before: [String], after: [String]) -> [DiffOperation] {
         let beforeCount = before.count
         let afterCount = after.count
 
