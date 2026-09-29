@@ -118,7 +118,11 @@ final class WorkspaceService {
         )
     }
 
-    func loadWorkspaceSelection() async throws -> WorkspaceSelectionSnapshot {
+    /// Loads what the server reports about its workspaces. `rememberedDirectories`
+    /// are folders chosen earlier; those the server did not report itself are
+    /// checked by asking it to open them, because the project list only names
+    /// project roots and says nothing about other folders it can open.
+    func loadWorkspaceSelection(verifying rememberedDirectories: [String] = []) async throws -> WorkspaceSelectionSnapshot {
         if ScreenshotFixtures.isEnabled {
             let snapshot = ScreenshotFixtures.workspaceSnapshot(path: nil)
             return WorkspaceSelectionSnapshot(
@@ -139,11 +143,53 @@ final class WorkspaceService {
         let currentProject = await currentProjectTask
         let projects = await projectsTask
 
-        return WorkspaceSelectionSnapshot(
+        var snapshot = WorkspaceSelectionSnapshot(
             currentProject: currentProject,
             projects: projects,
             pathInfo: pathInfo
         )
+        let unreported = WorkspaceSelectionBuilder.directoriesNeedingVerification(rememberedDirectories, in: snapshot)
+        snapshot.inaccessibleDirectories = await refusedDirectories(among: unreported, client: client)
+        return snapshot
+    }
+
+    /// Asks the server to open each folder the way the folder browser does, in a
+    /// per-request context that leaves the active project untouched. Only an
+    /// explicit refusal counts; a dropped connection says nothing about the folder.
+    private func refusedDirectories(among directories: [String], client: OpenCodeClient) async -> Set<String> {
+        await withTaskGroup(of: String?.self) { group in
+            for directory in directories {
+                group.addTask {
+                    do {
+                        _ = try await client.listFiles(path: ".", directory: directory)
+                        return nil
+                    } catch {
+                        return Self.isFolderRefusal(error) ? directory : nil
+                    }
+                }
+            }
+
+            var refused = Set<String>()
+            for await directory in group {
+                if let directory { refused.insert(directory) }
+            }
+            return refused
+        }
+    }
+
+    /// The server answered about the folder itself, not about authentication,
+    /// rate limits or its own health.
+    nonisolated static func isFolderRefusal(_ error: Error) -> Bool {
+        let statusCode: Int
+        switch error as? OpenCodeError {
+        case .httpError(let code):
+            statusCode = code
+        case .apiError(let code, _):
+            statusCode = code
+        default:
+            return false
+        }
+        return (400..<500).contains(statusCode) && ![401, 407, 408, 429].contains(statusCode)
     }
 
     func loadFolders(in directory: String) async throws -> WorkspaceFolderSnapshot {

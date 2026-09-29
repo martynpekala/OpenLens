@@ -60,6 +60,7 @@ struct WorkspaceRootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.connection) private var connection
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.savedConnections) private var savedConnections
 
     @State private var viewState: ViewState = .idle
     @State private var snapshot = WorkspaceSnapshot(
@@ -86,7 +87,7 @@ struct WorkspaceRootView: View {
     @State private var actionNotice: WorkspaceActionNotice?
     @State private var isInboxPresented = false
     @State private var filteredCommands: [WorkspaceCommandItem] = []
-    @State private var displayedProjects: [OCProject] = []
+    @State private var workspaceOptions: [WorkspaceSelectionOption] = []
     @State private var workingTreeSummary = WorkingTreeSummary.empty
 
     var body: some View {
@@ -98,8 +99,11 @@ struct WorkspaceRootView: View {
                 content
             }
         }
-        .navigationTitle("Workspace")
+        .navigationTitle(currentWorkspaceTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            projectToolbarItem
+        }
         .task(id: browserPath) {
             await loadWorkspace()
         }
@@ -192,48 +196,44 @@ struct WorkspaceRootView: View {
 
     // MARK: - Project
 
-    private var projectSection: some View {
-        Section("Project") {
-            LabeledContent("Name", value: currentProjectName)
-
-            if let path = projectLocation {
-                pathRow("Location", value: path)
-            }
-
-            if let worktree = activeWorktree {
-                LabeledContent("Working Directory", value: worktree)
-            }
-
-            if let config = snapshot.pathInfo?.config?.nilIfBlank {
-                pathRow("Config", value: config)
-            }
-
-            if displayedProjects.count > 1 {
-                Picker(selection: projectSelection) {
-                    ForEach(displayedProjects) { project in
-                        Text(project.displayName ?? project.worktree ?? project.id)
-                            .tag(project.id)
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Text("Recent Projects")
-                        if switchingProjectID != nil {
-                            ProgressView()
+    private var projectToolbarItem: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            if workspaceOptions.count > 1 {
+                Menu {
+                    Picker("Project", selection: projectSelection) {
+                        ForEach(workspaceOptions) { option in
+                            Text(option.title)
+                                .tag(option.id)
                         }
                     }
+                    .disabled(switchingProjectID != nil)
+                } label: {
+                    WorkspaceProjectTitleCapsule(
+                        title: currentWorkspaceTitle,
+                        isSwitching: switchingProjectID != nil,
+                        isSelectable: true
+                    )
                 }
-                .disabled(switchingProjectID != nil)
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+            } else {
+                WorkspaceProjectTitleCapsule(
+                    title: currentWorkspaceTitle,
+                    isSwitching: switchingProjectID != nil,
+                    isSelectable: false
+                )
             }
         }
+        .sharedBackgroundVisibility(.hidden)
     }
 
     private var projectSelection: Binding<String> {
         Binding(
-            get: { displayedProjects.first(where: isCurrentProject)?.id ?? "" },
-            set: { projectID in
-                guard let project = displayedProjects.first(where: { $0.id == projectID }),
-                      !isCurrentProject(project) else { return }
-                Task { await switchProject(to: project) }
+            get: { currentWorkspaceOption?.id ?? "" },
+            set: { optionID in
+                guard let option = workspaceOptions.first(where: { $0.id == optionID }),
+                      option.id != currentWorkspaceOption?.id else { return }
+                Task { await switchWorkspace(to: option) }
             }
         )
     }
@@ -842,7 +842,7 @@ struct WorkspaceRootView: View {
 
     private func applySnapshot(_ loadedSnapshot: WorkspaceSnapshot) {
         snapshot = loadedSnapshot
-        displayedProjects = makeDisplayedProjects(from: loadedSnapshot)
+        workspaceOptions = makeWorkspaceOptions(from: loadedSnapshot)
         filteredCommands = makeFilteredCommands(
             from: loadedSnapshot.commands,
             query: commandSearch
@@ -862,26 +862,23 @@ struct WorkspaceRootView: View {
         }
     }
 
-    private func makeDisplayedProjects(from snapshot: WorkspaceSnapshot) -> [OCProject] {
-        var seenProjectIDs = Set<String>()
-        var seenWorktrees = Set<String>()
-        var result: [OCProject] = []
-
-        for project in [snapshot.currentProject].compactMap({ $0 }) + snapshot.projects {
-            if !seenProjectIDs.insert(project.id).inserted {
-                continue
-            }
-
-            if let worktree = project.worktree, !worktree.isEmpty {
-                if !seenWorktrees.insert(worktree).inserted {
-                    continue
-                }
-            }
-
-            result.append(project)
-        }
-
-        return result
+    /// The same options the new-session sheet offers: what the server reports plus
+    /// the folders chosen earlier, which the server's project list never names.
+    private func makeWorkspaceOptions(from snapshot: WorkspaceSnapshot) -> [WorkspaceSelectionOption] {
+        let recentDirectories = savedConnections.activeConnectionID
+            .map { savedConnections.recentProjectSelections(connectionID: $0) }
+            ?? []
+        return WorkspaceSelectionBuilder.makeOptions(
+            snapshot: WorkspaceSelectionSnapshot(
+                currentProject: snapshot.currentProject,
+                projects: snapshot.projects,
+                pathInfo: snapshot.pathInfo
+            ),
+            recentDirectories: recentDirectories,
+            preferredDirectory: nil
+        )
+        .options
+        .filter { $0.directory != nil }
     }
 
     private func summarizeWorkingTree(_ files: [ReviewFileChange]) -> WorkingTreeSummary {
@@ -894,23 +891,41 @@ struct WorkspaceRootView: View {
         }
     }
 
-    private func isCurrentProject(_ project: OCProject) -> Bool {
-        if let currentID = snapshot.currentProject?.id, currentID == project.id {
-            return true
-        }
-        return snapshot.currentProject?.worktree == project.worktree
+    /// The folder the server reports as active, which may be a subfolder of the
+    /// project root that is also flagged as current.
+    private var currentWorkspaceOption: WorkspaceSelectionOption? {
+        let activeDirectory = WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.directory)
+        return workspaceOptions.first { $0.directory == activeDirectory }
+            ?? workspaceOptions.first(where: \.isCurrent)
     }
 
-    private func switchProject(to project: OCProject) async {
-        guard switchingProjectID == nil else { return }
+    /// Names the active folder the way the picker lists it. The server calls a
+    /// folder outside a git repository by its `global` project, rooted at `/`.
+    private var currentWorkspaceTitle: String {
+        currentWorkspaceOption?.title ?? currentProjectName
+    }
 
-        switchingProjectID = project.id
+    private func switchWorkspace(to option: WorkspaceSelectionOption) async {
+        guard switchingProjectID == nil, let directory = option.directory else { return }
+
+        switchingProjectID = option.id
         defer { switchingProjectID = nil }
 
-        await connection.setProjectContext(directory: project.worktree)
+        rememberActiveWorkspace()
+        await connection.setProjectContext(directory: directory)
         browserPath = "."
         await chatClient.reloadForProjectContextChange()
         await refreshWorkspace()
+    }
+
+    /// The folder the server started in was never chosen in the app, so nothing
+    /// remembers it. Without this it drops out of the picker after the first
+    /// switch whenever the server does not list it as a project.
+    private func rememberActiveWorkspace() {
+        guard let connectionID = savedConnections.activeConnectionID,
+              let directory = WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.directory),
+              directory != "/" else { return }
+        savedConnections.updateProjectSelection(connectionID: connectionID, directory: directory)
     }
 }
 

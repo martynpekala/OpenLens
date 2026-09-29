@@ -541,15 +541,23 @@ nonisolated final class OpenCodeContractTransport: OpenCodeTransport, @unchecked
     }
 
     private let routes: [String: Fixture]
+    private let responder: (@Sendable (URLRequest) -> Fixture?)?
     private let pathRecorder = OpenCodeContractPathRecorder()
     private let requestRecorder = OpenCodeContractRequestRecorder()
     private let eventStreamData: Data?
     private let eventPathRecorder = OpenCodeContractPathRecorder()
     private let eventRequestRecorder = OpenCodeContractRequestRecorder()
 
-    init(routes: [String: Fixture], eventStreamData: Data? = nil) {
+    /// `responder` sees the whole request (for example its directory) before
+    /// `routes` is consulted; returning nil defers to the route for the path.
+    init(
+        routes: [String: Fixture],
+        eventStreamData: Data? = nil,
+        responder: (@Sendable (URLRequest) -> Fixture?)? = nil
+    ) {
         self.routes = routes
         self.eventStreamData = eventStreamData
+        self.responder = responder
     }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
@@ -557,7 +565,7 @@ nonisolated final class OpenCodeContractTransport: OpenCodeTransport, @unchecked
         await pathRecorder.append(path)
         await requestRecorder.append(request)
 
-        guard let fixture = routes[path] else {
+        guard let fixture = responder?(request) ?? routes[path] else {
             throw MissingOpenCodeContractRoute(path: path)
         }
 
