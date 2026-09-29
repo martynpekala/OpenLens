@@ -68,6 +68,7 @@ struct ReviewRootView: View {
         Group {
             content
         }
+        .toolbarTitleDisplayMode(.inline)
         .task {
             await refreshInboxBadgeCount()
         }
@@ -158,8 +159,8 @@ struct ReviewRootView: View {
     private var reviewForm: some View {
         Form {
             if !isReviewReloading {
-                if let reviewSnapshot, !reviewSnapshot.changeSets.isEmpty {
-                    scopeSection(reviewSnapshot)
+                if let reviewSnapshot, selectedScopeID != reviewSessionScopeID {
+                    updateSection(reviewSnapshot)
                 }
 
                 filesSection
@@ -170,6 +171,11 @@ struct ReviewRootView: View {
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .bottom)
+        .safeAreaBar(edge: .top, spacing: 8) {
+            if !isReviewReloading, let reviewSnapshot, !reviewSnapshot.changeSets.isEmpty {
+                scopeBar(reviewSnapshot)
+            }
+        }
     }
 
     private var sessionPickerToolbarItem: some ToolbarContent {
@@ -215,36 +221,36 @@ struct ReviewRootView: View {
     }
 
     /// Segmented switch between the whole session and a single agent update.
-    /// The update picker only shows once "Single update" is chosen.
-    private func scopeSection(_ snapshot: SessionReviewSnapshot) -> some View {
-        Section {
-            Picker("Review scope", selection: scopeModeBinding(for: snapshot)) {
-                ForEach(ScopeMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
+    /// It is pinned under the navigation bar instead of living in the form, so
+    /// it stays visible while scrolling and adds no gap above the first section.
+    private func scopeBar(_ snapshot: SessionReviewSnapshot) -> some View {
+        Picker("Review scope", selection: scopeModeBinding(for: snapshot)) {
+            ForEach(ScopeMode.allCases) { mode in
+                Text(mode.rawValue).tag(mode)
             }
-            .pickerStyle(.segmented)
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets())
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
 
-            if selectedScopeID != reviewSessionScopeID {
-                Picker("Update", selection: $selectedScopeID) {
-                    ForEach(snapshot.changeSets) { changeSet in
-                        Label {
-                            Text(changeSet.title)
-                            Text(changeSet.id == snapshot.latestChangeSet?.id
-                                ? "Latest · \(shortDate(changeSet.createdAt))"
-                                : shortDate(changeSet.createdAt))
-                        } icon: {
-                            Image(systemName: changeSet.id == snapshot.latestChangeSet?.id ? "sparkles" : "clock.arrow.circlepath")
-                        }
-                        .tag(changeSet.id)
+    /// Chooses which agent update to inspect. Only shown for "Single update".
+    private func updateSection(_ snapshot: SessionReviewSnapshot) -> some View {
+        Section {
+            Picker("Update", selection: $selectedScopeID) {
+                ForEach(snapshot.changeSets) { changeSet in
+                    Label {
+                        Text(changeSet.title)
+                        Text(changeSet.id == snapshot.latestChangeSet?.id
+                            ? "Latest · \(shortDate(changeSet.createdAt))"
+                            : shortDate(changeSet.createdAt))
+                    } icon: {
+                        Image(systemName: changeSet.id == snapshot.latestChangeSet?.id ? "sparkles" : "clock.arrow.circlepath")
                     }
+                    .tag(changeSet.id)
                 }
-                .pickerStyle(.navigationLink)
             }
-        } footer: {
-            Text(scopeFooter(for: snapshot))
+            .pickerStyle(.navigationLink)
         }
     }
 
@@ -265,13 +271,18 @@ struct ReviewRootView: View {
         )
     }
 
-    private func scopeFooter(for snapshot: SessionReviewSnapshot) -> String {
+    /// File count, plus how many agent updates the session spans so the
+    /// single-update option is discoverable from the whole-session view.
+    private var filesFooter: String {
+        let fileCount = selectedScopeState.fileCountLabel
+        guard let reviewSnapshot, !reviewSnapshot.changeSets.isEmpty else { return fileCount }
+
         if selectedScopeID == reviewSessionScopeID {
-            let count = snapshot.changeSets.count
-            let updates = count == 1 ? "1 agent update" : "\(count) agent updates"
-            return "Everything changed in this session, across \(updates). Switch to Single update to review one at a time."
+            let updateCount = reviewSnapshot.changeSets.count
+            let updates = updateCount == 1 ? "1 agent update" : "\(updateCount) agent updates"
+            return "\(fileCount) across \(updates)"
         }
-        return "Only the changes from the selected agent update. Switch to Whole session to see everything."
+        return "\(fileCount) in this update"
     }
 
     private var filesSection: some View {
@@ -292,7 +303,7 @@ struct ReviewRootView: View {
         } header: {
             Text(selectedScopeID == reviewSessionScopeID ? "Session changes" : "Update changes")
         } footer: {
-            Text(selectedScopeState.fileCountLabel)
+            Text(filesFooter)
         }
     }
 
@@ -307,7 +318,7 @@ struct ReviewRootView: View {
             .monospacedDigit()
         } label: {
             Text(file.path)
-                .font(.body.monospaced())
+                .font(.footnote.monospaced())
                 .lineLimit(2)
                 .truncationMode(.middle)
             Text(fileStatusLabel(file.status))

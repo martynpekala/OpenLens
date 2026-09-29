@@ -641,18 +641,44 @@ actor OpenCodeClient {
         if usesV2 {
             // V2 names the selected user-turn boundary `from`; v1 keeps its
             // legacy `messageID` query parameter below.
-            let queryItems = messageID.map { [URLQueryItem(name: "from", value: $0)] } ?? []
-            let response: OCV2Envelope<[OCFileDiff]> = try await getV2(
-                "/api/session/\(sessionID)/diff",
-                queryItems: queryItems,
-                includesLocation: false
-            )
-            return response.data
+            return try await getV2SessionDiff(sessionID: sessionID, from: messageID, to: nil)
         }
 
         var path = "/session/\(sessionID)/diff"
         if let messageID { path += "?messageID=\(messageID)" }
         return try await get(path)
+    }
+
+    /// Diff of everything the session changed.
+    ///
+    /// The v1 route without a message already covers the whole session. The v2
+    /// route without `from` only covers the newest turn, so the range is spelled
+    /// out: the server compares the first recorded snapshot of `from`'s turn with
+    /// the last one of `to`'s turn. `to` is omitted when both are the same
+    /// message because it must name a later one.
+    func getWholeSessionDiff(
+        sessionID: String,
+        firstMessageID: String,
+        lastMessageID: String
+    ) async throws -> [OCFileDiff] {
+        guard usesV2 else { return try await getSessionDiff(sessionID: sessionID) }
+        return try await getV2SessionDiff(
+            sessionID: sessionID,
+            from: firstMessageID,
+            to: lastMessageID == firstMessageID ? nil : lastMessageID
+        )
+    }
+
+    private func getV2SessionDiff(sessionID: String, from: String?, to: String?) async throws -> [OCFileDiff] {
+        let queryItems = [("from", from), ("to", to)].compactMap { name, value in
+            value.map { URLQueryItem(name: name, value: $0) }
+        }
+        let response: OCV2Envelope<[OCFileDiff]> = try await getV2(
+            "/api/session/\(sessionID)/diff",
+            queryItems: queryItems,
+            includesLocation: false
+        )
+        return response.data
     }
 
     // MARK: - Permissions

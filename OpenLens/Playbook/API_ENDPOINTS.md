@@ -59,7 +59,7 @@ Remote relay forwards only its explicit allowlist, including both
 | POST | `/api/session/:id/prompt` | acknowledgement | Admit a `steer` or `queue` prompt |
 | POST | `/api/session/:id/interrupt` | interruption result | Stop a running session |
 
-| GET | `/api/session/:id/diff?from=:messageID` | `{ data: [FileDiff] }` | Selected user turn; omit `from` for newest turn |
+| GET | `/api/session/:id/diff?from=:messageID&to=:messageID` | `{ data: [FileDiff] }` | Turn of `from`; omit `from` for newest turn; `to` (a later message) extends the range through its turn, so first→newest user message is the whole session; ranges spanning a location change are rejected |
 | DELETE | `/api/session/:id/revert` | 204 | Clear staged revert |
 | POST | `/api/session/:id/revert/stage` | `{ data: Revert }` | Stage `{messageID,files:true}` |
 | POST | `/api/session/:id/revert/commit` | 204 | Commit staged revert |

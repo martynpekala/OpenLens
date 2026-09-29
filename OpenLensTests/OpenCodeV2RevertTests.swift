@@ -117,6 +117,74 @@ struct OpenCodeV2RevertTests {
         #expect(try await client.getSessionDiff(sessionID: "ses_1", messageID: "msg_legacy").isEmpty)
     }
 
+    @Test func v2WholeSessionDiffSpansTheFirstToTheNewestTurn() async throws {
+        let transport = V2RevertTransport(contract: [
+            .init(method: "GET", path: "/api/info", statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(
+                method: "GET",
+                path: "/api/session/ses_1/diff",
+                statusCode: 200,
+                body: Data(#"{"data":[{"file":"Whole.swift","additions":4,"deletions":1}]}"#.utf8),
+                queryItems: ["from": "msg_first", "to": "msg_last"]
+            ),
+            .init(
+                method: "GET",
+                path: "/api/session/ses_1/diff",
+                statusCode: 200,
+                body: Data(#"{"data":[{"file":"Only.swift"}]}"#.utf8),
+                queryItems: ["from": "msg_only"]
+            ),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+        _ = try await client.probeCapabilities()
+
+        let wholeDiff = try await client.getWholeSessionDiff(
+            sessionID: "ses_1",
+            firstMessageID: "msg_first",
+            lastMessageID: "msg_last"
+        )
+        // `to` must name a later message, so a single-turn session omits it.
+        let singleTurnDiff = try await client.getWholeSessionDiff(
+            sessionID: "ses_1",
+            firstMessageID: "msg_only",
+            lastMessageID: "msg_only"
+        )
+
+        #expect(wholeDiff.first?.file == "Whole.swift")
+        #expect(singleTurnDiff.first?.file == "Only.swift")
+
+        let requests = transport.recordedRequests()
+        #expect(requests[1].queryItems == ["from": "msg_first", "to": "msg_last"])
+        #expect(requests[2].queryItems == ["from": "msg_only"])
+    }
+
+    @Test func v1WholeSessionDiffUsesTheUnscopedRoute() async throws {
+        let transport = V2RevertTransport(contract: [
+            .init(
+                method: "GET",
+                path: "/session/ses_1/diff",
+                statusCode: 200,
+                body: Data(#"[{"file":"Whole.swift"}]"#.utf8)
+            ),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+
+        let diff = try await client.getWholeSessionDiff(
+            sessionID: "ses_1",
+            firstMessageID: "msg_first",
+            lastMessageID: "msg_last"
+        )
+
+        #expect(diff.first?.file == "Whole.swift")
+        #expect(transport.recordedRequests().first?.queryItems.isEmpty == true)
+    }
+
     @Test func v2IncompleteRevertRefreshesTheCanonicalSessionBeforeSurfacingTheConflict() async throws {
         let transport = V2RevertTransport(contract: [
             .init(method: "GET", path: "/api/info", statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),

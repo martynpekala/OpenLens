@@ -17,18 +17,61 @@ final class ReviewService {
             throw OpenCodeError.notConnected
         }
 
-        async let messagesTask = client.listMessages(sessionID: sessionID)
-        async let diffsTask = client.getSessionDiff(sessionID: sessionID)
+        let messages = try await client.listMessages(sessionID: sessionID)
+        let userMessages = messages.filter { $0.info.role == .user }
 
-        let (messages, diffs) = try await (messagesTask, diffsTask)
+        // Without a user message nothing can have been changed.
+        guard let firstMessage = userMessages.first, let lastMessage = userMessages.last else {
+            return SessionReviewSnapshot(sessionID: sessionID, changeSets: [], workingTree: [])
+        }
 
+        async let sessionDiffTask = loadSessionDiff(
+            client: client,
+            sessionID: sessionID,
+            firstMessageID: firstMessage.id,
+            lastMessageID: lastMessage.id
+        )
         let changeSets = try await loadChangeSets(sessionID: sessionID, messages: messages)
+        let sessionDiff = try await sessionDiffTask
 
         return SessionReviewSnapshot(
             sessionID: sessionID,
             changeSets: changeSets,
-            workingTree: diffs.map(ReviewFileChange.init(diff:))
+            workingTree: sessionDiff ?? newestFiles(of: changeSets)
         )
+    }
+
+    /// Everything the session changed, or `nil` when the server refuses the
+    /// range (it rejects ranges that span a location change).
+    private func loadSessionDiff(
+        client: OpenCodeClient,
+        sessionID: String,
+        firstMessageID: String,
+        lastMessageID: String
+    ) async throws -> [ReviewFileChange]? {
+        do {
+            let diffs = try await client.getWholeSessionDiff(
+                sessionID: sessionID,
+                firstMessageID: firstMessageID,
+                lastMessageID: lastMessageID
+            )
+            return diffs.map(ReviewFileChange.init(diff:))
+        } catch OpenCodeError.apiError(let statusCode, _) where (400..<500).contains(statusCode) {
+            return nil
+        } catch OpenCodeError.httpError(let statusCode) where (400..<500).contains(statusCode) {
+            return nil
+        }
+    }
+
+    /// Stand-in for the session diff when the server refuses it: the latest
+    /// version of every file the per-update diffs touched. Line totals only
+    /// reflect the last update that touched a file.
+    private func newestFiles(of changeSets: [ReviewChangeSet]) -> [ReviewFileChange] {
+        var seenPaths = Set<String>()
+        return changeSets
+            .flatMap(\.files)
+            .filter { seenPaths.insert($0.path).inserted }
+            .sorted { $0.path < $1.path }
     }
 
     func revertChangeSet(sessionID: String, messageID: String) async throws {
