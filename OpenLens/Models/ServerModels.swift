@@ -1952,6 +1952,18 @@ nonisolated struct OCV2CursorPage<Value: Decodable & Sendable>: Decodable, Senda
     let cursor: Cursor
 }
 
+/// A single decoded cursor page with its validated continuation cursor.
+nonisolated struct OCV2PageResult<Value: Sendable>: Sendable {
+    let values: [Value]
+    let nextCursor: String?
+}
+
+/// One page of the session list. `nextCursor` is nil on the last page.
+nonisolated struct OCSessionPage: Sendable {
+    let sessions: [OCSession]
+    let nextCursor: String?
+}
+
 /// A tagged message projection returned by v2 session transcript endpoints.
 /// Unsupported timeline entries are decoded but omitted from OpenLens's
 /// two-role chat domain, so newer server entries do not invalidate a page.

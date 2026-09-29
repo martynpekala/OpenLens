@@ -305,6 +305,41 @@ struct OpenCodePaginationTests {
         #expect(try await client.getSession(id: "ses_alpha").directory == "/workspace/Alpha")
     }
 
+    @Test func v2SessionPageFetchesOnePageAndFollowsTheReturnedCursor() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(path: "/api/session", cursor: nil, body: sessionPage(ids: ["session-3", "session-2"], next: "page-2")),
+            .init(path: "/api/session", cursor: "page-2", body: sessionPage(ids: ["session-1"], next: nil)),
+        ])
+        let client = try await v2Client(transport: transport, contextDirectory: "/workspace/OpenLens")
+
+        let first = try await client.listSessionsPage(limit: 2)
+        #expect(first.sessions.map(\.id) == ["session-3", "session-2"])
+        #expect(first.nextCursor == "page-2")
+        #expect(transport.recordedRequests().count == 2)
+
+        let second = try await client.listSessionsPage(cursor: "page-2", limit: 2)
+        #expect(second.sessions.map(\.id) == ["session-1"])
+        #expect(second.nextCursor == nil)
+
+        let requests = Array(transport.recordedRequests().dropFirst())
+        #expect(requests.map(\.cursor) == [nil, "page-2"])
+        #expect(requests[0].queryItems["order"] == "desc")
+        #expect(requests[0].queryItems["limit"] == "2")
+        #expect(requests[1].queryItems["order"] == nil)
+        #expect(requests.allSatisfy { $0.queryItems["directory"] == "/workspace/OpenLens" })
+    }
+
+    @Test func v2SessionPageRejectsACursorThatPointsBackToItself() async throws {
+        let transport = V2PaginationTransport(pages: [
+            .init(path: "/api/session", cursor: "loop", body: sessionPage(ids: ["session-1"], next: "loop")),
+        ])
+        let client = try await v2Client(transport: transport)
+
+        await #expect(throws: OpenCodeError.self) {
+            _ = try await client.listSessionsPage(cursor: "loop")
+        }
+    }
+
     private func v2Client(
         transport: V2PaginationTransport,
         contextDirectory: String? = nil

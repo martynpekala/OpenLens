@@ -1,16 +1,5 @@
 import SwiftUI
 
-private enum WorkspaceLayout {
-    static let screenInset: CGFloat = 20
-    static let screenVerticalPadding: CGFloat = 24
-    static let sectionGap: CGFloat = 28
-    static let groupGap: CGFloat = 16
-    static let compactGap: CGFloat = 8
-    static let chipGap: CGFloat = 12
-    static let rowPaddingHorizontal: CGFloat = 16
-    static let rowPaddingVertical: CGFloat = 14
-}
-
 struct WorkspaceRootView: View {
     private struct WorkingTreeSummary {
         let fileCount: Int
@@ -59,7 +48,7 @@ struct WorkspaceRootView: View {
         var tint: Color {
             switch self {
             case .info:
-                Color.appPrimary
+                .secondary
             case .error:
                 .orange
             }
@@ -87,7 +76,6 @@ struct WorkspaceRootView: View {
     @State private var browserPath: String?
     @State private var commandSearch = ""
     @State private var switchingProjectID: String?
-    @State private var showsProjectDetails = false
     @State private var showsFiles = false
     @State private var showsCommands = false
     @State private var activityRefreshToken = 0
@@ -105,14 +93,11 @@ struct WorkspaceRootView: View {
         Group {
             if isInitialLoading {
                 ProgressView()
-                    .tint(Color.appSecondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.appBackground)
             } else {
                 content
             }
         }
-        .scrollEdgeEffectStyle(.soft, for: .bottom)
         .navigationTitle("Workspace")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: browserPath) {
@@ -184,740 +169,369 @@ struct WorkspaceRootView: View {
     }
 
     private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: WorkspaceLayout.sectionGap) {
-                projectHeaderCard
-
-                sourceControlSection
-
-                activitySection
-
-                insightsSection
-
-                if let errorMessage {
-                    errorCard(errorMessage)
+        Form {
+            if let errorMessage {
+                Section {
+                    Label {
+                        Text(errorMessage)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
                 }
-
-                detailsSection
-                filesSection
-                commandsSection
             }
-            .padding(.horizontal, WorkspaceLayout.screenInset)
-            .padding(.bottom, WorkspaceLayout.screenVerticalPadding)
+
+            projectSection
+            sourceControlSection
+            actionsSection
+            changedFilesSection
+            activitySection
+            insightsSection
+            filesSection
+            commandsSection
         }
-        .background(Color.appBackground)
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
-    // MARK: - Project Header
+    // MARK: - Project
 
-    private var projectHeaderCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(currentProjectName)
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                    .lineLimit(2)
-
-                Spacer(minLength: 12)
-            }
+    private var projectSection: some View {
+        Section("Project") {
+            LabeledContent("Name", value: currentProjectName)
 
             if let path = projectLocation {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.appSecondary)
-                        .frame(width: 16)
-
-                    Text(path)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Color.appSecondary)
-                        .lineLimit(2)
-                }
+                pathRow("Location", value: path)
             }
 
-            if hasBranchOrWorktree {
-                HStack(alignment: .top, spacing: 18) {
-                    headerMetaBlock(title: "Branch", value: currentBranch)
-
-                    if let worktree = activeWorktree {
-                        Rectangle()
-                            .fill(Color.appSeparator)
-                            .frame(width: 1, height: 28)
-
-                        headerMetaBlock(title: "Working Directory", value: worktree)
-                    }
-
-                    Spacer(minLength: 0)
-                }
+            if let worktree = activeWorktree {
+                LabeledContent("Working Directory", value: worktree)
             }
 
-            Rectangle()
-                .fill(Color.appSeparator)
-                .frame(height: 1)
-                .opacity(0.9)
-        }
-    }
+            if let config = snapshot.pathInfo?.config?.nilIfBlank {
+                pathRow("Config", value: config)
+            }
 
-    private var projectPickerMenu: some View {
-        Menu {
-            ForEach(displayedProjects) { project in
-                if isCurrentProject(project) {
-                    Label(project.displayName ?? project.worktree ?? project.id, systemImage: "checkmark")
-                        .font(.system(size: 15, design: .rounded))
-                } else {
-                    Button {
-                        Task { await switchProject(to: project) }
-                    } label: {
+            if displayedProjects.count > 1 {
+                Picker(selection: projectSelection) {
+                    ForEach(displayedProjects) { project in
                         Text(project.displayName ?? project.worktree ?? project.id)
+                            .tag(project.id)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("Recent Projects")
+                        if switchingProjectID != nil {
+                            ProgressView()
+                        }
                     }
                 }
-            }
-        } label: {
-            Group {
-                if switchingProjectID != nil {
-                    ProgressView()
-                        .tint(Color.appAccent)
-                        .frame(width: 14, height: 14)
-                } else {
-                    HStack(spacing: 6) {
-                        Text("Recently opened projects")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-
-                        Image(systemName: "arrow.left.arrow.right")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .foregroundStyle(Color.appPrimary)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.appSurface, in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.appSeparator, lineWidth: 1)
-            )
-        }
-        .menuStyle(.automatic)
-        .disabled(switchingProjectID != nil)
-    }
-
-    private func headerMetaBlock(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
-                .textCase(.uppercase)
-                .kerning(0.4)
-
-            Text(value)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Color.appPrimary)
-                .lineLimit(1)
-        }
-    }
-
-    // MARK: - Activity Heatmap
-
-    private var activitySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "ACTIVITY", detail: "last 12 weeks")
-
-            SurfaceCard {
-                WorkspaceActivityHeatmap(
-                    projectID: snapshot.currentProject?.id,
-                    projectDirectory: snapshot.currentProject?.worktree ?? connection.selectedProjectDirectory,
-                    projectName: currentProjectName,
-                    refreshToken: activityRefreshToken
-                )
+                .disabled(switchingProjectID != nil)
             }
         }
     }
 
-    private var insightsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "INSIGHTS", detail: insightsDetail)
-
-            SurfaceCard {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Session insights")
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-
-                        Text("Open a local breakdown of cost, token usage, models, and recent assistant responses for the active session.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-
-                    Spacer(minLength: 12)
-
-                    Button("Open") {
-                        openInsights()
-                    }
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.appSurface, in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.appSeparator, lineWidth: 1)
-                    )
-                    .buttonStyle(.plain)
-                }
+    private var projectSelection: Binding<String> {
+        Binding(
+            get: { displayedProjects.first(where: isCurrentProject)?.id ?? "" },
+            set: { projectID in
+                guard let project = displayedProjects.first(where: { $0.id == projectID }),
+                      !isCurrentProject(project) else { return }
+                Task { await switchProject(to: project) }
             }
-        }
+        )
     }
 
     // MARK: - Source Control
 
     private var sourceControlSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "SOURCE CONTROL", detail: sourceControlDetail)
-
-            SurfaceCard {
-                VStack(alignment: .leading, spacing: WorkspaceLayout.groupGap) {
-                    Text(sourceControlDescription)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.appSecondary)
-
-                    if let workingTreeStatusNotice {
-                        sourceControlInlineNotice(.error(workingTreeStatusNotice))
-                    }
-
-                    HStack(spacing: 10) {
-                        sourceControlSummaryMetric(title: "Files", value: "\(workingTreeCount)", tint: Color.appPrimary)
-                        sourceControlSummaryMetric(title: "Added", value: "+\(workingTreeAdditions)", tint: .green)
-                        sourceControlSummaryMetric(title: "Removed", value: "-\(workingTreeDeletions)", tint: .red)
-                    }
-
-                    HStack(spacing: 10) {
-                        sourceControlContextPill(title: "Branch", value: currentBranch)
-                        sourceControlContextPill(title: "Working Directory", value: sourceControlWorktreeLabel)
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        if displayedProjects.count > 1 {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Recently opened projects")
-                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(Color.appPrimary)
-
-                                Text("Switch to another project previously opened by this OpenCode server.")
-                                    .font(.system(size: 12, design: .rounded))
-                                    .foregroundStyle(Color.appSecondary)
-
-                                projectPickerMenu
-                            }
-                        }
-
-                        Button {
-                            showsBranchPrompt = true
-                        } label: {
-                            Label("Change branch", systemImage: "arrow.triangle.branch")
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                .foregroundStyle(Color.appPrimary)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(Color.appSurface, in: Capsule())
-                                .overlay(
-                                    Capsule()
-                                        .stroke(Color.appSeparator, lineWidth: 1)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canStartWorkspaceAction)
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        sourceControlActionButton(
-                            title: "Push current branch",
-                            systemImage: "arrow.up.circle",
-                            fill: Color.appSurface,
-                            foreground: Color.appPrimary,
-                            showsBorder: true
-                        ) {
-                            pendingWorkspaceAction = .push
-                        }
-                        .disabled(!canStartWorkspaceAction)
-
-                        sourceControlActionButton(
-                            title: "Create pull request",
-                            systemImage: "arrow.up.right.square",
-                            fill: Color.appAccent,
-                            foreground: Color.appOnAccent,
-                            showsBorder: false
-                        ) {
-                            pendingWorkspaceAction = .pullRequest
-                        }
-                        .disabled(!canStartWorkspaceAction)
-
-                        sourceControlActionButton(
-                            title: "Open Inbox",
-                            systemImage: "bell",
-                            fill: Color.appSurface,
-                            foreground: Color.appPrimary,
-                            showsBorder: true
-                        ) {
-                            isInboxPresented = true
-                        }
-                    }
-
-                    if let blockedReason = workspaceActionBlockedReason {
-                        sourceControlInlineNotice(.error(blockedReason))
-                    } else if let actionNotice {
-                        sourceControlInlineNotice(actionNotice)
-                    }
-                }
+        Section {
+            LabeledContent("Branch") {
+                Text(currentBranch)
+                    .font(.body.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            LabeledContent("Files", value: "\(workingTreeSummary.fileCount)")
+            LabeledContent("Added") {
+                Text("+\(workingTreeSummary.additions)")
+                    .foregroundStyle(.green)
+            }
+            LabeledContent("Removed") {
+                Text("-\(workingTreeSummary.deletions)")
+                    .foregroundStyle(.red)
             }
 
-            sourceControlChangedFilesCard
+            if let workingTreeStatusNotice {
+                noticeRow(.error(workingTreeStatusNotice))
+            }
+        } header: {
+            Text("Source Control")
+        } footer: {
+            Text(sourceControlDescription)
+        }
+        .monospacedDigit()
+    }
+
+    private var actionsSection: some View {
+        Section {
+            Button {
+                showsBranchPrompt = true
+            } label: {
+                Label("Change Branch", systemImage: "arrow.triangle.branch")
+            }
+            .disabled(!canStartWorkspaceAction)
+
+            Button {
+                pendingWorkspaceAction = .push
+            } label: {
+                Label("Push Current Branch", systemImage: "arrow.up.circle")
+            }
+            .disabled(!canStartWorkspaceAction)
+
+            Button {
+                pendingWorkspaceAction = .pullRequest
+            } label: {
+                Label("Create Pull Request", systemImage: "arrow.up.right.square")
+            }
+            .disabled(!canStartWorkspaceAction)
+
+            Button {
+                isInboxPresented = true
+            } label: {
+                Label("Open Inbox", systemImage: "bell")
+            }
+
+            if let blockedReason = workspaceActionBlockedReason {
+                noticeRow(.error(blockedReason))
+            } else if let actionNotice {
+                noticeRow(actionNotice)
+            }
+        } header: {
+            Text("Actions")
+        } footer: {
+            Text("Actions are sent as requests to the active session, so the agent can ask for permission when needed.")
         }
     }
 
-    private var insightsDetail: String {
-        chatClient.currentSession == nil ? "open any session" : "active session"
+    private var changedFilesSection: some View {
+        Section {
+            if snapshot.workingTree.isEmpty {
+                Text(workingTreeEmptyStateText)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(snapshot.workingTree) { file in
+                    Button {
+                        selectedDiffFile = file
+                    } label: {
+                        changedFileRow(file)
+                    }
+                    .tint(.primary)
+                }
+            }
+        } header: {
+            Text("Changed Files")
+        } footer: {
+            if !snapshot.workingTree.isEmpty {
+                Text("\(workingTreeFileCountLabel). Open any file to inspect its full diff.")
+            }
+        }
+    }
+
+    private func changedFileRow(_ file: ReviewFileChange) -> some View {
+        LabeledContent {
+            HStack(spacing: 8) {
+                Text("+\(file.additions)")
+                    .foregroundStyle(.green)
+                Text("-\(file.deletions)")
+                    .foregroundStyle(.red)
+            }
+            .monospacedDigit()
+        } label: {
+            Text(file.path)
+                .font(.body.monospaced())
+                .lineLimit(2)
+                .truncationMode(.middle)
+            Text(file.statusLabel.capitalized)
+        }
+    }
+
+    // MARK: - Activity & Insights
+
+    private var activitySection: some View {
+        Section {
+            WorkspaceActivityHeatmap(
+                projectID: snapshot.currentProject?.id,
+                projectDirectory: snapshot.currentProject?.worktree ?? connection.selectedProjectDirectory,
+                projectName: currentProjectName,
+                refreshToken: activityRefreshToken
+            )
+            .padding(.vertical, 4)
+        } header: {
+            Text("Activity")
+        } footer: {
+            Text("Last 12 weeks")
+        }
+    }
+
+    private var insightsSection: some View {
+        Section {
+            Button {
+                openInsights()
+            } label: {
+                Label("Session Insights", systemImage: "chart.bar.xaxis")
+            }
+        } header: {
+            Text("Insights")
+        } footer: {
+            Text(insightsFooter)
+        }
+    }
+
+    private var insightsFooter: String {
+        let scope = chatClient.currentSession == nil ? "any session" : "the active session"
+        return "Local breakdown of cost, token usage, models, and recent assistant responses for \(scope)."
     }
 
     private func openInsights() {
         router.navigate(to: .sessionInsights(sessionID: chatClient.currentSession?.id), in: .workspace)
     }
 
-    // MARK: - Collapsible Sections
+    // MARK: - Files
 
-    private var detailsSection: some View {
-        collapsibleSection(
-            title: "Project details",
-            detail: "Branch and paths",
-            isExpanded: $showsProjectDetails
-        ) {
-            SurfaceCard(padding: 0) {
-                VStack(spacing: 0) {
-                    infoRow(title: "Branch", value: snapshot.vcsInfo?.branch ?? connection.branch ?? "Unknown")
-                    SurfaceDivider()
-                    infoRow(title: "Current path", value: snapshot.currentPath ?? ".")
-                    SurfaceDivider()
-                    infoRow(title: "Working Directory", value: snapshot.pathInfo?.worktree ?? "Unknown")
-                    SurfaceDivider()
-                    infoRow(title: "Config", value: snapshot.pathInfo?.config ?? "Unknown")
+    private var filesSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $showsFiles) {
+                if let browserPath {
+                    Button {
+                        goUpDirectory()
+                    } label: {
+                        LabeledContent {
+                            Text(browserPath)
+                                .font(.footnote.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        } label: {
+                            Label("Up", systemImage: "arrow.up.backward")
+                        }
+                    }
+                    .disabled(browserPath == ".")
                 }
+
+                if snapshot.fileItems.isEmpty {
+                    Text("No file entries returned for this path.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(snapshot.fileItems) { item in
+                        fileRow(item)
+                    }
+                }
+            } label: {
+                LabeledContent("Files", value: fileCountLabel)
             }
+        } footer: {
+            Text("Browse the current working directory and send paths back into chat as context.")
         }
     }
 
     @ViewBuilder
-    private var commandsSection: some View {
-        if hasCommands {
-            collapsibleSection(
-                title: "Commands",
-                detail: commandCountLabel,
-                isExpanded: $showsCommands
-            ) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Drop a workspace command straight into chat without leaving this tab.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.appSecondary)
-
-                    SurfaceCard {
-                        VStack(alignment: .leading, spacing: WorkspaceLayout.groupGap) {
-                            TextField("Search commands", text: $commandSearch)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 15))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                                .background(Color.appTertiary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                            if filteredCommands.isEmpty {
-                                Text("No commands available.")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Color.appSecondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            } else {
-                                VStack(spacing: 0) {
-                                    ForEach(Array(filteredCommands.prefix(6).enumerated()), id: \.element.id) { index, command in
-                                        commandRow(command)
-
-                                        if index < min(filteredCommands.count, 6) - 1 {
-                                            SurfaceDivider()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+    private func fileRow(_ item: WorkspaceFileItem) -> some View {
+        if item.kind == .directory {
+            Button {
+                browserPath = item.path
+            } label: {
+                HStack {
+                    Label(item.name, systemImage: "folder")
+                        .font(.body.monospaced())
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .tint(.primary)
+        } else {
+            LabeledContent {
+                Button("Insert") {
+                    insertIntoChat("Inspect file: \(item.absolutePath ?? item.path)")
+                }
+                .buttonStyle(.borderless)
+            } label: {
+                Label {
+                    Text(item.name)
+                        .font(.body.monospaced())
+                    Text(item.absolutePath ?? item.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } icon: {
+                    Image(systemName: "doc.text")
                 }
             }
         }
     }
 
-    private var filesSection: some View {
-        collapsibleSection(
-            title: "Files",
-            detail: fileCountLabel,
-            isExpanded: $showsFiles
-        ) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Browse the current working directory and send paths back into chat as context.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.appSecondary)
+    // MARK: - Commands
 
-                SurfaceCard(padding: 0) {
-                    VStack(spacing: 0) {
-                        if let browserPath {
-                            HStack(spacing: 10) {
-                                Button {
-                                    goUpDirectory()
-                                } label: {
-                                    Label("Up", systemImage: "arrow.up.backward")
-                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                        .foregroundStyle(Color.appPrimary)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 8)
-                                        .background(Color.appSurface, in: Capsule())
-                                        .overlay(
-                                            Capsule()
-                                                .stroke(Color.appSeparator, lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(.plain)
+    @ViewBuilder
+    private var commandsSection: some View {
+        if hasCommands {
+            Section {
+                DisclosureGroup(isExpanded: $showsCommands) {
+                    TextField("Search commands", text: $commandSearch)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
 
-                                Text(browserPath)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(Color.appSecondary)
-                                    .lineLimit(1)
-
-                                Spacer()
-                            }
-                            .padding(.horizontal, WorkspaceLayout.rowPaddingHorizontal)
-                            .padding(.vertical, WorkspaceLayout.rowPaddingVertical)
-                            .background(Color.appTertiary)
-
-                            if !snapshot.fileItems.isEmpty {
-                                SurfaceDivider()
-                            }
-                        }
-
-                        if snapshot.fileItems.isEmpty {
-                            emptyRow("No file entries returned for this path.")
-                        } else {
-                            LazyVStack(spacing: 0) {
-                                ForEach(Array(snapshot.fileItems.enumerated()), id: \.element.id) { index, item in
-                                    fileRow(item)
-
-                                    if index < snapshot.fileItems.count - 1 {
-                                        SurfaceDivider()
-                                    }
-                                }
-                            }
+                    if filteredCommands.isEmpty {
+                        Text("No commands available.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(filteredCommands.prefix(6)) { command in
+                            commandRow(command)
                         }
                     }
+                } label: {
+                    LabeledContent("Commands", value: commandCountLabel)
                 }
+            } footer: {
+                Text("Drop a workspace command straight into chat without leaving this tab.")
+            }
+        }
+    }
+
+    private func commandRow(_ command: WorkspaceCommandItem) -> some View {
+        LabeledContent {
+            Button("Insert") {
+                insertIntoChat(command.prompt)
+            }
+            .buttonStyle(.borderless)
+        } label: {
+            Text(command.title)
+                .font(.body.monospaced())
+            if !command.description.isEmpty {
+                Text(command.description)
             }
         }
     }
 
     // MARK: - Rows
 
-    private func commandRow(_ command: WorkspaceCommandItem) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(command.title)
-                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.appPrimary)
-                if !command.description.isEmpty {
-                    Text(command.description)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.appSecondary)
-                }
-            }
-
-            Spacer()
-
-            Button("Insert") {
-                insertIntoChat(command.prompt)
-            }
-            .font(.system(size: 13, weight: .semibold, design: .rounded))
-            .foregroundStyle(Color.appPrimary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.appSurface, in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.appSeparator, lineWidth: 1)
-            )
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, WorkspaceLayout.rowPaddingHorizontal)
-        .padding(.vertical, 12)
-    }
-
-    private func fileRow(_ item: WorkspaceFileItem) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: item.kind == .directory ? "folder.fill" : "doc.text")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(item.kind == .directory ? Color.appPrimary : Color.appSecondary)
-                .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.name)
-                    .font(.system(size: 14, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.appPrimary)
-                Text(item.absolutePath ?? item.path)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color.appSecondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            if item.kind == .directory {
-                Button("Open") {
-                    browserPath = item.path
-                }
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appPrimary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.appSurface, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.appSeparator, lineWidth: 1)
-                )
-                .buttonStyle(.plain)
-            } else {
-                Button("Insert") {
-                    insertIntoChat("Inspect file: \(item.absolutePath ?? item.path)")
-                }
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appPrimary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.appSurface, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.appSeparator, lineWidth: 1)
-                )
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, WorkspaceLayout.rowPaddingHorizontal)
-        .padding(.vertical, WorkspaceLayout.rowPaddingVertical)
-    }
-
-    private func infoRow(title: String, value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                Text(value)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color.appSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Spacer()
-        }
-        .padding(.horizontal, WorkspaceLayout.rowPaddingHorizontal)
-        .padding(.vertical, WorkspaceLayout.rowPaddingVertical)
-    }
-
-    private func emptyRow(_ text: String) -> some View {
-        HStack {
-            Text(text)
-                .font(.system(size: 14))
-                .foregroundStyle(Color.appSecondary)
-            Spacer()
-        }
-        .padding(.horizontal, WorkspaceLayout.rowPaddingHorizontal)
-        .padding(.vertical, WorkspaceLayout.rowPaddingVertical)
-    }
-
-    private var sourceControlChangedFilesCard: some View {
-        SurfaceCard(padding: 0) {
-            if snapshot.workingTree.isEmpty {
-                emptyRow(workingTreeEmptyStateText)
-            } else {
-                LazyVStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Text("Changed files")
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                .foregroundStyle(Color.appPrimary)
-
-                            Spacer(minLength: 8)
-
-                            Text(workingTreeFileCountLabel)
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.appSecondary)
-                        }
-
-                        Text("Open any file to inspect the full diff for the current working directory.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                    .padding(.horizontal, WorkspaceLayout.rowPaddingHorizontal)
-                    .padding(.vertical, WorkspaceLayout.rowPaddingVertical)
-                    .background(Color.appTertiary)
-
-                    SurfaceDivider()
-
-                    ForEach(Array(snapshot.workingTree.enumerated()), id: \.element.id) { index, file in
-                        Button {
-                            selectedDiffFile = file
-                        } label: {
-                            FileChangeRow(file: file)
-                                .padding(.horizontal, WorkspaceLayout.rowPaddingHorizontal)
-                                .padding(.vertical, WorkspaceLayout.rowPaddingVertical)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-
-                        if index < snapshot.workingTree.count - 1 {
-                            SurfaceDivider()
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func sourceControlSummaryMetric(title: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
+    private func pathRow(_ title: String, value: String) -> some View {
+        LabeledContent(title) {
             Text(value)
-                .font(.system(size: 16, weight: .bold, design: .rounded))
-                .foregroundStyle(tint)
+                .font(.footnote.monospaced())
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.appTertiary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func sourceControlContextPill(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
-                .textCase(.uppercase)
-                .kerning(0.4)
-
-            Text(value)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Color.appPrimary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.appTertiary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private func sourceControlActionButton(
-        title: String,
-        systemImage: String,
-        fill: Color,
-        foreground: Color,
-        showsBorder: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(foreground)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(fill, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(showsBorder ? Color.appSeparator : Color.clear, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func sourceControlInlineNotice(_ notice: WorkspaceActionNotice) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+    private func noticeRow(_ notice: WorkspaceActionNotice) -> some View {
+        Label {
+            Text(notice.message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } icon: {
             Image(systemName: notice.icon)
                 .foregroundStyle(notice.tint)
-            Text(notice.message)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.appSecondary)
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
-        .background(Color.appTertiary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    // MARK: - Layout Helpers
-
-    private func collapsibleSection<Content: View>(
-        title: String,
-        detail: String,
-        isExpanded: Binding<Bool>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    isExpanded.wrappedValue.toggle()
-                }
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(title.uppercased())
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appSecondary)
-                        .kerning(0.5)
-
-                    Spacer(minLength: 8)
-
-                    Text(detail)
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.appSecondary)
-
-                    Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.appSecondary)
-                }
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded.wrappedValue {
-                content()
-            }
-        }
-    }
-
-    private func sectionHeader(title: String, detail: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
-                .kerning(0.5)
-
-            Spacer(minLength: 8)
-
-            Text(detail)
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
-        }
-    }
-
-    private func errorCard(_ message: String) -> some View {
-        SurfaceCard {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(message)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.appSecondary)
-                Spacer()
-            }
         }
     }
 
@@ -951,27 +565,8 @@ struct WorkspaceRootView: View {
         return count == 1 ? "1 item" : "\(count) items"
     }
 
-    private var sourceControlDetail: String {
-        switch snapshot.workingTreeSource {
-        case .gitStatus:
-            workingTreeCount == 0 ? "clean working tree" : workingTreeFileCountLabel
-        case .sessionDiffFallback:
-            workingTreeCount == 0 ? "session fallback" : workingTreeFileCountLabel
-        case .unavailable:
-            "status unavailable"
-        }
-    }
-
     private var workingTreeCount: Int {
         workingTreeSummary.fileCount
-    }
-
-    private var workingTreeAdditions: Int {
-        workingTreeSummary.additions
-    }
-
-    private var workingTreeDeletions: Int {
-        workingTreeSummary.deletions
     }
 
     private var workingTreeFileCountLabel: String {
@@ -1034,17 +629,6 @@ struct WorkspaceRootView: View {
         let dir = snapshot.pathInfo?.directory?.nilIfBlank
         guard worktree != dir else { return nil }
         return (worktree as NSString).lastPathComponent
-    }
-
-    private var hasBranchOrWorktree: Bool {
-        let branch = snapshot.vcsInfo?.branch?.nilIfBlank ?? connection.branch
-        return branch != nil || activeWorktree != nil
-    }
-
-    private var sourceControlWorktreeLabel: String {
-        activeWorktree
-            ?? snapshot.currentProject?.displayName
-            ?? currentProjectName
     }
 
     private var currentWorktreePath: String? {
@@ -1449,8 +1033,8 @@ private struct WorkspaceActivityHeatmap: View {
 
             HStack {
                 Text("Less")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 HStack(spacing: 3) {
                     ForEach(0..<4, id: \.self) { level in
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
@@ -1459,15 +1043,15 @@ private struct WorkspaceActivityHeatmap: View {
                     }
                 }
                 Text("More")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
 
             if hasLoaded && activeDayCount == 0 {
                 Text("No message activity yet for this project.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .task(id: taskKey) {

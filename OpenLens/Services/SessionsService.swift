@@ -34,6 +34,37 @@ final class SessionsService {
         )
     }
 
+    /// Fetch one page of root sessions for the current directory, newest first.
+    ///
+    /// Child sessions are hidden, so a server page can become empty after
+    /// filtering. Such pages are skipped until at least one visible session is
+    /// found or the list ends, so callers never receive an empty page while
+    /// more sessions remain.
+    func listSessionsPage(cursor: String? = nil, pageSize: Int = 30) async throws -> OCSessionPage {
+        if ScreenshotFixtures.isEnabled {
+            guard cursor == nil else { return OCSessionPage(sessions: [], nextCursor: nil) }
+            return OCSessionPage(sessions: ScreenshotFixtures.sessions, nextCursor: nil)
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        var cursor = cursor
+        var seenCursors = Set(cursor.map { [$0] } ?? [])
+        while true {
+            let page = try await client.listSessionsPage(cursor: cursor, limit: pageSize)
+            let sessions = Self.rootSessions(in: resolvingProjectDirectories(in: page.sessions))
+            guard sessions.isEmpty, let next = page.nextCursor else {
+                return OCSessionPage(sessions: sessions, nextCursor: page.nextCursor)
+            }
+            guard seenCursors.insert(next).inserted else {
+                throw OpenCodeError.invalidPayload("The v2 response repeated a pagination cursor.")
+            }
+            cursor = next
+        }
+    }
+
     /// Fetch the session catalog for the Sessions screen, across directories.
     func listAllSessions() async throws -> [OCSession] {
         if ScreenshotFixtures.isEnabled {
@@ -150,6 +181,12 @@ final class SessionsService {
             return latest
         }
         return try await createSession()
+    }
+
+    static func rootSessions(in sessions: [OCSession]) -> [OCSession] {
+        sessions.filter { session in
+            session.parentID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+        }
     }
 
     private func visibleSessions(from sessions: [OCSession]) -> [OCSession] {

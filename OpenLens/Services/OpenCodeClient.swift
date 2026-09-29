@@ -95,6 +95,28 @@ actor OpenCodeClient {
         return try await get("/session")
     }
 
+    /// Fetch one page of sessions in the current directory context, newest first.
+    ///
+    /// v2 servers return an opaque `next` cursor while more sessions remain.
+    /// The v1 route is not paginated, so it returns the full list as a single
+    /// terminal page.
+    func listSessionsPage(cursor: String? = nil, limit: Int = 30) async throws -> OCSessionPage {
+        guard usesV2 else {
+            guard cursor == nil else { return OCSessionPage(sessions: [], nextCursor: nil) }
+            return OCSessionPage(sessions: try await get("/session"), nextCursor: nil)
+        }
+
+        let page: OCV2PageResult<OCSession> = try await getV2Page(
+            endpoint: "/api/session",
+            cursor: cursor,
+            limit: limit,
+            order: "desc",
+            includesLocation: false,
+            queryItems: contextDirectory.map { [URLQueryItem(name: "directory", value: $0)] } ?? []
+        )
+        return OCSessionPage(sessions: page.values, nextCursor: page.nextCursor)
+    }
+
     /// List sessions across every directory known to the connected server.
     func listAllSessions() async throws -> [OCSession] {
         guard usesV2 else {
@@ -1065,41 +1087,23 @@ actor OpenCodeClient {
         var seenCursors: Set<String> = []
 
         while true {
-            var queryItems = filters + [URLQueryItem(name: "limit", value: String(limit))]
             if let cursor {
                 guard seenCursors.insert(cursor).inserted else {
                     throw OpenCodeError.invalidPayload("The v2 response repeated a pagination cursor.")
                 }
-                queryItems.append(URLQueryItem(name: "cursor", value: cursor))
-            } else {
-                queryItems.append(URLQueryItem(name: "order", value: order))
             }
 
-            let page: OCV2CursorPage<[T]>
-            do {
-                page = try await getV2(
-                    endpoint,
-                    queryItems: queryItems,
-                    includesLocation: includesLocation
-                )
-            } catch let error as OpenCodeError {
-                throw error
-            } catch is DecodingError {
-                throw OpenCodeError.invalidPayload("The v2 response did not contain a valid cursor page.")
-            } catch {
-                throw error
-            }
-            let next: String?
-            if let rawNext = page.cursor.next {
-                guard let cursor = rawNext.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
-                    throw OpenCodeError.invalidPayload("The v2 response contained a blank pagination cursor.")
-                }
-                next = cursor
-            } else {
-                next = nil
-            }
+            let page: OCV2PageResult<T> = try await getV2Page(
+                endpoint: endpoint,
+                cursor: cursor,
+                limit: limit,
+                order: order,
+                includesLocation: includesLocation,
+                queryItems: filters
+            )
+            let next = page.nextCursor
 
-            guard !page.data.isEmpty else {
+            guard !page.values.isEmpty else {
                 guard next == nil || allowsEmptyContinuationPages else {
                     throw OpenCodeError.invalidPayload("The v2 response contained an empty continuation page.")
                 }
@@ -1108,7 +1112,7 @@ actor OpenCodeClient {
                 continue
             }
 
-            values.append(contentsOf: page.data)
+            values.append(contentsOf: page.values)
             guard let next else {
                 return values
             }
@@ -1117,6 +1121,50 @@ actor OpenCodeClient {
             }
             cursor = next
         }
+    }
+
+    /// Fetches a single v2 cursor page. The initial request carries `order`;
+    /// continuation requests carry only the opaque cursor.
+    private func getV2Page<T: Decodable & Sendable>(
+        endpoint: String,
+        cursor: String?,
+        limit: Int,
+        order: String,
+        includesLocation: Bool,
+        queryItems filters: [URLQueryItem]
+    ) async throws -> OCV2PageResult<T> {
+        var queryItems = filters + [URLQueryItem(name: "limit", value: String(limit))]
+        if let cursor {
+            queryItems.append(URLQueryItem(name: "cursor", value: cursor))
+        } else {
+            queryItems.append(URLQueryItem(name: "order", value: order))
+        }
+
+        let page: OCV2CursorPage<[T]>
+        do {
+            page = try await getV2(
+                endpoint,
+                queryItems: queryItems,
+                includesLocation: includesLocation
+            )
+        } catch let error as OpenCodeError {
+            throw error
+        } catch is DecodingError {
+            throw OpenCodeError.invalidPayload("The v2 response did not contain a valid cursor page.")
+        } catch {
+            throw error
+        }
+
+        guard let rawNext = page.cursor.next else {
+            return OCV2PageResult(values: page.data, nextCursor: nil)
+        }
+        guard let next = rawNext.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
+            throw OpenCodeError.invalidPayload("The v2 response contained a blank pagination cursor.")
+        }
+        guard next != cursor else {
+            throw OpenCodeError.invalidPayload("The v2 response repeated a pagination cursor.")
+        }
+        return OCV2PageResult(values: page.data, nextCursor: next)
     }
 
     private func readV2FileContent(path: String) async throws -> OCFileContent {
