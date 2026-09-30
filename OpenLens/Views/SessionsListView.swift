@@ -196,7 +196,7 @@ struct SessionsListView: View {
                     newSessionButton
                         .padding(.trailing, 24)
                         .padding(.top, 12)
-                        .padding(.bottom, 16)
+                        .padding(.bottom, 32)
                 }
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationTitle(AppText.sessions)

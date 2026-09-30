@@ -81,6 +81,7 @@ struct ConnectView: View {
     @State private var pendingOpenCodePairingLink: OpenCodePairingLink?
 
     @State private var showQRScanner: Bool = false
+    @State private var isPairingScannerExpanded = false
     @State private var connectionPath: [ConnectionSetupDestination] = []
     @FocusState private var focusedManualField: ManualConnectionField?
 
@@ -94,21 +95,13 @@ struct ConnectView: View {
     var body: some View {
         NavigationStack(path: $connectionPath) {
             ConnectionWelcomeView(
-                onContinue: { connectionPath.append(.pairingInstructions) },
+                isScannerExpanded: $isPairingScannerExpanded,
+                isCameraActive: connectionPath.isEmpty && !showConnectionSheet && !showQRScanner && !showOnboarding,
+                onScanned: handleScannedCode,
                 onManualConnection: { connectionPath.append(.manual) }
             )
             .navigationDestination(for: ConnectionSetupDestination.self) { destination in
                 switch destination {
-                case .pairingInstructions:
-                    OpenCodePairingInstructionsView(
-                        onScan: { connectionPath.append(.scanner) }
-                    )
-                case .scanner:
-                    ConnectionPairingScannerView(
-                        isActive: !showConnectionSheet,
-                        onScanned: handleScannedCode,
-                        onManualPairing: { connectionPath.append(.manual) }
-                    )
                 case .manual:
                     manualConnectionContent
                 }
@@ -119,7 +112,7 @@ struct ConnectView: View {
                 isEnabled: autoReconnect,
                 isConnected: connection.isConnected,
                 isConnectionSheetPresented: showConnectionSheet,
-                isQRScannerPresented: showQRScanner,
+                isQRScannerPresented: showQRScanner || isPairingScannerExpanded,
                 didManuallyDisconnect: connection.didManuallyDisconnect,
                 savedConnection: savedConnections.mostRecent,
                 isConnectionSetupInProgress: !connectionPath.isEmpty
