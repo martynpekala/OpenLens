@@ -205,6 +205,17 @@ struct OpenLensAppConnectionStateTests {
         #expect(probe.urls == [URL(string: "http://192.168.1.50:4096")!])
     }
 
+    @Test @MainActor func openingTheAppCanReconnectOnlyBeforeAnyConnectionAttempt() async {
+        let connection = ConnectionManager(localNetworkAccessProbe: LocalNetworkAccessProbeStub(result: .accessRequired))
+
+        #expect(!connection.hasAttemptedConnection)
+
+        await connection.connect(url: "192.168.1.50:4096", username: "opencode", password: "")
+        connection.disconnect()
+
+        #expect(connection.hasAttemptedConnection)
+    }
+
     @Test func bonjourPolicyDeniedCodeRequiresLocalNetworkAccess() {
         #expect(BonjourDiscovery.isLocalNetworkPolicyDeniedDNSCode(-65570))
         #expect(!BonjourDiscovery.isLocalNetworkPolicyDeniedDNSCode(-65569))

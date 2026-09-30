@@ -28,6 +28,9 @@ final class ConnectionManager: ConnectionProviding {
     /// Prevents auto-reconnect from firing until the user manually connects again.
     private(set) var didManuallyDisconnect: Bool = false
 
+    /// Set on the first connection attempt of this app run, so opening the app reconnects only once.
+    private(set) var hasAttemptedConnection: Bool = false
+
     /// Reference to the shared saved connections store, set from the composition root.
     @ObservationIgnored var savedConnectionsStore: SavedConnectionsStore?
 
@@ -99,6 +102,7 @@ final class ConnectionManager: ConnectionProviding {
         method: ConnectionMethod = .manual
     ) async {
         didManuallyDisconnect = false
+        hasAttemptedConnection = true
         connectionMethod = method
         localNetworkAccessRequired = false
         serverCapabilities = nil
@@ -218,6 +222,7 @@ final class ConnectionManager: ConnectionProviding {
         method: ConnectionMethod = .qr
     ) async {
         didManuallyDisconnect = false
+        hasAttemptedConnection = true
         connectionMethod = method
         localNetworkAccessRequired = false
         serverCapabilities = nil

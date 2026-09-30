@@ -194,13 +194,7 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
                 }
 
                 if step != .manual {
-                    HStack {
-                        Text(AppText.connectionSetupV1Prompt)
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.appSecondary)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 8)
+
 
                         ConnectionSetupButton(
                             title: AppText.connectionSetupV1,
@@ -215,7 +209,7 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
                         .accessibilityLabel(AppText.connectionSetupV1AccessibilityLabel)
                         .accessibilityHint(AppText.connectionSetupV1Hint)
                         .accessibilityIdentifier("connection.setup.v1")
-                    }
+                    
                     .transition(actionTransition)
                 }
             }

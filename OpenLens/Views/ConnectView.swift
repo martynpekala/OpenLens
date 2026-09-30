@@ -108,7 +108,7 @@ struct ConnectView: View {
     @Environment(\.savedConnections) private var savedConnections
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
-    @AppStorage("autoReconnect") private var autoReconnect: Bool = true
+    @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnect: Bool = true
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     var body: some View {
@@ -135,16 +135,8 @@ struct ConnectView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active, shouldAttemptAutoReconnect(
-                isEnabled: autoReconnect,
-                isConnected: connection.isConnected,
-                isConnectionStatusPresented: connectionStatus != nil,
-                isQRScannerPresented: setupStep == .scanner,
-                didManuallyDisconnect: connection.didManuallyDisconnect,
-                savedConnection: savedConnections.mostRecent,
-                isConnectionSetupInProgress: setupStep == .manual
-            ) {
-                startConnect(auto: true)
+            if newPhase == .active {
+                autoReconnectIfNeeded()
             }
         }
         .onChange(of: connection.state) { _, newState in
@@ -157,6 +149,10 @@ struct ConnectView: View {
         .onAppear {
             guard !consumePendingDeepLinkIfNeeded() else { return }
             prefillFromMostRecentConnectionIfNeeded()
+            // Opening the app lands here already active, so the scene phase change never fires.
+            if !connection.hasAttemptedConnection, scenePhase == .active {
+                autoReconnectIfNeeded()
+            }
         }
         .onDisappear {
             discovery.stopBrowsing()
@@ -389,14 +385,6 @@ struct ConnectView: View {
 
     private var manualConnectionAccessories: some View {
         VStack(spacing: 20) {
-            Toggle(isOn: $autoReconnect) {
-                Text(AppText.autoReconnect)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-            }
-            .tint(Color.appAccent)
-            .padding(.horizontal, 16)
-
             discoveredServersSection
 
             if showsPreviewModesSection {
@@ -893,6 +881,19 @@ struct ConnectView: View {
             password = saved.password
             focusedManualField = nil
         }
+    }
+
+    private func autoReconnectIfNeeded() {
+        guard shouldAttemptAutoReconnect(
+            isEnabled: autoReconnect,
+            isConnected: connection.isConnected,
+            isConnectionStatusPresented: connectionStatus != nil,
+            isQRScannerPresented: setupStep == .scanner,
+            didManuallyDisconnect: connection.didManuallyDisconnect,
+            savedConnection: savedConnections.mostRecent,
+            isConnectionSetupInProgress: setupStep == .manual
+        ) else { return }
+        startConnect(auto: true)
     }
 
     private func connectManual() {

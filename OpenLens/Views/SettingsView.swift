@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var showDisconnectConfirmation = false
 
     @AppStorage(AppPreferenceKeys.showThinking) private var showThinking = true
+    @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnect = true
     @AppStorage(AppPreferenceKeys.hapticsEnabled) private var hapticsEnabled = true
     @AppStorage(AppPreferenceKeys.liveActivitiesEnabled) private var liveActivitiesEnabled = true
     private let accentColor = AccentColorPreference.shared
@@ -28,6 +29,9 @@ struct SettingsView: View {
                 }
                 Toggle(isOn: $liveActivitiesEnabled) {
                     preferenceLabel(AppText.settingsLiveActivities, subtitle: AppText.settingsLiveActivitiesSubtitle, icon: "platter.filled.top.iphone")
+                }
+                Toggle(isOn: $autoReconnect) {
+                    preferenceLabel(AppText.autoReconnect, subtitle: AppText.autoReconnectSubtitle, icon: "arrow.triangle.2.circlepath")
                 }
             }
             .tint(Color.appUserAccent)
