@@ -42,10 +42,18 @@ struct ConnectedRootView: View {
                     } label: {
                         tabLabel(for: .workspace, selectedTab: router.selectedTab)
                     }
-                    Tab(value: AppTab.settings, role: .search) {
-                        tabNavigationView(for: .settings)
-                    } label: {
-                        tabLabel(for: .settings, selectedTab: router.selectedTab)
+                    if #available(anyAppleOS 27.0, *) {
+                        Tab(value: AppTab.settings, role: .prominent) {
+                            tabNavigationView(for: .settings)
+                        } label: {
+                            tabLabel(for: .settings, selectedTab: router.selectedTab)
+                        }
+                    } else {
+                        Tab(value: AppTab.settings, role: .search) {
+                            tabNavigationView(for: .settings)
+                        } label: {
+                            tabLabel(for: .settings, selectedTab: router.selectedTab)
+                        }
                     }
                 }
             }

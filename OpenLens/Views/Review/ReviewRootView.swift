@@ -68,7 +68,6 @@ struct ReviewRootView: View {
         Group {
             content
         }
-        .padding(.bottom)
         .toolbarTitleDisplayMode(.inline)
         .task {
             await refreshInboxBadgeCount()

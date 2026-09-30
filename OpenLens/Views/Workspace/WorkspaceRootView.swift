@@ -99,7 +99,6 @@ struct WorkspaceRootView: View {
                 content
             }
         }
-        .navigationTitle(currentWorkspaceTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             projectToolbarItem
@@ -190,7 +189,6 @@ struct WorkspaceRootView: View {
             changedFilesSection
             filesSection
         }
-        .padding(.bottom)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
