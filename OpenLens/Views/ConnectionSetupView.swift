@@ -6,21 +6,65 @@ enum ConnectionSetupStep: Equatable {
     case manual
 }
 
+/// A connection attempt, shown in place of the setup step it started from.
+struct ConnectionSetupStatus: Equatable {
+    enum Phase: Equatable {
+        /// Trading a scanned pairing code for credentials.
+        case pairing
+        case connecting
+        case reconnecting
+        /// Stays up until the app swaps in its main interface.
+        case connected
+        case failed(title: String, message: String, needsLocalNetworkAccess: Bool)
+
+        var isInFlight: Bool {
+            switch self {
+            case .pairing, .connecting, .reconnecting: true
+            case .connected, .failed: false
+            }
+        }
+    }
+
+    var phase: Phase
+    /// Host and port shown under the title.
+    var serverName: String?
+}
+
 private enum ConnectionSetupSheet: String, Identifiable {
     case tips
 
     var id: String { rawValue }
 }
 
+/// Elements the dot field's halo can wrap.
+private enum ConnectionSetupHaloTarget {
+    case lens
+    case manualFields
+    case orb
+}
+
+private struct ConnectionSetupHaloOutline: Equatable {
+    var rect: CGRect
+    var cornerRadius: CGFloat
+}
+
 /// Pairing entry point. The QR lens and the manual form both condense out of the dot field in
-/// place, so the whole setup stays on one screen. The caller supplies the manual form's fields and
-/// the controls below them, plus any manual-step toolbar items (the tips button hides there).
+/// place, so the whole setup stays on one screen. Connection attempts play out there too: the open
+/// step condenses into a status orb that the dots circle while OpenLens waits on the network. The
+/// caller supplies the manual form's fields and the controls below them, plus any manual-step
+/// toolbar items (the tips button hides there).
 struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View {
     @Binding var step: ConnectionSetupStep
+    /// The attempt in progress; the step it started from comes back once it clears.
+    let status: ConnectionSetupStatus?
     let isCameraActive: Bool
     let canConnectManually: Bool
     let onScanned: (ScannedOpenLensCode) -> Void
     let onConnectManually: () -> Void
+    let onRetry: () -> Void
+    /// Stops the attempt and clears the status.
+    let onCancel: () -> Void
+    let onOpenSettings: () -> Void
     @ViewBuilder let manualFields: ManualFields
     @ViewBuilder let manualAccessories: ManualAccessories
 
@@ -30,147 +74,160 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
     @State private var manualButtonFrame: CGRect = .zero
     @State private var viewfinderFrame: CGRect = .zero
     @State private var manualFieldsFrame: CGRect = .zero
+    @State private var orbFrame: CGRect = .zero
     @State private var fieldPulse: GlowDotField.Pulse?
     @State private var focusChangedAt: Date = .distantPast
-    /// Keeps the halo on the last expanded element while it fades out after going back.
-    @State private var lastExpandedStep: ConnectionSetupStep = .scanner
+    /// Keeps the halo on the last focused element while it fades out after going back.
+    @State private var lastFocusedElement: ConnectionSetupHaloTarget = .lens
+    /// Where the halo sat before the focus moved, held until the new element has been measured.
+    @State private var haloFallback: ConnectionSetupHaloOutline?
 
     var body: some View {
         ConnectionSetupPage {
             VStack(spacing: 24) {
-                switch step {
-                case .welcome:
-                    VStack(spacing: 24) {
-                        ConnectionSetupHeading(
-                            systemImage: "macbook.and.iphone",
-                            title: AppText.connectionSetupTitle,
-                            subtitle: AppText.connectionSetupSubtitle
-                        )
-                        .padding(.bottom, 8)
-                        
-                        Text("opencode service start")
-                            .font(.system(size: 18, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Color.appPrimary)
-                            .textSelection(.enabled)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 16)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.appTertiary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16))
-                            .accessibilityLabel("Terminal command: opencode service start")
+                if let status {
+                    statusContent(status)
+                        .transition(reduceMotion ? .opacity : AnyTransition(LensMaterializeTransition()))
+                } else {
+                    switch step {
+                    case .welcome:
+                        VStack(spacing: 24) {
+                            ConnectionSetupHeading(
+                                systemImage: "macbook.and.iphone",
+                                title: AppText.connectionSetupTitle,
+                                subtitle: AppText.connectionSetupSubtitle
+                            )
+                            .padding(.bottom, 8)
 
-                        Text("opencode pair")
-                            .font(.system(size: 18, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Color.appPrimary)
-                            .textSelection(.enabled)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 16)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.appTertiary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16))
-                            .accessibilityLabel("Terminal command: opencode pair")
-                    }
-                    .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
-                case .scanner:
-                    VStack(spacing: 24) {
-                        ConnectionScannerLens(
-                            isActive: isCameraActive && presentedSheet == nil,
-                            onScanned: onScanned
-                        )
-                        .onGeometryChange(for: CGRect.self) { proxy in
-                            proxy.frame(in: .global)
-                        } action: { frame in
-                            viewfinderFrame = frame
+                            Text("opencode service start")
+                                .font(.system(size: 18, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Color.appPrimary)
+                                .textSelection(.enabled)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 16)
+                                .frame(maxWidth: .infinity)
+                                .background(Color.appTertiary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16))
+                                .accessibilityLabel("Terminal command: opencode service start")
+
+                            Text("opencode pair")
+                                .font(.system(size: 18, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Color.appPrimary)
+                                .textSelection(.enabled)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 16)
+                                .frame(maxWidth: .infinity)
+                                .background(Color.appTertiary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16))
+                                .accessibilityLabel("Terminal command: opencode pair")
                         }
-                        .accessibilityIdentifier("connection.setup.camera")
-
-                        Text(AppText.connectionScanTitle)
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .transition(reduceMotion ? .opacity : AnyTransition(LensMaterializeTransition()))
-                case .manual:
-                    VStack(spacing: 24) {
-                        ConnectionSetupHeading(
-                            systemImage: "network",
-                            title: AppText.connectionManualTitle,
-                            subtitle: ""
-                        )
-
-                        VStack(spacing: 16) {
-                            VStack(spacing: 0) {
-                                manualFields
-                            }
-                            .background(
-                                Color.appTertiary,
-                                in: RoundedRectangle(cornerRadius: Self.manualFieldsCornerRadius, style: .continuous)
+                        .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
+                    case .scanner:
+                        VStack(spacing: 24) {
+                            ConnectionScannerLens(
+                                isActive: isCameraActive && presentedSheet == nil,
+                                onScanned: handleScan
                             )
                             .onGeometryChange(for: CGRect.self) { proxy in
                                 proxy.frame(in: .global)
                             } action: { frame in
-                                manualFieldsFrame = frame
+                                viewfinderFrame = frame
                             }
-                            .accessibilityIdentifier("connection.setup.manual.fields")
+                            .accessibilityIdentifier("connection.setup.camera")
 
-                            manualAccessories
+                            Text(AppText.connectionScanTitle)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.appSecondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
+                        .transition(reduceMotion ? .opacity : AnyTransition(LensMaterializeTransition()))
+                    case .manual:
+                        VStack(spacing: 24) {
+                            ConnectionSetupHeading(
+                                systemImage: "network",
+                                title: AppText.connectionManualTitle,
+                                subtitle: ""
+                            )
+
+                            VStack(spacing: 16) {
+                                VStack(spacing: 0) {
+                                    manualFields
+                                }
+                                .background(
+                                    Color.appTertiary,
+                                    in: RoundedRectangle(cornerRadius: Self.manualFieldsCornerRadius, style: .continuous)
+                                )
+                                .onGeometryChange(for: CGRect.self) { proxy in
+                                    proxy.frame(in: .global)
+                                } action: { frame in
+                                    manualFieldsFrame = frame
+                                }
+                                .accessibilityIdentifier("connection.setup.manual.fields")
+
+                                manualAccessories
+                            }
+                        }
+                        .transition(reduceMotion ? .opacity : AnyTransition(LensMaterializeTransition()))
                     }
-                    .transition(reduceMotion ? .opacity : AnyTransition(LensMaterializeTransition()))
                 }
             }
         } actions: {
-            switch step {
-            case .welcome:
-                ConnectionSetupButton(title: AppText.connectionPairingScan, action: startScanning)
-                    .onGeometryChange(for: CGRect.self) { proxy in
-                        proxy.frame(in: .global)
-                    } action: { frame in
-                        scanButtonFrame = frame
-                    }
-                    .accessibilityIdentifier("connection.setup.scan")
-                    .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
-            case .scanner:
-                EmptyView()
-            case .manual:
-                ConnectionSetupButton(title: AppText.connect, action: onConnectManually)
-                    .disabled(!canConnectManually)
-                    .accessibilityIdentifier("connection.setup.manual.connect")
-                    .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
-            }
-
-            if step != .manual {
-                HStack {
-                    Text(AppText.connectionSetupV1Prompt)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 8)
-
-                    ConnectionSetupButton(
-                        title: AppText.connectionSetupV1,
-                        isPrimary: false,
-                        action: showManualForm
-                    )
-                    .onGeometryChange(for: CGRect.self) { proxy in
-                        proxy.frame(in: .global)
-                    } action: { frame in
-                        manualButtonFrame = frame
-                    }
-                    .accessibilityLabel(AppText.connectionSetupV1AccessibilityLabel)
-                    .accessibilityHint(AppText.connectionSetupV1Hint)
-                    .accessibilityIdentifier("connection.setup.v1")
+            if let status {
+                statusActions(status)
+            } else {
+                switch step {
+                case .welcome:
+                    ConnectionSetupButton(title: AppText.connectionPairingScan, action: startScanning)
+                        .onGeometryChange(for: CGRect.self) { proxy in
+                            proxy.frame(in: .global)
+                        } action: { frame in
+                            scanButtonFrame = frame
+                        }
+                        .accessibilityIdentifier("connection.setup.scan")
+                        .transition(actionTransition)
+                case .scanner:
+                    EmptyView()
+                case .manual:
+                    ConnectionSetupButton(title: AppText.connect, action: onConnectManually)
+                        .disabled(!canConnectManually)
+                        .accessibilityIdentifier("connection.setup.manual.connect")
+                        .transition(actionTransition)
                 }
-                .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
+
+                if step != .manual {
+                    HStack {
+                        Text(AppText.connectionSetupV1Prompt)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.appSecondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 8)
+
+                        ConnectionSetupButton(
+                            title: AppText.connectionSetupV1,
+                            isPrimary: false,
+                            action: showManualForm
+                        )
+                        .onGeometryChange(for: CGRect.self) { proxy in
+                            proxy.frame(in: .global)
+                        } action: { frame in
+                            manualButtonFrame = frame
+                        }
+                        .accessibilityLabel(AppText.connectionSetupV1AccessibilityLabel)
+                        .accessibilityHint(AppText.connectionSetupV1Hint)
+                        .accessibilityIdentifier("connection.setup.v1")
+                    }
+                    .transition(actionTransition)
+                }
             }
         }
+        .animation(statusAnimation, value: status)
         .background {
             GlowDotField(pulse: fieldPulse, focus: fieldFocus)
                 .background(Color.appBackground)
                 .ignoresSafeArea()
         }
         .toolbar {
-            if step != .welcome {
+            if step != .welcome && status == nil {
                 ToolbarItem(placement: .topBarLeading) {
                     Button(action: returnToWelcome) {
                         Image(systemName: "chevron.left")
@@ -182,7 +239,7 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
                 }
             }
 
-            if step != .manual {
+            if showsTipsButton {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         presentedSheet = .tips
@@ -196,12 +253,33 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
                 }
             }
         }
-        .sensoryFeedback(.impact(flexibility: .soft), trigger: fieldPulse)
-        .onChange(of: step) { _, newStep in
-            focusChangedAt = .now
-            if newStep != .welcome {
-                lastExpandedStep = newStep
+        .sensoryFeedback(trigger: fieldPulse) { _, _ in
+            // Arriving gets a success tap of its own instead.
+            status?.phase == .connected ? nil : .impact(flexibility: .soft)
+        }
+        .sensoryFeedback(trigger: status?.phase) { oldPhase, newPhase in
+            switch newPhase {
+            case .connected?:
+                // Reconnecting on its own lands quietly; attempts the user started get a success tap.
+                return oldPhase == .reconnecting ? nil : .success
+            case .failed?:
+                return .error
+            default:
+                return nil
             }
+        }
+        .onChange(of: focusedElement) { oldElement, newElement in
+            // The halo ramps in or out when it gathers or releases, and glides between elements.
+            if (oldElement == nil) != (newElement == nil) {
+                focusChangedAt = .now
+            }
+            if let newElement {
+                haloFallback = oldElement.flatMap { haloOutline(for: $0) }
+                lastFocusedElement = newElement
+            }
+        }
+        .onChange(of: status?.phase) { _, newPhase in
+            statusPhaseChanged(to: newPhase)
         }
         .sheet(item: $presentedSheet) { _ in
             ConnectionSetupTipsView()
@@ -213,30 +291,126 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
 
     private static var manualFieldsCornerRadius: CGFloat { 20 }
 
-    /// Dots gather just outside the lens outline or the manual fields while either is open.
-    private var fieldFocus: GlowDotField.Focus? {
-        let focusedStep = step == .welcome ? lastExpandedStep : step
-        let rect: CGRect
-        let cornerRadius: CGFloat
-        switch focusedStep {
-        case .welcome:
-            return nil
-        case .scanner:
-            let inset = ConnectionScannerLens.outlineInset + 4
-            rect = viewfinderFrame.insetBy(dx: -inset, dy: -inset)
-            cornerRadius = ConnectionScannerLens.cornerRadius + inset
-        case .manual:
-            let inset: CGFloat = 6
-            rect = manualFieldsFrame.insetBy(dx: -inset, dy: -inset)
-            cornerRadius = Self.manualFieldsCornerRadius + inset
+    private var statusAnimation: Animation {
+        reduceMotion ? .easeInOut(duration: 0.25) : .spring(duration: 0.75, bounce: 0.2)
+    }
+
+    private var actionTransition: AnyTransition {
+        reduceMotion ? .opacity : AnyTransition(.blurReplace)
+    }
+
+    /// Tips stay out of the way of the manual form and of an attempt still in progress.
+    private var showsTipsButton: Bool {
+        guard let status else { return step != .manual }
+        if case .failed = status.phase { return true }
+        return false
+    }
+
+    /// Leaves a failed attempt for the step it started from.
+    private var statusDismissTitle: String {
+        switch step {
+        case .welcome: AppText.cancel
+        case .scanner: AppText.connectionScanAgain
+        case .manual: AppText.connectionEditDetails
         }
-        guard !rect.isEmpty else { return nil }
+    }
+
+    private func statusContent(_ status: ConnectionSetupStatus) -> some View {
+        VStack(spacing: 28) {
+            ConnectionStatusOrb(phase: status.phase)
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .global)
+                } action: { frame in
+                    orbFrame = frame
+                }
+                .accessibilityHidden(true)
+
+            // Room for the longest copy keeps the orb from bobbing between phases.
+            ConnectionStatusCaption(status: status)
+                .frame(minHeight: 150, alignment: .top)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("connection.setup.status")
+    }
+
+    @ViewBuilder
+    private func statusActions(_ status: ConnectionSetupStatus) -> some View {
+        switch status.phase {
+        case .pairing, .connecting, .reconnecting, .connected:
+            // Once connected the button fades but keeps its place, so the orb holds still until
+            // the app takes over.
+            let isConnected = status.phase == .connected
+            ConnectionSetupButton(title: AppText.cancel, isPrimary: false, action: cancelAttempt)
+                .opacity(isConnected ? 0 : 1)
+                .allowsHitTesting(!isConnected)
+                .accessibilityHidden(isConnected)
+                .accessibilityIdentifier("connection.setup.status.cancel")
+                .transition(actionTransition)
+        case .failed(_, _, let needsLocalNetworkAccess):
+            if needsLocalNetworkAccess {
+                ConnectionSetupButton(title: AppText.openSettings, action: onOpenSettings)
+                    .accessibilityIdentifier("connection.setup.status.settings")
+                    .transition(actionTransition)
+            }
+
+            ConnectionSetupButton(title: AppText.tryAgain, isPrimary: !needsLocalNetworkAccess, action: retryAttempt)
+                .accessibilityIdentifier("connection.setup.status.retry")
+                .transition(actionTransition)
+
+            ConnectionSetupButton(title: statusDismissTitle, isPrimary: false, action: cancelAttempt)
+                .accessibilityIdentifier("connection.setup.status.dismiss")
+                .transition(actionTransition)
+        }
+    }
+
+    /// What the halo wraps: the status orb during an attempt, otherwise the open step's element.
+    private var focusedElement: ConnectionSetupHaloTarget? {
+        if status != nil { return .orb }
+        switch step {
+        case .welcome: return nil
+        case .scanner: return .lens
+        case .manual: return .manualFields
+        }
+    }
+
+    /// Dots gather just outside the lens outline, the manual fields, or the status orb, and circle
+    /// the orb while an attempt is in flight.
+    private var fieldFocus: GlowDotField.Focus? {
+        guard let outline = haloOutline(for: focusedElement ?? lastFocusedElement) ?? haloFallback else {
+            return nil
+        }
         return GlowDotField.Focus(
-            rect: rect,
-            cornerRadius: cornerRadius,
-            isActive: step != .welcome,
-            date: focusChangedAt
+            rect: outline.rect,
+            cornerRadius: outline.cornerRadius,
+            isActive: focusedElement != nil,
+            date: focusChangedAt,
+            isOrbiting: status?.phase.isInFlight == true
         )
+    }
+
+    /// The halo's outline around an element, or nil until the element has been measured.
+    private func haloOutline(for element: ConnectionSetupHaloTarget) -> ConnectionSetupHaloOutline? {
+        switch element {
+        case .lens:
+            guard !viewfinderFrame.isEmpty else { return nil }
+            let inset = ConnectionScannerLens.outlineInset + 4
+            return ConnectionSetupHaloOutline(
+                rect: viewfinderFrame.insetBy(dx: -inset, dy: -inset),
+                cornerRadius: ConnectionScannerLens.cornerRadius + inset
+            )
+        case .manualFields:
+            guard !manualFieldsFrame.isEmpty else { return nil }
+            let inset: CGFloat = 6
+            return ConnectionSetupHaloOutline(
+                rect: manualFieldsFrame.insetBy(dx: -inset, dy: -inset),
+                cornerRadius: Self.manualFieldsCornerRadius + inset
+            )
+        case .orb:
+            guard !orbFrame.isEmpty else { return nil }
+            let inset = ConnectionStatusOrb.outlineInset + 4
+            let rect = orbFrame.insetBy(dx: -inset, dy: -inset)
+            return ConnectionSetupHaloOutline(rect: rect, cornerRadius: rect.width / 2)
+        }
     }
 
     private func startScanning() {
@@ -249,10 +423,7 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
 
     /// Sends a ripple out from the tapped button, then condenses the next step out of the field.
     private func expand(to newStep: ConnectionSetupStep, from buttonFrame: CGRect) {
-        fieldPulse = GlowDotField.Pulse(
-            origin: CGPoint(x: buttonFrame.midX, y: buttonFrame.midY),
-            date: .now
-        )
+        sendPulse(from: buttonFrame)
         withAnimation(reduceMotion ? .easeInOut(duration: 0.25) : .spring(duration: 0.75, bounce: 0.2)) {
             step = newStep
         }
@@ -260,16 +431,44 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
 
     /// Collapses the lens or form back into the field, releasing a ripple from where it sat.
     private func returnToWelcome() {
-        let expandedFrame = step == .manual ? manualFieldsFrame : viewfinderFrame
-        if expandedFrame != .zero {
-            fieldPulse = GlowDotField.Pulse(
-                origin: CGPoint(x: expandedFrame.midX, y: expandedFrame.midY),
-                date: .now
-            )
-        }
+        sendPulse(from: step == .manual ? manualFieldsFrame : viewfinderFrame)
         withAnimation(reduceMotion ? .easeInOut(duration: 0.25) : .spring(duration: 0.6, bounce: 0.15)) {
             step = .welcome
         }
+    }
+
+    /// A scan ripples out of the lens as it condenses into the status orb.
+    private func handleScan(_ code: ScannedOpenLensCode) {
+        sendPulse(from: viewfinderFrame)
+        onScanned(code)
+    }
+
+    private func retryAttempt() {
+        sendPulse(from: orbFrame)
+        onRetry()
+    }
+
+    private func cancelAttempt() {
+        sendPulse(from: orbFrame)
+        onCancel()
+    }
+
+    /// Ripples out of the orb as the connection lands, and reads the outcome out for VoiceOver.
+    private func statusPhaseChanged(to phase: ConnectionSetupStatus.Phase?) {
+        switch phase {
+        case .connected?:
+            sendPulse(from: orbFrame)
+            AccessibilityNotification.Announcement(AppText.connected).post()
+        case .failed(let title, _, _)?:
+            AccessibilityNotification.Announcement(title).post()
+        default:
+            break
+        }
+    }
+
+    private func sendPulse(from frame: CGRect) {
+        guard frame != .zero else { return }
+        fieldPulse = GlowDotField.Pulse(origin: CGPoint(x: frame.midX, y: frame.midY), date: .now)
     }
 }
 
@@ -352,6 +551,177 @@ private struct ConnectionScannerLens: View {
             withAnimation(.easeOut(duration: 0.6)) {
                 outlineGlow = 0.3
             }
+        }
+    }
+}
+
+/// The open step condensed into a disc that carries the attempt: it breathes while OpenLens waits
+/// on the network, flashes when the connection lands, and shakes off a failure.
+private struct ConnectionStatusOrb: View {
+    static let size: CGFloat = 132
+    static let outlineInset: CGFloat = 5
+
+    let phase: ConnectionSetupStatus.Phase
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var outlineProgress: Double = 0
+    @State private var outlineGlow: Double = 1
+    @State private var shakeCount = 0
+
+    var body: some View {
+        Image(systemName: symbolName)
+            .font(.system(size: 40, weight: .medium))
+            .foregroundStyle(Color.appPrimary)
+            .contentTransition(.symbolEffect(.replace))
+            .symbolEffect(.breathe, isActive: phase.isInFlight && !reduceMotion)
+            .frame(width: Self.size, height: Self.size)
+            .background(Color.appTertiary.opacity(0.7), in: Circle())
+            .overlay { outline }
+            .keyframeAnimator(initialValue: CGFloat.zero, trigger: shakeCount) { content, offset in
+                content.offset(x: offset)
+            } keyframes: { _ in
+                KeyframeTrack {
+                    CubicKeyframe(-10, duration: 0.07)
+                    CubicKeyframe(8, duration: 0.09)
+                    CubicKeyframe(-5, duration: 0.09)
+                    CubicKeyframe(2, duration: 0.08)
+                    CubicKeyframe(0, duration: 0.1)
+                }
+            }
+            .onAppear(perform: playReveal)
+            .onChange(of: phase) { _, newPhase in
+                switch newPhase {
+                case .connected:
+                    flashOutline()
+                case .failed:
+                    if !reduceMotion {
+                        shakeCount += 1
+                    }
+                default:
+                    break
+                }
+            }
+    }
+
+    private var symbolName: String {
+        switch phase {
+        case .pairing, .connecting, .reconnecting:
+            "macbook.and.iphone"
+        case .connected:
+            "checkmark"
+        case .failed(_, _, let needsLocalNetworkAccess):
+            needsLocalNetworkAccess ? "wifi.exclamationmark" : "exclamationmark"
+        }
+    }
+
+    private var outline: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.appPrimary.opacity(0.8), lineWidth: 3)
+                .blur(radius: 6)
+                .opacity(outlineGlow)
+            Circle()
+                .stroke(Color.appPrimary.opacity(0.35), lineWidth: 1)
+        }
+        .padding(-Self.outlineInset)
+        .mask {
+            SweepWedge(progress: outlineProgress)
+                .padding(-24)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func playReveal() {
+        guard !reduceMotion else {
+            outlineProgress = 1
+            outlineGlow = 0.3
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.8).delay(0.15)) {
+            outlineProgress = 1
+        } completion: {
+            withAnimation(.easeOut(duration: 0.6)) {
+                outlineGlow = 0.3
+            }
+        }
+    }
+
+    /// Lights the outline back up for a moment as the connection lands.
+    private func flashOutline() {
+        guard !reduceMotion else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            outlineGlow = 1
+        } completion: {
+            withAnimation(.easeOut(duration: 0.9)) {
+                outlineGlow = 0.3
+            }
+        }
+    }
+}
+
+/// Title, server and message under the status orb; each phase's copy blurs into the next.
+private struct ConnectionStatusCaption: View {
+    let status: ConnectionSetupStatus
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text(title)
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.appPrimary)
+                .accessibilityAddTraits(.isHeader)
+                .fixedSize(horizontal: false, vertical: true)
+                .id(title)
+                .transition(textTransition)
+
+            if let serverName = status.serverName {
+                Label(serverName, systemImage: "network")
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.appSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.appTertiary.opacity(0.7), in: Capsule())
+            }
+
+            if let message {
+                Text(message)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.appSecondary)
+                    .lineSpacing(3)
+                    .lineLimit(5)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .id(message)
+                    .transition(textTransition)
+            }
+        }
+        .multilineTextAlignment(.center)
+    }
+
+    private var textTransition: AnyTransition {
+        reduceMotion ? .opacity : AnyTransition(.blurReplace)
+    }
+
+    private var title: String {
+        switch status.phase {
+        case .pairing: AppText.connectionPairing
+        case .connecting: AppText.connecting
+        case .reconnecting: AppText.reconnecting
+        case .connected: AppText.connected
+        case .failed(let title, _, _): title
+        }
+    }
+
+    /// In-flight phases explain themselves only when there is no server to show instead.
+    private var message: String? {
+        switch status.phase {
+        case .pairing: status.serverName == nil ? AppText.connectionPairingSubtitle : nil
+        case .connecting: status.serverName == nil ? AppText.connectingSubtitle : nil
+        case .reconnecting: status.serverName == nil ? AppText.reconnectingSubtitle : nil
+        case .connected: nil
+        case .failed(_, let message, _): message
         }
     }
 }
@@ -582,18 +952,76 @@ private struct ConnectionSetupButton: View {
     ConnectionWelcomePreview(step: .manual)
 }
 
+#Preview("Pairing after a scan") {
+    ConnectionWelcomePreview(step: .scanner, status: ConnectionSetupStatus(phase: .pairing))
+}
+
+#Preview("Connecting") {
+    ConnectionWelcomePreview(
+        step: .scanner,
+        status: ConnectionSetupStatus(phase: .connecting, serverName: "192.168.1.50:4096")
+    )
+}
+
+#Preview("Connected") {
+    ConnectionWelcomePreview(
+        step: .scanner,
+        status: ConnectionSetupStatus(phase: .connected, serverName: "192.168.1.50:4096")
+    )
+}
+
+#Preview("Connection failed") {
+    ConnectionWelcomePreview(
+        step: .manual,
+        status: ConnectionSetupStatus(
+            phase: .failed(
+                title: AppText.manualConnectErrorTitle,
+                message: AppText.manualConnectErrorBody,
+                needsLocalNetworkAccess: false
+            ),
+            serverName: "192.168.1.50:4096"
+        )
+    )
+}
+
+#Preview("Local network access needed") {
+    ConnectionWelcomePreview(
+        step: .scanner,
+        status: ConnectionSetupStatus(
+            phase: .failed(
+                title: AppText.localNetworkAccessRequiredTitle,
+                message: AppText.localNetworkAccessRequiredBody,
+                needsLocalNetworkAccess: true
+            ),
+            serverName: "192.168.1.50:4096"
+        )
+    )
+}
+
 private struct ConnectionWelcomePreview: View {
-    @State var step: ConnectionSetupStep
+    @State private var step: ConnectionSetupStep
+    @State private var status: ConnectionSetupStatus?
     @State private var serverURL = ""
+
+    init(step: ConnectionSetupStep, status: ConnectionSetupStatus? = nil) {
+        _step = State(initialValue: step)
+        _status = State(initialValue: status)
+    }
 
     var body: some View {
         NavigationStack {
             ConnectionWelcomeView(
                 step: $step,
+                status: status,
                 isCameraActive: false,
                 canConnectManually: !serverURL.isEmpty,
                 onScanned: { _ in },
-                onConnectManually: {}
+                onConnectManually: {
+                    status = ConnectionSetupStatus(phase: .connecting, serverName: serverURL)
+                },
+                onRetry: { status?.phase = .connecting },
+                onCancel: { status = nil },
+                onOpenSettings: {}
             ) {
                 TextField("192.168.1.50:4096", text: $serverURL)
                     .font(.system(size: 15, design: .monospaced))

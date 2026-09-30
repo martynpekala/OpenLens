@@ -4,7 +4,7 @@ import UIKit
 func shouldAttemptAutoReconnect(
     isEnabled: Bool,
     isConnected: Bool,
-    isConnectionSheetPresented: Bool,
+    isConnectionStatusPresented: Bool,
     isQRScannerPresented: Bool,
     didManuallyDisconnect: Bool,
     savedConnection: SavedConnection?,
@@ -12,7 +12,7 @@ func shouldAttemptAutoReconnect(
 ) -> Bool {
     guard isEnabled,
           !isConnected,
-          !isConnectionSheetPresented,
+          !isConnectionStatusPresented,
           !isQRScannerPresented,
           !isConnectionSetupInProgress,
           !didManuallyDisconnect,
@@ -45,6 +45,24 @@ func connectionFailureMessage(
         : AppText.manualConnectErrorBody
 }
 
+/// Host and port of a server address for the connection status, e.g. `192.168.1.5:4096`. Leaves
+/// out credentials, paths and queries, which can carry pairing secrets.
+func connectionServerDisplayName(_ serverURL: String) -> String? {
+    let trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          let components = URLComponents(string: trimmed.contains("://") ? trimmed : "http://\(trimmed)"),
+          let host = components.host?
+              .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+              .nilIfBlank
+    else {
+        return nil
+    }
+
+    let displayHost = host.contains(":") ? "[\(host)]" : host
+    guard let port = components.port else { return displayHost }
+    return "\(displayHost):\(port)"
+}
+
 private enum ManualConnectionField: Hashable {
     case serverURL
     case username
@@ -63,6 +81,9 @@ struct ConnectView: View {
     /// Deep link received from `openlens://connect` URL or QR scan.
     @Binding var pendingDeepLink: DeepLinkConnection?
     @Binding var pendingSessionNavigationID: String?
+    /// True while a fresh connection shows its connected moment; the app waits for it to clear
+    /// before swapping in the main interface.
+    @Binding var isFinishingConnection: Bool
 
     @State private var discovery = BonjourDiscovery()
     @State private var manualURL: String = ""
@@ -70,8 +91,8 @@ struct ConnectView: View {
     @State private var password: String = ""
 
     @State private var showOnboarding: Bool = false
-    @State private var showConnectionSheet: Bool = false
-    @State private var connectionFailed: Bool = false
+    /// The attempt shown in place of the setup step; nil while the user is setting up.
+    @State private var connectionStatus: ConnectionSetupStatus?
     @State private var connectionError: String?
     @State private var connectionTask: Task<Void, Never>?
     @State private var isAutoReconnect: Bool = false
@@ -94,17 +115,21 @@ struct ConnectView: View {
         NavigationStack {
             ConnectionWelcomeView(
                 step: $setupStep,
-                isCameraActive: !showConnectionSheet && !showOnboarding,
+                status: connectionStatus,
+                isCameraActive: connectionStatus == nil && !showOnboarding,
                 canConnectManually: !manualURL.isEmpty,
                 onScanned: handleScannedCode,
-                onConnectManually: connectManual
+                onConnectManually: connectManual,
+                onRetry: retryConnection,
+                onCancel: dismissConnectionStatus,
+                onOpenSettings: openAppSettings
             ) {
                 manualConnectionFields
             } manualAccessories: {
                 manualConnectionAccessories
             }
             .toolbar {
-                if setupStep == .manual {
+                if setupStep == .manual && connectionStatus == nil {
                     manualConnectionToolbar
                 }
             }
@@ -113,7 +138,7 @@ struct ConnectView: View {
             if newPhase == .active, shouldAttemptAutoReconnect(
                 isEnabled: autoReconnect,
                 isConnected: connection.isConnected,
-                isConnectionSheetPresented: showConnectionSheet,
+                isConnectionStatusPresented: connectionStatus != nil,
                 isQRScannerPresented: setupStep == .scanner,
                 didManuallyDisconnect: connection.didManuallyDisconnect,
                 savedConnection: savedConnections.mostRecent,
@@ -122,12 +147,8 @@ struct ConnectView: View {
                 startConnect(auto: true)
             }
         }
-        .sheet(isPresented: $showConnectionSheet, onDismiss: cancelConnection) {
-            connectionSheetContent
-                .presentationDetents(connectionFailed ? [.fraction(0.5), .medium] : [.fraction(0.35)])
-                .presentationDragIndicator(.hidden)
-                .interactiveDismissDisabled(false)
-                .presentationBackground(Color.appBackground)
+        .onChange(of: connection.state) { _, newState in
+            connectionStateChanged(to: newState)
         }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView(onDone: { showOnboarding = false })
@@ -139,6 +160,7 @@ struct ConnectView: View {
         }
         .onDisappear {
             discovery.stopBrowsing()
+            isFinishingConnection = false
         }
         .onChange(of: pendingDeepLink) { _, deepLink in
             guard let deepLink else { return }
@@ -604,151 +626,48 @@ struct ConnectView: View {
         }
     }
 
-    // MARK: - Connection Sheet
+    // MARK: - Connection Status
 
-    @ViewBuilder
-    private var connectionSheetContent: some View {
-        if connectionFailed {
-            errorStateContent
+    private func showConnectionStatus(_ phase: ConnectionSetupStatus.Phase, serverURL: String?) {
+        connectionStatus = ConnectionSetupStatus(
+            phase: phase,
+            serverName: serverURL.flatMap(connectionServerDisplayName)
+        )
+    }
+
+    /// Settles a finished connect call. A fresh connection holds its connected moment briefly
+    /// before the app swaps in the main interface.
+    private func finishConnectionAttempt() async {
+        guard connection.isConnected else {
+            if case .error(let message) = connection.state {
+                connectionError = message
+            }
+            showConnectionFailure()
+            return
+        }
+
+        connectionStatus?.phase = .connected
+        guard !isAutoReconnect else { return }
+        isFinishingConnection = true
+        try? await Task.sleep(for: .seconds(1.1))
+        isFinishingConnection = false
+    }
+
+    private func showConnectionFailure(whilePairing: Bool = false) {
+        let needsLocalNetworkAccess = connection.localNetworkAccessRequired
+        let title = if needsLocalNetworkAccess {
+            AppText.localNetworkAccessRequiredTitle
+        } else if whilePairing {
+            AppText.connectionPairingErrorTitle
+        } else if isAutoReconnect {
+            AppText.autoReconnectErrorTitle
         } else {
-            connectingStateContent
+            AppText.manualConnectErrorTitle
         }
-    }
-
-    // MARK: - Connecting State
-
-    private var connectingStateContent: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            ZStack {
-                Circle()
-                    .stroke(Color.appSeparator, lineWidth: 1.5)
-                    .frame(width: 64, height: 64)
-                ProgressView()
-                    .tint(Color.appAccent)
-                    .scaleEffect(1.4)
-            }
-
-            VStack(spacing: 8) {
-                Text(isAutoReconnect
-                    ? AppText.reconnecting
-                    : AppText.connecting)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color.appPrimary)
-
-                Text(isAutoReconnect
-                    ? AppText.reconnectingSubtitle
-                    : AppText.connectingSubtitle)
-                    .font(.body)
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            Spacer()
-
-            Button {
-                showConnectionSheet = false
-            } label: {
-                Text(AppText.cancel)
-                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(Color.appPrimary)
-                    .background(Color.appTertiary)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .padding(.horizontal, 16)
-        }
-    }
-
-    // MARK: - Error State
-
-    private var errorStateContent: some View {
-        VStack(spacing: 24) {
-            Spacer()
-
-            ZStack {
-                Circle()
-                    .stroke(Color.appSeparator, lineWidth: 1.5)
-                    .frame(width: 64, height: 64)
-                Image(systemName: "wifi.exclamationmark")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Color.appSecondary)
-            }
-
-            VStack(spacing: 8) {
-                Text(failureTitle)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color.appPrimary)
-
-                Text(failureMessage)
-                    .lineLimit(3)
-                    .font(.footnote)
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, 16)
-
-            Spacer()
-
-            VStack(spacing: 10) {
-                if connection.localNetworkAccessRequired {
-                    Button {
-                        openAppSettings()
-                    } label: {
-                        Text(AppText.openSettings)
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .foregroundStyle(Color.appOnAccent)
-                            .background(Color.appAccent)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                }
-
-                Button {
-                    retryConnection()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text(AppText.tryAgain)
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(connection.localNetworkAccessRequired ? Color.appPrimary : Color.appOnAccent)
-                    .background(connection.localNetworkAccessRequired ? Color.appTertiary : Color.appAccent)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-
-                Button {
-                    showConnectionSheet = false
-                } label: {
-                    Text(AppText.cancel)
-                        .font(.system(size: 16, weight: .medium, design: .rounded))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .foregroundStyle(Color.appPrimary)
-                        .background(Color.appTertiary)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-    }
-
-    // MARK: - Failure Copy
-
-    private var failureTitle: String {
-        if connection.localNetworkAccessRequired {
-            return AppText.localNetworkAccessRequiredTitle
-        }
-        return isAutoReconnect
-            ? AppText.autoReconnectErrorTitle
-            : AppText.manualConnectErrorTitle
+        connectionStatus = ConnectionSetupStatus(
+            phase: .failed(title: title, message: failureMessage, needsLocalNetworkAccess: needsLocalNetworkAccess),
+            serverName: connectionStatus?.serverName
+        )
     }
 
     private var failureMessage: String {
@@ -757,6 +676,21 @@ struct ConnectView: View {
             connectionError: connectionError,
             isAutoReconnect: isAutoReconnect
         )
+    }
+
+    /// Turns the connected moment into a failure if the link drops before the app takes over.
+    private func connectionStateChanged(to state: ConnectionManager.State) {
+        guard connectionStatus?.phase == .connected else { return }
+        switch state {
+        case .connected, .reconnecting:
+            return
+        case .error(let message):
+            connectionError = message
+        case .disconnected, .connecting:
+            connectionError = nil
+        }
+        isFinishingConnection = false
+        showConnectionFailure()
     }
 
     // MARK: - Connection Actions
@@ -780,9 +714,9 @@ struct ConnectView: View {
 
         connectionTask?.cancel()
         isAutoReconnect = auto
-        connectionFailed = false
         connectionError = nil
-        showConnectionSheet = true
+        focusedManualField = nil
+        showConnectionStatus(auto ? .reconnecting : .connecting, serverURL: manualURL)
 
         let method: ConnectionMethod = auto ? .autoReconnect : currentConnectionMethod
 
@@ -794,15 +728,7 @@ struct ConnectView: View {
             }
 
             guard !Task.isCancelled else { return }
-
-            if connection.isConnected {
-                showConnectionSheet = false
-            } else {
-                if case .error(let msg) = connection.state {
-                    connectionError = msg
-                }
-                connectionFailed = true
-            }
+            await finishConnectionAttempt()
         }
     }
 
@@ -816,9 +742,10 @@ struct ConnectView: View {
         username = "opencode"
         password = ""
         isAutoReconnect = false
-        connectionFailed = false
         connectionError = nil
-        showConnectionSheet = true
+        focusedManualField = nil
+        // Links that already carry credentials skip the pairing exchange.
+        showConnectionStatus(link.credentials == nil ? .pairing : .connecting, serverURL: manualURL)
 
         connectionTask = Task {
             do {
@@ -835,6 +762,7 @@ struct ConnectView: View {
                 manualURL = credential.serverURL
                 username = credential.username
                 password = credential.password
+                connectionStatus?.phase = .connecting
                 await connection.connect(
                     url: credential.serverURL,
                     username: credential.username,
@@ -842,18 +770,11 @@ struct ConnectView: View {
                     method: currentConnectionMethod
                 )
                 guard !Task.isCancelled else { return }
-                if connection.isConnected {
-                    showConnectionSheet = false
-                } else {
-                    if case .error(let message) = connection.state {
-                        connectionError = message
-                    }
-                    connectionFailed = true
-                }
+                await finishConnectionAttempt()
             } catch {
                 guard !Task.isCancelled else { return }
                 connectionError = error.localizedDescription
-                connectionFailed = true
+                showConnectionFailure(whilePairing: true)
             }
         }
     }
@@ -864,9 +785,9 @@ struct ConnectView: View {
         pendingRemoteCredential = nil
         connectionTask?.cancel()
         isAutoReconnect = false
-        connectionFailed = false
         connectionError = nil
-        showConnectionSheet = true
+        focusedManualField = nil
+        showConnectionStatus(.pairing, serverURL: nil)
 
         connectionTask = Task {
             do {
@@ -878,13 +799,12 @@ struct ConnectView: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 connectionError = error.localizedDescription
-                connectionFailed = true
+                showConnectionFailure(whilePairing: true)
             }
         }
     }
 
     private func retryConnection() {
-        connectionFailed = false
         connectionError = nil
         if let pendingOpenCodePairingLink {
             startOpenCodePairing(pendingOpenCodePairingLink)
@@ -925,7 +845,14 @@ struct ConnectView: View {
         }
     }
 
+    /// Stops the attempt and brings back the setup step it started from.
+    private func dismissConnectionStatus() {
+        cancelConnection()
+        connectionStatus = nil
+    }
+
     private func completeRemoteConnection(_ credential: RemoteDeviceCredential) async {
+        connectionStatus?.phase = .connecting
         do {
             guard RemoteConnectionSecretStore.save(credential) else {
                 throw RemoteProtocolError.remoteError("keychain_write_failed")
@@ -936,17 +863,12 @@ struct ConnectView: View {
 
             if connection.isConnected {
                 pendingRemoteCredential = nil
-                showConnectionSheet = false
-            } else {
-                if case .error(let message) = connection.state {
-                    connectionError = message
-                }
-                connectionFailed = true
             }
+            await finishConnectionAttempt()
         } catch {
             guard !Task.isCancelled else { return }
             connectionError = error.localizedDescription
-            connectionFailed = true
+            showConnectionFailure()
         }
     }
 
@@ -1123,7 +1045,8 @@ private struct ConnectViewPreviewHost: View {
         ConnectView(
             onStartDemo: {},
             pendingDeepLink: $pendingDeepLink,
-            pendingSessionNavigationID: $pendingSessionNavigationID
+            pendingSessionNavigationID: $pendingSessionNavigationID,
+            isFinishingConnection: .constant(false)
         )
         .environment(\.connection, connection)
         .environment(\.savedConnections, savedConnections)

@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Animated backdrop of glowing dots laid on a perspective wave surface. Crests glow, a
 /// `Pulse` sends a ripple through the surface, and a `Focus` gathers a halo of dots around a
-/// rounded rect such as the QR viewfinder. Frames are in the global coordinate space.
+/// rounded rect such as the QR viewfinder. When the focus jumps to another rect, the halo glides
+/// over to it. Frames are in the global coordinate space.
 struct GlowDotField: View {
     struct Pulse: Equatable {
         let origin: CGPoint
@@ -14,6 +15,29 @@ struct GlowDotField: View {
         var cornerRadius: CGFloat
         var isActive: Bool
         var date: Date
+        /// Sends a bright comet of dots circling through the halo, e.g. while waiting on the network.
+        var isOrbiting = false
+    }
+
+    /// Outline the halo glides away from after its focus jumps to another rect.
+    struct Glide: Equatable {
+        var rect: CGRect
+        var cornerRadius: CGFloat
+        var date: Date
+    }
+
+    /// Fades the orbiting comet between two intensities.
+    private struct OrbitFade {
+        static let duration = 0.6
+
+        var from: Double
+        var to: Double
+        var date: Date
+
+        func level(at date: Date) -> Double {
+            let raw = min(max(date.timeIntervalSince(self.date) / Self.duration, 0), 1)
+            return from + (to - from) * (1 - pow(1 - raw, 2))
+        }
     }
 
     var pulse: Pulse?
@@ -23,6 +47,8 @@ struct GlowDotField: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var isVisible = false
     @State private var startDate = Date.now
+    @State private var glide: Glide?
+    @State private var orbitFade = OrbitFade(from: 0, to: 0, date: .distantPast)
 
     var body: some View {
         GeometryReader { proxy in
@@ -34,6 +60,8 @@ struct GlowDotField: View {
                     origin: origin,
                     pulse: reduceMotion ? nil : pulse,
                     focus: focus,
+                    glide: reduceMotion ? nil : glide,
+                    orbit: reduceMotion ? 0 : orbitFade.level(at: timeline.date),
                     reduceMotion: reduceMotion,
                     isDark: colorScheme == .dark,
                     color: Color.appPrimary
@@ -47,10 +75,58 @@ struct GlowDotField: View {
         .accessibilityHidden(true)
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }
+        .onChange(of: focus) { oldFocus, newFocus in
+            glide = Self.glide(from: oldFocus, to: newFocus, continuing: glide, at: .now)
+        }
+        .onChange(of: focus?.isOrbiting == true, initial: true) { _, isOrbiting in
+            let now = Date.now
+            orbitFade = OrbitFade(from: orbitFade.level(at: now), to: isOrbiting ? 1 : 0, date: now)
+        }
     }
 }
 
 extension GlowDotField {
+    static let glideDuration = 0.7
+    /// Smaller moves, like scrolling, track the rect directly instead of starting a glide.
+    static let glideThreshold: CGFloat = 12
+
+    /// The glide to run after the focus changes: a fresh one from wherever the halo is drawn now
+    /// when the rect jumps, the running one for small moves, and none while nothing is gathered.
+    static func glide(
+        from oldFocus: Focus?,
+        to newFocus: Focus?,
+        continuing currentGlide: Glide?,
+        at date: Date
+    ) -> Glide? {
+        guard let oldFocus, let newFocus, oldFocus.isActive else { return nil }
+        let jump = max(
+            abs(newFocus.rect.minX - oldFocus.rect.minX),
+            abs(newFocus.rect.minY - oldFocus.rect.minY),
+            abs(newFocus.rect.maxX - oldFocus.rect.maxX),
+            abs(newFocus.rect.maxY - oldFocus.rect.maxY),
+            abs(newFocus.cornerRadius - oldFocus.cornerRadius)
+        )
+        guard jump >= glideThreshold else { return currentGlide }
+        let outline = outline(of: oldFocus, glide: currentGlide, at: date)
+        return Glide(rect: outline.rect, cornerRadius: outline.cornerRadius, date: date)
+    }
+
+    /// The outline the halo wraps at `date`: partway from the glide's start toward the focus rect.
+    static func outline(of focus: Focus, glide: Glide?, at date: Date) -> (rect: CGRect, cornerRadius: CGFloat) {
+        guard let glide else { return (focus.rect, focus.cornerRadius) }
+        let raw = min(max(date.timeIntervalSince(glide.date) / glideDuration, 0), 1)
+        guard raw < 1 else { return (focus.rect, focus.cornerRadius) }
+        let t = CGFloat(1 - pow(1 - raw, 3))
+        func mix(_ start: CGFloat, _ end: CGFloat) -> CGFloat { start + (end - start) * t }
+        let rect = CGRect(
+            x: mix(glide.rect.minX, focus.rect.minX),
+            y: mix(glide.rect.minY, focus.rect.minY),
+            width: mix(glide.rect.width, focus.rect.width),
+            height: mix(glide.rect.height, focus.rect.height)
+        )
+        return (rect, mix(glide.cornerRadius, focus.cornerRadius))
+    }
+
     /// Signed distance from `point` to a rounded rect (negative inside) and the outward normal.
     static func roundedRectDistance(
         from point: CGPoint,
@@ -90,12 +166,17 @@ private struct GlowDotFieldRenderer {
     private static let rippleDuration = 1.7
     private static let focusDelay = 0.12
     private static let focusDuration = 1.0
+    /// One lap of the orbiting comet takes about 1.4 seconds.
+    private static let orbitSpeed = 4.5
 
     let time: Double
     let date: Date
     let origin: CGPoint
     let pulse: GlowDotField.Pulse?
     let focus: GlowDotField.Focus?
+    let glide: GlowDotField.Glide?
+    /// Intensity of the comet circling the halo, 0...1.
+    let orbit: Double
     let reduceMotion: Bool
     let isDark: Bool
     let color: Color
@@ -111,6 +192,7 @@ private struct GlowDotFieldRenderer {
         let rect: CGRect
         let cornerRadius: CGFloat
         let progress: Double
+        let orbit: Double
     }
 
     func draw(in context: inout GraphicsContext, size: CGSize) {
@@ -199,6 +281,13 @@ private struct GlowDotFieldRenderer {
                         y -= Double(normal.dy) * pull
                         let angle = atan2(y - Double(lens.rect.midY), x - Double(lens.rect.midX))
                         glow += halo * 1.3 * (0.65 + 0.35 * cos(angle - time * 1.6))
+                        if lens.orbit > 0 {
+                            // How far this dot trails the comet head, going around in its direction.
+                            var trail = (time * Self.orbitSpeed - angle).truncatingRemainder(dividingBy: 2 * .pi)
+                            if trail < 0 { trail += 2 * .pi }
+                            let comet = exp(-trail * 1.8) + exp(-(2 * .pi - trail) * 12)
+                            glow += halo * lens.orbit * 2.2 * comet
+                        }
                     }
                 }
 
@@ -260,7 +349,9 @@ private struct GlowDotFieldRenderer {
     }
 
     private func lensState() -> Lens? {
-        guard let focus, !focus.rect.isEmpty else { return nil }
+        guard let focus else { return nil }
+        let outline = GlowDotField.outline(of: focus, glide: glide, at: date)
+        guard !outline.rect.isEmpty else { return nil }
         let progress: Double
         if reduceMotion {
             progress = focus.isActive ? 1 : 0
@@ -272,9 +363,10 @@ private struct GlowDotFieldRenderer {
         }
         guard progress > 0 else { return nil }
         return Lens(
-            rect: focus.rect.offsetBy(dx: -origin.x, dy: -origin.y),
-            cornerRadius: focus.cornerRadius,
-            progress: progress
+            rect: outline.rect.offsetBy(dx: -origin.x, dy: -origin.y),
+            cornerRadius: outline.cornerRadius,
+            progress: progress,
+            orbit: orbit
         )
     }
 

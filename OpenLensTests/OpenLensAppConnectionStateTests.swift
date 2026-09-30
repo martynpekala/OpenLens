@@ -95,7 +95,7 @@ struct OpenLensAppConnectionStateTests {
         #expect(!shouldAttemptAutoReconnect(
             isEnabled: true,
             isConnected: false,
-            isConnectionSheetPresented: false,
+            isConnectionStatusPresented: false,
             isQRScannerPresented: false,
             didManuallyDisconnect: false,
             savedConnection: nil
@@ -104,7 +104,7 @@ struct OpenLensAppConnectionStateTests {
         #expect(!shouldAttemptAutoReconnect(
             isEnabled: true,
             isConnected: false,
-            isConnectionSheetPresented: false,
+            isConnectionStatusPresented: false,
             isQRScannerPresented: false,
             didManuallyDisconnect: false,
             savedConnection: SavedConnection(
@@ -118,7 +118,7 @@ struct OpenLensAppConnectionStateTests {
         #expect(shouldAttemptAutoReconnect(
             isEnabled: true,
             isConnected: false,
-            isConnectionSheetPresented: false,
+            isConnectionStatusPresented: false,
             isQRScannerPresented: false,
             didManuallyDisconnect: false,
             savedConnection: SavedConnection(
@@ -142,7 +142,7 @@ struct OpenLensAppConnectionStateTests {
         #expect(!shouldAttemptAutoReconnect(
             isEnabled: true,
             isConnected: false,
-            isConnectionSheetPresented: false,
+            isConnectionStatusPresented: false,
             isQRScannerPresented: false,
             didManuallyDisconnect: false,
             savedConnection: SavedConnection(
@@ -169,6 +169,24 @@ struct OpenLensAppConnectionStateTests {
             connectionError: "The request timed out.",
             isAutoReconnect: true
         ) == AppText.localNetworkAccessRequiredBody)
+    }
+
+    @Test(arguments: [
+        ("192.168.1.5:4096", "192.168.1.5:4096"),
+        ("http://macbook.local:4096/", "macbook.local:4096"),
+        ("  https://example.com  ", "example.com"),
+        ("http://[fe80::1]:4096", "[fe80::1]:4096"),
+    ])
+    func connectionStatusNamesTheServerByHostAndPort(serverURL: String, expected: String) {
+        #expect(connectionServerDisplayName(serverURL) == expected)
+    }
+
+    @Test func connectionStatusNeverShowsCredentialsOrTokensFromTheServerURL() {
+        #expect(connectionServerDisplayName("https://user:secret@example.com/pair?token=abc") == "example.com")
+    }
+
+    @Test func connectionStatusShowsNoServerForABlankURL() {
+        #expect(connectionServerDisplayName("   ") == nil)
     }
 
     @Test @MainActor func localNetworkProbeStopsConnectionBeforeHTTPWhenAccessIsRequired() async {

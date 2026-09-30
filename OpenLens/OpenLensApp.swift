@@ -203,6 +203,8 @@ struct OpenLensApp: App {
     /// Alert shown when a deep link arrives while already connected.
     @State private var showDeepLinkSwitch: Bool = false
     @State private var initialSessionsReadiness: InitialSessionsReadiness
+    /// Keeps the connect screen up while it shows a fresh connection's connected moment.
+    @State private var isConnectScreenFinishing = false
 
     private var resolvedInitialSessions: SessionsListView.InitialState? {
         switch initialSessionsReadiness.state {
@@ -226,11 +228,16 @@ struct OpenLensApp: App {
         }
 
         if (connection.isConnected || connection.isReconnecting),
+           !isConnectScreenFinishing,
            let resolvedInitialSessions {
             return .connected(initialSessions: resolvedInitialSessions)
         }
 
         return .connect
+    }
+
+    private var isShowingConnectScreen: Bool {
+        if case .connect = rootDestination { true } else { false }
     }
 
     private var startDebugPreviewAction: (() -> Void)? {
@@ -448,12 +455,14 @@ struct OpenLensApp: App {
                             startPreview(.recordedReplay(replay, mode: mode))
                         },
                         pendingDeepLink: $pendingDeepLink,
-                        pendingSessionNavigationID: $pendingSessionNavigationID
+                        pendingSessionNavigationID: $pendingSessionNavigationID,
+                        isFinishingConnection: $isConnectScreenFinishing
                     )
                     .environment(\.connection, connection)
                     .transition(.opacity)
                 }
             }
+            .animation(.easeInOut(duration: 0.45), value: isShowingConnectScreen)
             .openLensTheme(OpenLensAppearance.fallback.theme)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .environment(\.liveActivity, liveActivity)
