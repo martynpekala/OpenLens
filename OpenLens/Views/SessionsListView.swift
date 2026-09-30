@@ -192,6 +192,12 @@ struct SessionsListView: View {
             }
         } else {
             sessionStateContent
+                .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
+                    newSessionButton
+                        .padding(.trailing, 24)
+                        .padding(.top, 12)
+                        .padding(.bottom, 16)
+                }
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationTitle(AppText.sessions)
                 .toolbar {
@@ -201,17 +207,20 @@ struct SessionsListView: View {
                         }
                         .sharedBackgroundVisibility(.hidden)
                     }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            presentNewSessionSheet()
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 16))
-                                .foregroundStyle(Color.appPrimary)
-                        }
-                    }
                 }
         }
+    }
+
+    private var newSessionButton: some View {
+        Button(action: presentNewSessionSheet) {
+            Image(systemName: "plus")
+                .font(.system(size: 24, weight: .medium))
+        }
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.circle)
+        .controlSize(.large)
+        .tint(Color.appUserAccent)
+        .accessibilityLabel(AppText.newSession)
     }
 
     @ViewBuilder
