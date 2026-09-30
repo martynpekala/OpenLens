@@ -51,7 +51,7 @@ private enum ManualConnectionField: Hashable {
     case password
 }
 
-/// Guided computer pairing with the existing manual connection screen as a fallback.
+/// Guided computer pairing with a manual connection form as a fallback.
 struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
@@ -80,9 +80,7 @@ struct ConnectView: View {
     @State private var pendingRemoteCredential: RemoteDeviceCredential?
     @State private var pendingOpenCodePairingLink: OpenCodePairingLink?
 
-    @State private var showQRScanner: Bool = false
-    @State private var isPairingScannerExpanded = false
-    @State private var connectionPath: [ConnectionSetupDestination] = []
+    @State private var setupStep: ConnectionSetupStep = .welcome
     @FocusState private var focusedManualField: ManualConnectionField?
 
     @Environment(\.connection) private var connection
@@ -93,17 +91,21 @@ struct ConnectView: View {
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     var body: some View {
-        NavigationStack(path: $connectionPath) {
+        NavigationStack {
             ConnectionWelcomeView(
-                isScannerExpanded: $isPairingScannerExpanded,
-                isCameraActive: connectionPath.isEmpty && !showConnectionSheet && !showQRScanner && !showOnboarding,
+                step: $setupStep,
+                isCameraActive: !showConnectionSheet && !showOnboarding,
+                canConnectManually: !manualURL.isEmpty,
                 onScanned: handleScannedCode,
-                onManualConnection: { connectionPath.append(.manual) }
-            )
-            .navigationDestination(for: ConnectionSetupDestination.self) { destination in
-                switch destination {
-                case .manual:
-                    manualConnectionContent
+                onConnectManually: connectManual
+            ) {
+                manualConnectionFields
+            } manualAccessories: {
+                manualConnectionAccessories
+            }
+            .toolbar {
+                if setupStep == .manual {
+                    manualConnectionToolbar
                 }
             }
         }
@@ -112,10 +114,10 @@ struct ConnectView: View {
                 isEnabled: autoReconnect,
                 isConnected: connection.isConnected,
                 isConnectionSheetPresented: showConnectionSheet,
-                isQRScannerPresented: showQRScanner || isPairingScannerExpanded,
+                isQRScannerPresented: setupStep == .scanner,
                 didManuallyDisconnect: connection.didManuallyDisconnect,
                 savedConnection: savedConnections.mostRecent,
-                isConnectionSetupInProgress: !connectionPath.isEmpty
+                isConnectionSetupInProgress: setupStep == .manual
             ) {
                 startConnect(auto: true)
             }
@@ -130,12 +132,6 @@ struct ConnectView: View {
         .sheet(isPresented: $showOnboarding) {
             OnboardingView(onDone: { showOnboarding = false })
                 .presentationBackground(Color.appBackground)
-        }
-        .fullScreenCover(isPresented: $showQRScanner) {
-            QRScannerView(
-                onScanned: handleScannedCode,
-                onDismiss: { showQRScanner = false }
-            )
         }
         .onAppear {
             guard !consumePendingDeepLinkIfNeeded() else { return }
@@ -152,59 +148,33 @@ struct ConnectView: View {
         }
     }
 
-    private var manualConnectionContent: some View {
-        ScrollView {
-            VStack(spacing: 22) {
-                manualConnectionSection
-
-                connectionChoiceSeparator
-                qrScanSection
-
-                discoveredServersSection
-
-                if showsPreviewModesSection {
-                    previewModesSection
-                }
+    private var manualConnectionToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                startNearbyDiscovery()
+            } label: {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
+                    .symbolEffect(.breathe, isActive: discovery.isSearching)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 24)
-        }
-        .background(Color.appBackground)
-        .background {
-            KeyboardDismissTapInstaller {
-                focusedManualField = nil
-            }
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    startNearbyDiscovery()
-                } label: {
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
-                        .symbolEffect(.breathe, isActive: discovery.isSearching)
-                }
-                .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
-                .accessibilityHint("Searches for nearby OpenCode servers on your local network")
-            }
+            .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
+            .accessibilityHint("Searches for nearby OpenCode servers on your local network")
+            .accessibilityIdentifier("connection.setup.manual.nearby")
 
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showOnboarding = true
-                } label: {
-                    Text(AppText.help)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
-                }
+            Button {
+                showOnboarding = true
+            } label: {
+                Image(systemName: "questionmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.appPrimary)
             }
+            .accessibilityLabel(AppText.help)
+            .accessibilityIdentifier("connection.setup.manual.help")
         }
     }
 
     private func handleScannedCode(_ code: ScannedOpenLensCode) {
-        showQRScanner = false
         currentConnectionMethod = .qr
         switch code {
         case .direct(let deepLink):
@@ -214,68 +184,6 @@ struct ConnectView: View {
         case .openCodePairing(let link):
             startOpenCodePairing(link)
         }
-    }
-
-    // MARK: - QR Scan Section
-
-    private var qrScanSection: some View {
-        Button {
-            showQRScanner = true
-        } label: {
-            VStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(Color.appAccent)
-                        .frame(width: 56, height: 56)
-                    Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(Color.appOnAccent)
-                }
-
-                VStack(spacing: 3) {
-                    Text(AppText.qrScan)
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
-                    Text(AppText.qrScanSubtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 22)
-            .background {
-                connectionSectionBackground(cornerRadius: 20)
-            }
-            .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: 300)
-        .frame(maxWidth: .infinity)
-    }
-
-    // MARK: - Connection Choice Separator
-
-    private var connectionChoiceSeparator: some View {
-        HStack(spacing: 12) {
-            Color.appSeparator
-                .frame(height: 0.5)
-            Text("OR")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
-                .padding(.horizontal, 2)
-            Color.appSeparator
-                .frame(height: 0.5)
-        }
-        .padding(.horizontal, 8)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Or")
     }
 
     // MARK: - Discovered Servers Section
@@ -395,146 +303,85 @@ struct ConnectView: View {
         .accessibilityElement(children: .contain)
     }
 
-    // MARK: - Manual Connection Section
+    // MARK: - Manual Connection Form
 
-    private var manualConnectionSection: some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 10) {
-                VStack(spacing: 6) {
-                    manualGlassField(systemImage: "link") {
-                        TextField(
-                            "",
-                            text: $manualURL,
-                            prompt: Text("192.168.1.50:4096")
-                                .foregroundStyle(Color.appSecondary.opacity(0.55))
-                        )
-                            .font(.system(size: 15, design: .monospaced))
-                            .foregroundStyle(Color.appPrimary)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .textContentType(.URL)
-                            .focused($focusedManualField, equals: .serverURL)
-                            .frame(maxWidth: .infinity)
-                    }
+    private var manualConnectionFields: some View {
+        VStack(spacing: 0) {
+            manualField(systemImage: "link") {
+                TextField(
+                    AppText.server,
+                    text: $manualURL,
+                    prompt: Text("192.168.1.50:4096")
+                        .foregroundStyle(Color.appSecondary.opacity(0.55))
+                )
+                    .font(.system(size: 15, design: .monospaced))
+                    .foregroundStyle(Color.appPrimary)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .textContentType(.URL)
+                    .focused($focusedManualField, equals: .serverURL)
+            }
 
-                    savedServerSuggestions
-                }
-                .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingServerAddressSuggestions)
-                .animation(.spring(response: 0.22, dampingFraction: 0.9), value: serverAddressSuggestionIDs)
+            savedServerSuggestions
 
-                Text("Enter a server address or paste a link from opencode pair.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.appSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            manualFieldDivider
 
-                manualGlassField(systemImage: "person.fill") {
-                    TextField("opencode", text: $username)
-                        .font(.system(size: 15))
-                        .foregroundStyle(Color.appPrimary)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .focused($focusedManualField, equals: .username)
-                }
+            manualField(systemImage: "person.fill") {
+                TextField(
+                    AppText.user,
+                    text: $username,
+                    prompt: Text("opencode")
+                        .foregroundStyle(Color.appSecondary.opacity(0.55))
+                )
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.appPrimary)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($focusedManualField, equals: .username)
+            }
 
-                manualGlassField(systemImage: "lock.fill") {
-                    SecureField(
-                        "",
-                        text: $password,
-                        prompt: Text(AppText.optional)
-                            .foregroundStyle(Color.appSecondary.opacity(0.55))
-                    )
-                        .font(.system(size: 15))
-                        .foregroundStyle(Color.appPrimary)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .focused($focusedManualField, equals: .password)
-                }
+            manualFieldDivider
 
-                HStack(spacing: 16) {
-                    Text(AppText.autoReconnect)
-                        .font(.system(size: 19, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
-
-                    Spacer()
-
-                    Toggle(AppText.autoReconnect, isOn: $autoReconnect)
-                        .labelsHidden()
-                        .tint(Color.appAccent)
-                }
-                .padding(.top, 4)
-
-                Button {
-                    connectManual()
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text(AppText.connect)
-                    }
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .foregroundStyle(manualURL.isEmpty ? Color.appSecondary.opacity(0.52) : Color.appOnAccent)
-                    .background(
-                        Capsule()
-                            .fill(manualURL.isEmpty ? Color.appTertiary.opacity(0.48) : Color.appAccent)
-                    )
-                    .overlay {
-                        Capsule()
-                            .stroke(Color.appSeparator.opacity(manualURL.isEmpty ? 0.70 : 0.22), lineWidth: 1.1)
-                    }
-                }
-                .disabled(manualURL.isEmpty)
+            manualField(systemImage: "lock.fill") {
+                SecureField(
+                    AppText.password,
+                    text: $password,
+                    prompt: Text(AppText.optional)
+                        .foregroundStyle(Color.appSecondary.opacity(0.55))
+                )
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.appPrimary)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($focusedManualField, equals: .password)
             }
         }
-        .padding(20)
+        .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingServerAddressSuggestions)
+        .animation(.spring(response: 0.22, dampingFraction: 0.9), value: serverAddressSuggestionIDs)
         .background {
-            connectionSectionBackground(cornerRadius: 36)
+            KeyboardDismissTapInstaller {
+                focusedManualField = nil
+            }
         }
-        .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 36, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
-                .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
     }
 
-    private func connectionSectionBackground(cornerRadius: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [
-                        Color.appSurface.opacity(0.20),
-                        Color.appTertiary.opacity(0.08),
-                        Color.appSurface.opacity(0.16)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .overlay(alignment: .topTrailing) {
-                LinearGradient(
-                    colors: [
-                        Color.cyan.opacity(0.010),
-                        Color.blue.opacity(0.006),
-                        Color.clear
-                    ],
-                    startPoint: .topTrailing,
-                    endPoint: .bottomLeading
-                )
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    private var manualConnectionAccessories: some View {
+        VStack(spacing: 20) {
+            Toggle(isOn: $autoReconnect) {
+                Text(AppText.autoReconnect)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.appPrimary)
             }
-            .overlay(alignment: .bottomLeading) {
-                LinearGradient(
-                    colors: [
-                        Color.purple.opacity(0.007),
-                        Color.clear
-                    ],
-                    startPoint: .bottomLeading,
-                    endPoint: .center
-                )
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .tint(Color.appAccent)
+            .padding(.horizontal, 16)
+
+            discoveredServersSection
+
+            if showsPreviewModesSection {
+                previewModesSection
+                    .padding(.top, 8)
             }
+        }
     }
 
     @ViewBuilder
@@ -557,7 +404,8 @@ struct ConnectView: View {
                     }
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 4)
             .transition(
                 .asymmetric(
                     insertion: .opacity
@@ -620,28 +468,27 @@ struct ConnectView: View {
         .contentShape(Rectangle())
     }
 
-    private func manualGlassField<Content: View>(
+    private func manualField<Content: View>(
         systemImage: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Color.appSecondary)
                 .frame(width: 22)
+                .accessibilityHidden(true)
 
             content()
         }
-        .padding(.horizontal, 14)
-        .frame(height: 50)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.appSurface.opacity(0.24))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
-        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 54)
+    }
+
+    private var manualFieldDivider: some View {
+        Divider()
+            .overlay(Color.appSeparator.opacity(0.5))
+            .padding(.leading, 50)
     }
 
     // MARK: - Preview Buttons

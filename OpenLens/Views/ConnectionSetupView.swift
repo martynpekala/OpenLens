@@ -1,6 +1,8 @@
 import SwiftUI
 
-enum ConnectionSetupDestination: Hashable {
+enum ConnectionSetupStep: Equatable {
+    case welcome
+    case scanner
     case manual
 }
 
@@ -10,23 +12,64 @@ private enum ConnectionSetupSheet: String, Identifiable {
     var id: String { rawValue }
 }
 
-struct ConnectionWelcomeView: View {
-    @Binding var isScannerExpanded: Bool
+/// Pairing entry point. The QR lens and the manual form both condense out of the dot field in
+/// place, so the whole setup stays on one screen. The caller supplies the manual form's fields and
+/// the controls below them, plus any manual-step toolbar items (the tips button hides there).
+struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View {
+    @Binding var step: ConnectionSetupStep
     let isCameraActive: Bool
+    let canConnectManually: Bool
     let onScanned: (ScannedOpenLensCode) -> Void
-    let onManualConnection: () -> Void
+    let onConnectManually: () -> Void
+    @ViewBuilder let manualFields: ManualFields
+    @ViewBuilder let manualAccessories: ManualAccessories
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var presentedSheet: ConnectionSetupSheet?
     @State private var scanButtonFrame: CGRect = .zero
+    @State private var manualButtonFrame: CGRect = .zero
     @State private var viewfinderFrame: CGRect = .zero
+    @State private var manualFieldsFrame: CGRect = .zero
     @State private var fieldPulse: GlowDotField.Pulse?
     @State private var focusChangedAt: Date = .distantPast
+    /// Keeps the halo on the last expanded element while it fades out after going back.
+    @State private var lastExpandedStep: ConnectionSetupStep = .scanner
 
     var body: some View {
         ConnectionSetupPage {
             VStack(spacing: 24) {
-                if isScannerExpanded {
+                switch step {
+                case .welcome:
+                    VStack(spacing: 24) {
+                        ConnectionSetupHeading(
+                            systemImage: "macbook.and.iphone",
+                            title: AppText.connectionSetupTitle,
+                            subtitle: AppText.connectionSetupSubtitle
+                        )
+                        .padding(.bottom, 8)
+                        
+                        Text("opencode service start")
+                            .font(.system(size: 18, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Color.appPrimary)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 16)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.appTertiary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16))
+                            .accessibilityLabel("Terminal command: opencode service start")
+
+                        Text("opencode pair")
+                            .font(.system(size: 18, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Color.appPrimary)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 16)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.appTertiary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16))
+                            .accessibilityLabel("Terminal command: opencode pair")
+                    }
+                    .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
+                case .scanner:
                     VStack(spacing: 24) {
                         ConnectionScannerLens(
                             isActive: isCameraActive && presentedSheet == nil,
@@ -46,29 +89,38 @@ struct ConnectionWelcomeView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .transition(reduceMotion ? .opacity : AnyTransition(LensMaterializeTransition()))
-                } else {
+                case .manual:
                     VStack(spacing: 24) {
                         ConnectionSetupHeading(
-                            systemImage: "macbook.and.iphone",
-                            title: AppText.connectionSetupTitle,
-                            subtitle: AppText.connectionSetupSubtitle
+                            systemImage: "network",
+                            title: AppText.connectionManualTitle,
+                            subtitle: ""
                         )
 
-                        Text("opencode pair")
-                            .font(.system(size: 20, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Color.appPrimary)
-                            .textSelection(.enabled)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 18)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.appTertiary, in: RoundedRectangle(cornerRadius: 16))
-                            .accessibilityLabel("Terminal command: opencode pair")
+                        VStack(spacing: 16) {
+                            VStack(spacing: 0) {
+                                manualFields
+                            }
+                            .background(
+                                Color.appTertiary,
+                                in: RoundedRectangle(cornerRadius: Self.manualFieldsCornerRadius, style: .continuous)
+                            )
+                            .onGeometryChange(for: CGRect.self) { proxy in
+                                proxy.frame(in: .global)
+                            } action: { frame in
+                                manualFieldsFrame = frame
+                            }
+                            .accessibilityIdentifier("connection.setup.manual.fields")
+
+                            manualAccessories
+                        }
                     }
-                    .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
+                    .transition(reduceMotion ? .opacity : AnyTransition(LensMaterializeTransition()))
                 }
             }
         } actions: {
-            if !isScannerExpanded {
+            switch step {
+            case .welcome:
                 ConnectionSetupButton(title: AppText.connectionPairingScan, action: startScanning)
                     .onGeometryChange(for: CGRect.self) { proxy in
                         proxy.frame(in: .global)
@@ -77,24 +129,39 @@ struct ConnectionWelcomeView: View {
                     }
                     .accessibilityIdentifier("connection.setup.scan")
                     .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
+            case .scanner:
+                EmptyView()
+            case .manual:
+                ConnectionSetupButton(title: AppText.connect, action: onConnectManually)
+                    .disabled(!canConnectManually)
+                    .accessibilityIdentifier("connection.setup.manual.connect")
+                    .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
             }
 
-            HStack {
-                Text(AppText.connectionSetupV1Prompt)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 8)
+            if step != .manual {
+                HStack {
+                    Text(AppText.connectionSetupV1Prompt)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 8)
 
-                ConnectionSetupButton(
-                    title: AppText.connectionSetupV1,
-                    isPrimary: false,
-                    action: onManualConnection
-                )
-                .accessibilityLabel(AppText.connectionSetupV1AccessibilityLabel)
-                .accessibilityHint(AppText.connectionSetupV1Hint)
-                .accessibilityIdentifier("connection.setup.v1")
+                    ConnectionSetupButton(
+                        title: AppText.connectionSetupV1,
+                        isPrimary: false,
+                        action: showManualForm
+                    )
+                    .onGeometryChange(for: CGRect.self) { proxy in
+                        proxy.frame(in: .global)
+                    } action: { frame in
+                        manualButtonFrame = frame
+                    }
+                    .accessibilityLabel(AppText.connectionSetupV1AccessibilityLabel)
+                    .accessibilityHint(AppText.connectionSetupV1Hint)
+                    .accessibilityIdentifier("connection.setup.v1")
+                }
+                .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
             }
         }
         .background {
@@ -103,33 +170,38 @@ struct ConnectionWelcomeView: View {
                 .ignoresSafeArea()
         }
         .toolbar {
-            if isScannerExpanded {
+            if step != .welcome {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(action: stopScanning) {
+                    Button(action: returnToWelcome) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color.appPrimary)
                     }
                     .accessibilityLabel(AppText.back)
-                    .accessibilityIdentifier("connection.setup.scan.back")
+                    .accessibilityIdentifier("connection.setup.back")
                 }
             }
 
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    presentedSheet = .tips
-                } label: {
-                    Image(systemName: "questionmark")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.appPrimary)
+            if step != .manual {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        presentedSheet = .tips
+                    } label: {
+                        Image(systemName: "questionmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.appPrimary)
+                    }
+                    .accessibilityLabel(AppText.connectionSetupTips)
+                    .accessibilityIdentifier("connection.setup.tips")
                 }
-                .accessibilityLabel(AppText.connectionSetupTips)
-                .accessibilityIdentifier("connection.setup.tips")
             }
         }
         .sensoryFeedback(.impact(flexibility: .soft), trigger: fieldPulse)
-        .onChange(of: isScannerExpanded) {
+        .onChange(of: step) { _, newStep in
             focusChangedAt = .now
+            if newStep != .welcome {
+                lastExpandedStep = newStep
+            }
         }
         .sheet(item: $presentedSheet) { _ in
             ConnectionSetupTipsView()
@@ -139,38 +211,64 @@ struct ConnectionWelcomeView: View {
         }
     }
 
-    /// Dots gather just outside the lens outline while the scanner is open.
+    private static var manualFieldsCornerRadius: CGFloat { 20 }
+
+    /// Dots gather just outside the lens outline or the manual fields while either is open.
     private var fieldFocus: GlowDotField.Focus? {
-        guard viewfinderFrame != .zero else { return nil }
-        let inset = ConnectionScannerLens.outlineInset + 4
+        let focusedStep = step == .welcome ? lastExpandedStep : step
+        let rect: CGRect
+        let cornerRadius: CGFloat
+        switch focusedStep {
+        case .welcome:
+            return nil
+        case .scanner:
+            let inset = ConnectionScannerLens.outlineInset + 4
+            rect = viewfinderFrame.insetBy(dx: -inset, dy: -inset)
+            cornerRadius = ConnectionScannerLens.cornerRadius + inset
+        case .manual:
+            let inset: CGFloat = 6
+            rect = manualFieldsFrame.insetBy(dx: -inset, dy: -inset)
+            cornerRadius = Self.manualFieldsCornerRadius + inset
+        }
+        guard !rect.isEmpty else { return nil }
         return GlowDotField.Focus(
-            rect: viewfinderFrame.insetBy(dx: -inset, dy: -inset),
-            cornerRadius: ConnectionScannerLens.cornerRadius + inset,
-            isActive: isScannerExpanded,
+            rect: rect,
+            cornerRadius: cornerRadius,
+            isActive: step != .welcome,
             date: focusChangedAt
         )
     }
 
     private func startScanning() {
+        expand(to: .scanner, from: scanButtonFrame)
+    }
+
+    private func showManualForm() {
+        expand(to: .manual, from: manualButtonFrame)
+    }
+
+    /// Sends a ripple out from the tapped button, then condenses the next step out of the field.
+    private func expand(to newStep: ConnectionSetupStep, from buttonFrame: CGRect) {
         fieldPulse = GlowDotField.Pulse(
-            origin: CGPoint(x: scanButtonFrame.midX, y: scanButtonFrame.midY),
+            origin: CGPoint(x: buttonFrame.midX, y: buttonFrame.midY),
             date: .now
         )
         withAnimation(reduceMotion ? .easeInOut(duration: 0.25) : .spring(duration: 0.75, bounce: 0.2)) {
-            isScannerExpanded = true
+            step = newStep
         }
     }
 
-    /// Collapses the lens back into the field, releasing a ripple from where it sat.
-    private func stopScanning() {
-        if viewfinderFrame != .zero {
+    /// Collapses the lens or form back into the field, releasing a ripple from where it sat.
+    private func returnToWelcome() {
+        let expandedFrame = step == .manual ? manualFieldsFrame : viewfinderFrame
+        if expandedFrame != .zero {
             fieldPulse = GlowDotField.Pulse(
-                origin: CGPoint(x: viewfinderFrame.midX, y: viewfinderFrame.midY),
+                origin: CGPoint(x: expandedFrame.midX, y: expandedFrame.midY),
                 date: .now
             )
         }
         withAnimation(reduceMotion ? .easeInOut(duration: 0.25) : .spring(duration: 0.6, bounce: 0.15)) {
-            isScannerExpanded = false
+            step = .welcome
         }
     }
 }
@@ -307,6 +405,11 @@ private struct ConnectionSetupTipsView: View {
                         text: AppText.connectionSetupNetworkDetail
                     )
                     ConnectionSetupDetail(
+                        systemImage: "network",
+                        title: AppText.connectionSetupHostnameTitle,
+                        text: AppText.connectionSetupHostnameDetail
+                    )
+                    ConnectionSetupDetail(
                         systemImage: "qrcode",
                         title: AppText.connectionSetupPairingTitle,
                         text: AppText.connectionPairingHint
@@ -322,8 +425,7 @@ private struct ConnectionSetupTipsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(AppText.done) { dismiss() }
-                        .foregroundStyle(Color.appPrimary)
+                    Button(role: .close) { dismiss() }
                         .accessibilityIdentifier("connection.setup.tips.done")
                 }
             }
@@ -354,6 +456,7 @@ private struct ConnectionSetupPage<Content: View, Actions: View>: View {
                 .frame(minHeight: geometry.size.height)
             }
             .scrollBounceBehavior(.basedOnSize)
+            .scrollDismissesKeyboard(.interactively)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 12) {
@@ -434,16 +537,18 @@ private struct ConnectionSetupButton: View {
     var isPrimary = true
     let action: () -> Void
 
+    @Environment(\.isEnabled) private var isEnabled
+
     var body: some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .multilineTextAlignment(.center)
-                .foregroundStyle(isPrimary ? Color.appOnAccent : Color.appPrimary)
+                .foregroundStyle(foregroundColor)
                 .frame(maxWidth: .infinity, minHeight: 20)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
-                .background(isPrimary ? Color.appAccent : Color.clear, in: Capsule())
+                .background(backgroundColor, in: Capsule())
                 .overlay {
                     if !isPrimary {
                         Capsule().stroke(Color.appSeparator, lineWidth: 1)
@@ -453,27 +558,51 @@ private struct ConnectionSetupButton: View {
         }
         .buttonStyle(.plain)
     }
-}
 
-#Preview("Connect to your computer") {
-    NavigationStack {
-        ConnectionWelcomeView(
-            isScannerExpanded: .constant(false),
-            isCameraActive: false,
-            onScanned: { _ in },
-            onManualConnection: {}
-        )
+    private var foregroundColor: Color {
+        if !isEnabled { return Color.appSecondary.opacity(0.6) }
+        return isPrimary ? Color.appOnAccent : Color.appPrimary
+    }
+
+    private var backgroundColor: Color {
+        if !isEnabled { return Color.appTertiary }
+        return isPrimary ? Color.appAccent : Color.clear
     }
 }
 
+#Preview("Connect to your computer") {
+    ConnectionWelcomePreview(step: .welcome)
+}
+
 #Preview("Scan on the connection screen") {
-    NavigationStack {
-        ConnectionWelcomeView(
-            isScannerExpanded: .constant(true),
-            isCameraActive: false,
-            onScanned: { _ in },
-            onManualConnection: {}
-        )
+    ConnectionWelcomePreview(step: .scanner)
+}
+
+#Preview("Manual connection") {
+    ConnectionWelcomePreview(step: .manual)
+}
+
+private struct ConnectionWelcomePreview: View {
+    @State var step: ConnectionSetupStep
+    @State private var serverURL = ""
+
+    var body: some View {
+        NavigationStack {
+            ConnectionWelcomeView(
+                step: $step,
+                isCameraActive: false,
+                canConnectManually: !serverURL.isEmpty,
+                onScanned: { _ in },
+                onConnectManually: {}
+            ) {
+                TextField("192.168.1.50:4096", text: $serverURL)
+                    .font(.system(size: 15, design: .monospaced))
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 54)
+            } manualAccessories: {
+                EmptyView()
+            }
+        }
     }
 }
 
