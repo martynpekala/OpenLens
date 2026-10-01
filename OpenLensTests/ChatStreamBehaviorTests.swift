@@ -4555,20 +4555,11 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
 private final class TestLiveActivityProvider: LiveActivityProviding {
     var isActive: Bool { false }
 
-    func startActivity(agentName: String, userTask: String, subject: String?) {}
+    func startActivity(sessionID: String?, directory: String?) {}
 
-    func update(
-        subject: String?,
-        currentIntent: String,
-        currentIntentIcon: String?,
-        previousIntent: String?,
-        secondPreviousIntent: String?,
-        stepNumber: Int,
-        costTotal: String?,
-        pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
-    ) {}
+    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(completionSummary: String?) {}
+    func endActivity(phase: OpenLensActivityAttributes.Phase) {}
 
     func dismissImmediately() {}
 

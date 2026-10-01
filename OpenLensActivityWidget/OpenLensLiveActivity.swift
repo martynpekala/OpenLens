@@ -25,10 +25,6 @@ private extension Color {
         light: .openLens(245, 244, 242),
         dark: .openLens(20, 21, 24)
     )
-    static let laSurface = openLensDynamic(
-        light: .white,
-        dark: .openLens(30, 32, 36)
-    )
     static let laPrimary = openLensDynamic(
         light: .openLens(26, 26, 26),
         dark: .openLens(245, 244, 242)
@@ -45,6 +41,14 @@ private extension Color {
         light: .openLens(224, 222, 221),
         dark: .openLens(64, 66, 71)
     )
+    static let laAccent = openLensDynamic(
+        light: .openLens(26, 26, 26),
+        dark: .openLens(239, 237, 233)
+    )
+    static let laOnAccent = openLensDynamic(
+        light: .white,
+        dark: .openLens(26, 26, 26)
+    )
 }
 
 // MARK: - Widget
@@ -52,453 +56,666 @@ private extension Color {
 struct OpenLensLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: OpenLensActivityAttributes.self) { context in
-            lockScreenBanner(context: context)
+            LockScreenView(context: context)
         } dynamicIsland: { context in
-            let pendingUserResponse = context.state.pendingUserResponse
-            let statusText = pendingUserResponse?.kind.statusText ?? context.state.currentIntent
+            let state = context.state
+            let status = ActivityStatus(state: state)
 
+            // Everything shares one leading edge: the orb and timer sit beside the camera and the
+            // copy runs underneath, instead of starting in the center region right of the orb.
             return DynamicIsland {
-                // Expanded leading — pulsing dot
                 DynamicIslandExpandedRegion(.leading) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.laTertiary)
-                            .frame(width: 28, height: 28)
-                        Circle()
-                            .fill(context.state.isFinished ? Color.laSecondary : Color.laPrimary)
-                            .frame(width: 8, height: 8)
-                            .symbolEffect(.pulse, isActive: !context.state.isFinished)
-                    }
-                    .padding(.leading, 4)
-                    .padding(.top, 4)
+                    // Inset by the outline so the ring, not the disc, lines up with the copy below.
+                    StatusOrb(
+                        symbol: status.symbol,
+                        size: IslandLayout.orbSize,
+                        accessibilityTitle: state.activePrompt == nil ? nil : status.title
+                    )
+                    .padding(.leading, IslandLayout.inset + ActivityDotField.orbOutlineInset)
+                    .islandAppearance()
                 }
 
-                // Expanded center — agent name + current action
-                DynamicIslandExpandedRegion(.center) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(context.attributes.agentName)
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.laPrimary)
-                            .lineLimit(1)
-                        Text(context.state.isFinished ? "Finished" : statusText)
-                            .font(.system(size: 12, design: .rounded))
-                            .foregroundStyle(Color.laSecondary)
-                            .lineLimit(1)
-                            .transition(.blurReplace)
-                    }
-                }
-
-                // Expanded trailing — step counter or checkmark
                 DynamicIslandExpandedRegion(.trailing) {
-                    if context.state.isFinished {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Color.laSecondary)
-                            .padding(.trailing, 4)
-                    } else if let pendingUserResponse {
-                        Text(pendingUserResponse.kind.compactText)
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.laSecondary)
-                            .padding(.trailing, 4)
-                    } else {
-                        Text("Step \(context.state.stepNumber)")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.laSecondary)
-                            .padding(.trailing, 4)
-                    }
+                    TimerPill(state: state)
+                        .padding(.trailing, IslandLayout.inset)
+                        .islandAppearance()
                 }
 
-                // Expanded bottom — approve/deny buttons for permission, or last completed step
                 DynamicIslandExpandedRegion(.bottom) {
-                    if let pendingUserResponse = context.state.pendingUserResponse,
-                       pendingUserResponse.kind == .permission,
-                       let sessionID = pendingUserResponse.sessionID,
-                       let requestID = pendingUserResponse.requestID {
-                        HStack(spacing: 8) {
-                            Button(intent: DenyPermissionIntent(sessionID: sessionID, requestID: requestID)) {
-                                Text("Deny")
-                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(Color.laSecondary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 4)
-                                    .background(Color.laTertiary, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-
-                            Button(intent: ApprovePermissionIntent(sessionID: sessionID, requestID: requestID)) {
-                                Text("Approve")
-                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(Color.laPrimary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 4)
-                                    .background(Color.laSeparator, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 4)
-                    } else if let prev = context.state.previousIntent, !context.state.isFinished {
-                        HStack(spacing: 5) {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(Color.laSecondary)
-                            Text(prev)
-                                .font(.system(size: 11, design: .rounded))
-                                .foregroundStyle(Color.laSecondary)
-                                .lineLimit(1)
-                        }
-                        .padding(.horizontal, 4)
-                        .transition(.blurReplace)
-                    }
+                    ExpandedIslandContent(state: state, attributes: context.attributes)
+                        .padding(.horizontal, IslandLayout.inset)
+                        .islandAppearance()
                 }
             } compactLeading: {
-                Circle()
-                    .fill(context.state.isFinished ? Color.laSecondary : Color.laPrimary)
-                    .frame(width: 6, height: 6)
-                    .padding(.leading, 2)
+                StatusGlyph(symbol: status.symbol)
+                    .islandAppearance()
             } compactTrailing: {
-                if context.state.isFinished {
-                    Text("Done")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.laSecondary)
-                } else {
-                    Text(pendingUserResponse?.kind.compactText ?? statusText)
-                        .font(.system(size: 11, design: .rounded))
-                        .lineLimit(1)
-                        .frame(maxWidth: 72)
-                        .foregroundStyle(Color.laPrimary)
+                Group {
+                    if let label = status.compactLabel {
+                        Text(label)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+                    } else {
+                        ElapsedTime(state: state)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                    }
                 }
+                .foregroundStyle(Color.laPrimary)
+                .islandAppearance()
             } minimal: {
-                Circle()
-                    .fill(context.state.isFinished ? Color.laSecondary : Color.laPrimary)
-                    .frame(width: 6, height: 6)
+                StatusGlyph(symbol: status.symbol)
+                    .islandAppearance()
             }
+            .widgetURL(context.attributes.sessionURL)
         }
     }
+}
 
-    // MARK: - Lock Screen Banner
+// MARK: - Status
 
-    @ViewBuilder
-    private func lockScreenBanner(context: ActivityViewContext<OpenLensActivityAttributes>) -> some View {
-        let state = context.state
-        let pendingUserResponse = state.pendingUserResponse
+/// Generic copy for where the turn stands. The agent's own progress messages are deliberately
+/// left out; only a prompt waiting on the user shows its details, so it can be answered safely.
+private struct ActivityStatus {
+    let symbol: String
+    let title: String
+    let message: String
+    /// Short label for the compact Dynamic Island; nil shows the elapsed time instead.
+    let compactLabel: String?
 
-        let intents: [String] = [state.secondPreviousIntent, state.previousIntent]
-            .compactMap { $0 }
-            .filter { !$0.isEmpty }
-        let isInitialState = intents.isEmpty && pendingUserResponse == nil
-        let statusText = pendingUserResponse?.kind.statusText ?? (state.isFinished ? "Finished" : state.currentIntent)
+    init(state: OpenLensActivityAttributes.ContentState) {
+        switch (state.phase, state.activePrompt?.kind) {
+        case (.working, .permission?):
+            symbol = "hand.raised"
+            title = "Needs your approval"
+            message = "Review the request before you allow it."
+            compactLabel = "Approve"
+        case (.working, .question?), (.working, .form?):
+            symbol = "questionmark.bubble"
+            title = "Has a question"
+            message = "Answer it so OpenCode can continue."
+            compactLabel = "Answer"
+        case (.working, nil):
+            symbol = "sparkles"
+            title = "Working on it"
+            message = "OpenCode will let you know if it needs you."
+            compactLabel = nil
+        case (.finished, _):
+            symbol = "checkmark"
+            title = "All done"
+            message = "Tap to see the result."
+            compactLabel = "Done"
+        case (.stopped, _):
+            symbol = "stop.fill"
+            title = "Stopped"
+            message = "Tap to pick up where it left off."
+            compactLabel = "Stopped"
+        case (.failed, _):
+            symbol = "exclamationmark"
+            title = "Something went wrong"
+            message = "Tap to see what happened."
+            compactLabel = "Failed"
+        }
+    }
+}
 
-        VStack(alignment: .leading, spacing: 0) {
+private extension OpenLensActivityAttributes.ContentState {
+    /// The prompt to show, only while the turn is still waiting on it.
+    var activePrompt: OpenLensActivityAttributes.PendingUserResponse? {
+        isFinished ? nil : pendingUserResponse
+    }
+}
 
-            // Header
-            HStack(spacing: 8) {
-                // OC badge
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.laTertiary)
-                        .frame(width: 28, height: 28)
-                    Text("OC")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
+private extension OpenLensActivityAttributes.PendingUserResponse {
+    /// Three or four answers wrap into two rows of smaller buttons.
+    var usesReplyGrid: Bool {
+        kind != .permission && quickReplies.count > 2
+    }
+}
+
+private extension OpenLensActivityAttributes {
+    /// The project folder the turn runs in, shown above the title.
+    var projectName: String {
+        let name = directory.map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
+        return name.isEmpty || name == "/" ? "OpenCode" : name
+    }
+}
+
+private extension View {
+    /// The Dynamic Island is always black, so it uses the dark palette whatever the system setting.
+    func islandAppearance() -> some View {
+        environment(\.colorScheme, .dark)
+    }
+}
+
+// MARK: - Dynamic Island
+
+private enum IslandLayout {
+    /// Extra room inside the island's own content margins, shared by every expanded region.
+    static let inset: CGFloat = 4
+    static let orbSize: CGFloat = 32
+}
+
+/// The expanded island's bottom region: the status copy, or the prompt and its buttons.
+private struct ExpandedIslandContent: View {
+    let state: OpenLensActivityAttributes.ContentState
+    let attributes: OpenLensActivityAttributes
+
+    var body: some View {
+        let status = ActivityStatus(state: state)
+
+        Group {
+            if let prompt = state.activePrompt {
+                // The expanded island is capped at 160pt, so a prompt skips the title: the orb says
+                // what kind it is and the room goes to the request and its buttons.
+                VStack(alignment: .leading, spacing: prompt.usesReplyGrid ? 6 : 8) {
+                    PromptDetail(prompt: prompt)
+                    PromptActions(
+                        prompt: prompt,
+                        sessionURL: attributes.sessionURL,
+                        buttonHeight: 34,
+                        gridButtonHeight: 26
+                    )
+                }
+                .padding(.top, 2)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(attributes.projectName)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.laSecondary)
+                        .lineLimit(1)
+
+                    Text(status.title)
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
                         .foregroundStyle(Color.laPrimary)
-                }
+                        .lineLimit(1)
+                        .padding(.top, 1)
 
-                // Subject / agent name
-                Group {
-                    if isInitialState || state.isFinished {
-                        Text(context.attributes.agentName)
-                    } else {
-                        Text(state.subject ?? context.attributes.agentName)
-                            .id(state.subject)
-                    }
+                    Text(status.message)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.laSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .padding(.top, 4)
                 }
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.laPrimary)
-                .lineLimit(1)
-                .transition(.blurReplace)
-
-                Spacer()
-
-                // Cost badge or live indicator
-                if let cost = state.costTotal {
-                    let highlighted = !cost.contains("$0.00") && !cost.contains("$0.0")
-                    Text(cost)
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(highlighted ? Color.laPrimary : Color.laSecondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(highlighted ? Color.laTertiary : Color.laSeparator.opacity(0.6))
-                        )
-                }
+                .padding(.top, 10)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
 
-            // Intent cards / finished state
-            ZStack {
-                if state.isFinished {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(Color.laPrimary)
-                        Text(state.subject ?? "Task complete")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.laPrimary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .transition(.blurReplace)
-                } else if let pendingUserResponse {
-                    if pendingUserResponse.kind == .permission {
-                        PermissionActionCard(response: pendingUserResponse)
-                            .padding(.horizontal, 14)
-                            .transition(.blurReplace)
-                    } else {
-                        PendingUserResponseCard(response: pendingUserResponse)
-                            .padding(.horizontal, 14)
-                            .transition(.blurReplace)
-                    }
-                } else if isInitialState {
-                    // Initial state — show user task as bubble
-                    Text(context.attributes.userTask)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(Color.laPrimary.opacity(0.7))
-                        .lineLimit(2)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(Color.laSurface)
-                                .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
-                        )
-                        .padding(.horizontal, 14)
-                        .transition(.blurReplace)
-                } else {
-                    ZStack {
-                        ForEach(intents, id: \.self) { intent in
-                            let isBehind = intent != state.previousIntent
-                            IntentCard(text: intent, isBehind: isBehind)
-                                .padding(.horizontal, 14)
-                        }
-                    }
-                    .compositingGroup()
-                    .transition(.blurReplace)
-                }
-            }
-            .frame(height: 72)
-            .frame(maxHeight: .infinity)
+// MARK: - Lock Screen
 
-            // Footer — current intent + timer
-            HStack(spacing: 4) {
-                if state.isFinished {
-                    Text("^[\(state.stepNumber) step](inflect: true) completed")
-                        .transition(.blurReplace)
-                } else {
-                    HStack(spacing: 4) {
-                        Image(systemName: pendingUserResponse?.kind.iconName ?? state.currentIntentIcon ?? "arrow.turn.down.right")
-                            .font(.system(size: 10))
-                            .frame(width: 16)
-                        Text(isInitialState ? "Thinking..." : statusText)
+private struct LockScreenView: View {
+    let context: ActivityViewContext<OpenLensActivityAttributes>
+
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        let state = context.state
+        let status = ActivityStatus(state: state)
+        let prompt = state.activePrompt
+
+        // Same shape as the expanded island: the orb and timer on top, then everything else on the
+        // ring's edge. The Lock Screen is also capped at 160pt, so a prompt moves the title up
+        // beside the orb and gives the room below to the request and its buttons.
+        VStack(alignment: .leading, spacing: prompt?.usesReplyGrid == true ? 8 : 10) {
+            HStack(spacing: 12) {
+                StatusOrb(symbol: status.symbol, size: 36)
+                    .anchorPreference(key: OrbBoundsKey.self, value: .bounds) { $0 }
+                    .padding(.leading, ActivityDotField.orbOutlineInset)
+
+                if prompt != nil {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(context.attributes.projectName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.laSecondary)
                             .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Text(status.title)
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.laPrimary)
+                            .lineLimit(1)
                     }
-                    .id(statusText)
-                    .transition(.blurReplace)
                 }
 
                 Spacer(minLength: 8)
 
-                Group {
-                    if let endDate = state.intentEndDate {
-                        let interval = Duration.seconds(endDate.timeIntervalSince(state.intentStartDate))
-                        Text("Finished in \(interval.formatted(.time(pattern: .minuteSecond)))")
-                    } else if !isInitialState {
-                        Text("00:00")
-                            .opacity(0)
-                            .overlay(alignment: .trailing) {
-                                Text(state.intentStartDate, style: .timer)
-                                    .contentTransition(.numericText(countsDown: false))
-                                    .opacity(0.5)
-                            }
-                    }
-                }
-                .monospacedDigit()
-                .layoutPriority(1)
+                TimerPill(state: state)
             }
-            .font(.system(size: 11, weight: .medium, design: .rounded))
-            .foregroundStyle(Color.laSecondary)
-            .opacity(isInitialState || state.isFinished ? 0.5 : 1)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 12)
+
+            if let prompt {
+                PromptDetail(prompt: prompt)
+                PromptActions(
+                    prompt: prompt,
+                    sessionURL: context.attributes.sessionURL,
+                    buttonHeight: 34,
+                    gridButtonHeight: 26
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(context.attributes.projectName)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.laSecondary)
+                        .lineLimit(1)
+
+                    Text(status.title)
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.laPrimary)
+                        .lineLimit(1)
+                        .padding(.top, 1)
+
+                    Text(status.message)
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.laSecondary)
+                        .lineLimit(2)
+                        .padding(.top, 4)
+                }
+                .padding(.top, 8)
+            }
         }
-        .frame(height: 160)
-        .background(Color.laBackground)
+        .padding(.horizontal, 16)
+        .padding(.vertical, prompt == nil ? 16 : 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .backgroundPreferenceValue(OrbBoundsKey.self) { anchor in
+            if !isLuminanceReduced {
+                GeometryReader { proxy in
+                    ActivityDotField(focus: anchor.map { proxy[$0] })
+                }
+            }
+        }
         .activityBackgroundTint(Color.laBackground)
+        .activitySystemActionForegroundColor(Color.laPrimary)
+        .widgetURL(context.attributes.sessionURL)
     }
 }
 
-// MARK: - Intent Card
+nonisolated private struct OrbBoundsKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
 
-struct IntentCard: View {
-    let text: String
-    let isBehind: Bool
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = value ?? nextValue()
+    }
+}
+
+// MARK: - Status Orb
+
+/// The connection screen's status orb: a symbol on a soft disc inside a glowing outline.
+private struct StatusOrb: View {
+    let symbol: String
+    let size: CGFloat
+    /// Read by VoiceOver where no title is shown next to the orb.
+    var accessibilityTitle: String?
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Color.laPrimary.opacity(0.5))
-                .frame(width: 16)
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.38, weight: .medium))
+            .foregroundStyle(Color.laPrimary)
+            .frame(width: size, height: size)
+            .background(Color.laTertiary.opacity(0.7), in: Circle())
+            .overlay {
+                ZStack {
+                    Circle()
+                        .stroke(Color.laPrimary.opacity(0.8), lineWidth: 2)
+                        .blur(radius: 4)
+                        .opacity(0.3)
+                    Circle()
+                        .stroke(Color.laPrimary.opacity(0.35), lineWidth: 1)
+                }
+                .padding(-ActivityDotField.orbOutlineInset)
+            }
+            .accessibilityHidden(accessibilityTitle == nil)
+            .accessibilityLabel(accessibilityTitle ?? "")
+    }
+}
 
-            Text(text)
-                .font(.system(size: 13, design: .rounded))
+/// A small orb for the compact and minimal Dynamic Island.
+private struct StatusGlyph: View {
+    let symbol: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color.laPrimary)
+            .frame(width: 22, height: 22)
+            .background(Color.laTertiary, in: Circle())
+            .overlay {
+                Circle().stroke(Color.laPrimary.opacity(0.35), lineWidth: 1)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Elapsed Time
+
+private struct ElapsedTime: View {
+    let state: OpenLensActivityAttributes.ContentState
+
+    var body: some View {
+        if let endDate = state.endDate {
+            Text(Self.formatted(endDate.timeIntervalSince(state.startDate)))
+        } else {
+            // A timer claims all the width it's offered; the placeholder keeps it to its digits.
+            Text("00:00")
+                .hidden()
+                .overlay(alignment: .trailing) {
+                    Text(state.startDate, style: .timer)
+                        .multilineTextAlignment(.trailing)
+                }
+        }
+    }
+
+    private static func formatted(_ interval: TimeInterval) -> String {
+        let seconds = max(interval, 0).rounded()
+        return Duration.seconds(seconds).formatted(.time(pattern: seconds >= 3600 ? .hourMinuteSecond : .minuteSecond))
+    }
+}
+
+/// The elapsed time on a soft capsule, with a dot while the turn is still running.
+private struct TimerPill: View {
+    let state: OpenLensActivityAttributes.ContentState
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if !state.isFinished {
+                Circle()
+                    .fill(Color.laPrimary)
+                    .frame(width: 5, height: 5)
+            }
+            ElapsedTime(state: state)
+        }
+        .font(.system(size: 13, weight: .semibold, design: .rounded))
+        .monospacedDigit()
+        .foregroundStyle(Color.laPrimary)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Color.laTertiary.opacity(0.7), in: Capsule())
+    }
+}
+
+// MARK: - Prompt
+
+/// What the prompt asks: the permission's command, or the question itself.
+private struct PromptDetail: View {
+    let prompt: OpenLensActivityAttributes.PendingUserResponse
+
+    var body: some View {
+        if prompt.kind == .permission {
+            // Full width, so the command block ends where the buttons under it do.
+            Text(prompt.detail)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(Color.laPrimary)
                 .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    Color.laTertiary.opacity(0.7),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+        } else {
+            Text(prompt.detail)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.laPrimary)
+                .lineLimit(prompt.usesReplyGrid ? 1 : 2)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 52)
-        .background(
-            RoundedRectangle(cornerRadius: isBehind ? 10 : 16, style: .continuous)
-                .fill(Color.laSurface)
-                .shadow(color: .black.opacity(isBehind ? 0.03 : 0.06), radius: isBehind ? 4 : 8, y: 2)
-        )
-        .scaleEffect(isBehind ? 0.92 : 1)
-        .offset(y: isBehind ? 8 : 0)
-        .opacity(isBehind ? 0.6 : 1)
-        .zIndex(isBehind ? 0 : 1)
-        .transition(.asymmetric(
-            insertion: .offset(y: 120),
-            removal: .opacity
-        ))
     }
 }
 
-// MARK: - Permission Action Card (interactive, with Approve/Deny buttons)
-
-struct PermissionActionCard: View {
-    let response: OpenLensActivityAttributes.PendingUserResponse
+/// Buttons that answer the prompt in place, or a link into the app when it needs the full sheet.
+private struct PromptActions: View {
+    let prompt: OpenLensActivityAttributes.PendingUserResponse
+    let sessionURL: URL?
+    let buttonHeight: CGFloat
+    let gridButtonHeight: CGFloat
 
     var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "hand.raised.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.laPrimary)
-                    .frame(width: 16)
-                Text(response.detail)
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Color.laPrimary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-
-            if let sessionID = response.sessionID, let requestID = response.requestID {
+        if let requestID = prompt.requestID, !requestID.isEmpty {
+            switch prompt.kind {
+            case .permission:
                 HStack(spacing: 8) {
-                    Button(intent: DenyPermissionIntent(sessionID: sessionID, requestID: requestID)) {
-                        Text("Deny")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.laSecondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 5)
-                            .background(Color.laTertiary, in: RoundedRectangle(cornerRadius: 8))
+                    Button(intent: DenyPermissionIntent(requestID: requestID)) {
+                        ActionCapsule(title: "Deny", isPrimary: false, height: buttonHeight)
                     }
-                    .buttonStyle(.plain)
+                    Button(intent: ApprovePermissionIntent(requestID: requestID)) {
+                        ActionCapsule(title: "Allow", isPrimary: true, height: buttonHeight)
+                    }
+                }
+                .buttonStyle(.plain)
+            case .question, .form:
+                if prompt.quickReplies.isEmpty {
+                    openButton
+                } else {
+                    replyButtons(requestID: requestID)
+                }
+            }
+        } else {
+            openButton
+        }
+    }
 
-                    Button(intent: ApprovePermissionIntent(sessionID: sessionID, requestID: requestID)) {
-                        Text("Approve")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.laPrimary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 5)
-                            .background(Color.laSeparator, in: RoundedRectangle(cornerRadius: 8))
+    private func replyButtons(requestID: String) -> some View {
+        let count = prompt.quickReplies.count
+        let rows = stride(from: 0, to: count, by: 2).map { Array($0..<min($0 + 2, count)) }
+        let height = rows.count > 1 ? gridButtonHeight : buttonHeight
+
+        return VStack(spacing: 6) {
+            ForEach(rows, id: \.self) { row in
+                HStack(spacing: 8) {
+                    ForEach(row, id: \.self) { index in
+                        Button(intent: AnswerPromptIntent(requestID: requestID, replyIndex: index)) {
+                            ActionCapsule(title: prompt.quickReplies[index].label, isPrimary: false, height: height)
+                        }
                     }
-                    .buttonStyle(.plain)
+                    if rows.count > 1, row.count == 1 {
+                        // Keeps a lone last answer the same width as the ones above it.
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: height)
+                    }
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.laSurface)
-                .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
-        )
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var openButton: some View {
+        let label = ActionCapsule(title: "Open to answer", isPrimary: true, height: buttonHeight)
+        if let sessionURL {
+            Link(destination: sessionURL) { label }
+        } else {
+            label
+        }
     }
 }
 
-// MARK: - Pending User Response Card (read-only, for questions)
-
-struct PendingUserResponseCard: View {
-    let response: OpenLensActivityAttributes.PendingUserResponse
+/// The connection screen's capsule button: accent fill for the main action, outline otherwise.
+private struct ActionCapsule: View {
+    let title: String
+    let isPrimary: Bool
+    let height: CGFloat
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.laTertiary)
-                    .frame(width: 28, height: 28)
-                Image(systemName: response.kind.iconName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.laPrimary)
+        Text(title)
+            .font(.system(size: 15, weight: .semibold, design: .rounded))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .foregroundStyle(isPrimary ? Color.laOnAccent : Color.laPrimary)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .background(isPrimary ? Color.laAccent : Color.laBackground.opacity(0.85), in: Capsule())
+            .overlay {
+                if !isPrimary {
+                    Capsule().stroke(Color.laSeparator, lineWidth: 1)
+                }
             }
+            .contentShape(Capsule())
+    }
+}
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(response.kind.cardTitle)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.laPrimary)
+// MARK: - Dot Field
 
-                Text(response.detail)
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Color.laSecondary)
-                    .lineLimit(2)
-            }
+/// A still frame of the connection screen's glow dot field: dots on a perspective wave surface
+/// with glowing crests, gathered into a halo around the status orb. Live Activities don't run
+/// animations, so the field is drawn once per update and fades out behind the copy and buttons.
+private struct ActivityDotField: View {
+    static let orbOutlineInset: CGFloat = 5
 
-            Spacer(minLength: 0)
+    private static let spacing = 18.0
+    /// Depth of the first row; slightly nearer than the bottom edge so lifted dots never leave a gap.
+    private static let nearDepth = 0.94
+    /// The moment of the wave surface the field freezes on.
+    private static let time = 2.0
+    private static let dotBuckets = 8
+    private static let glowBuckets = 6
+
+    var focus: CGRect?
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let isDark = colorScheme == .dark
+        Canvas { context, size in
+            Self.draw(in: &context, size: size, focus: focus, isDark: isDark)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 60)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.laSurface)
-                .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
-        )
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private static func draw(in context: inout GraphicsContext, size: CGSize, focus: CGRect?, isDark: Bool) {
+        let width = Double(size.width)
+        let height = Double(size.height)
+        guard width > 0, height > 0 else { return }
+
+        // The vanishing line sits above the banner, so the plane recedes without a visible horizon.
+        let horizon = -1.1 * height
+        let depthSpan = height - horizon
+        let centerX = width / 2
+        let rowDepth = spacing / depthSpan
+        let topDepth = depthSpan / -horizon
+        let topScale = 1 / topDepth
+        let rowCount = Int(((topDepth + 2 * rowDepth) - nearDepth) / rowDepth) + 2
+
+        let baseAlpha = isDark ? 0.18 : 0.13
+        let crestAlpha = isDark ? 0.55 : 0.38
+        let maxAlpha = baseAlpha + crestAlpha
+        let glowOpacity = isDark ? 0.6 : 0.16
+        let orbRadius = focus.map { Double($0.width) / 2 + Double(orbOutlineInset) } ?? 0
+
+        var dots = Array(repeating: Path(), count: dotBuckets)
+        var glows = Array(repeating: Path(), count: glowBuckets)
+
+        for row in 0..<rowCount {
+            let depth = nearDepth + Double(row) * rowDepth
+            let scale = 1 / depth
+            let depthFade = smoothstep(topScale, topScale + 0.2, scale)
+            guard depthFade > 0 else { continue }
+
+            let baseY = horizon + depthSpan * scale
+            let worldDepth = Double(row) * spacing
+            let parity = row.isMultiple(of: 2) ? 0 : 0.5
+            let columns = Int(((width / 2 + spacing) / scale / spacing).rounded(.up))
+
+            for column in -columns...columns {
+                let worldX = (Double(column) + parity) * spacing
+                let surface = surfaceHeight(x: worldX, z: worldDepth)
+                var glow = smoothstep(0.15, 0.95, surface)
+                var x = centerX + worldX * scale
+                var y = baseY - surface * 18 * scale * 0.75
+                var alphaScale = depthFade
+
+                if let focus {
+                    let dx = x - Double(focus.midX)
+                    let dy = y - Double(focus.midY)
+                    let centerDistance = hypot(dx, dy)
+                    let distance = centerDistance - orbRadius
+                    guard distance > 0 else { continue }
+
+                    let halo = exp(-distance / 26)
+                    let pull = min(distance, 12) * halo
+                    x -= dx / centerDistance * pull
+                    y -= dy / centerDistance * pull
+                    glow += halo * 1.3 * (0.65 + 0.35 * cos(atan2(dy, dx) - time * 1.6))
+                    alphaScale *= 0.1 + 0.9 * exp(-distance / 90)
+                }
+
+                guard x > -8, x < width + 8, y > -8, y < height + 8 else { continue }
+
+                let intensity = min(glow, 1.8)
+                let alpha = (baseAlpha + crestAlpha * min(intensity, 1)) * alphaScale
+                guard alpha > 0.01 else { continue }
+
+                let radius = (0.9 + min(intensity, 1.4)) * max(scale, 0.5)
+                let bucket = min(Int(alpha / maxAlpha * Double(dotBuckets)), dotBuckets - 1)
+                dots[bucket].addEllipse(in: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2))
+
+                if intensity > 0.3 {
+                    let glowAlpha = (intensity - 0.3) * alphaScale
+                    let glowBucket = min(Int(glowAlpha / 1.5 * Double(glowBuckets)), glowBuckets - 1)
+                    let glowRadius = radius * 3.6
+                    glows[glowBucket].addEllipse(
+                        in: CGRect(x: x - glowRadius, y: y - glowRadius, width: glowRadius * 2, height: glowRadius * 2)
+                    )
+                }
+            }
+        }
+
+        context.drawLayer { layer in
+            layer.addFilter(.blur(radius: 6))
+            for (index, path) in glows.enumerated() where !path.isEmpty {
+                let opacity = (Double(index) + 0.5) / Double(glowBuckets) * glowOpacity
+                layer.fill(path, with: .color(Color.laPrimary.opacity(opacity)))
+            }
+        }
+        for (index, path) in dots.enumerated() where !path.isEmpty {
+            let opacity = (Double(index) + 0.5) / Double(dotBuckets) * maxAlpha
+            context.fill(path, with: .color(Color.laPrimary.opacity(opacity)))
+        }
+    }
+
+    /// Height of the wave surface in -1...1 at a world position, matching the app's field.
+    private static func surfaceHeight(x: Double, z: Double) -> Double {
+        let swell = sin(z * 0.011 + x * 0.003 + time * 0.9)
+        let cross = sin(x * 0.009 - z * 0.004 - time * 0.5)
+        let chop = sin((x + z) * 0.017 + time * 1.2)
+        return 0.5 * swell + 0.3 * cross + 0.2 * chop
+    }
+
+    private static func smoothstep(_ edge0: Double, _ edge1: Double, _ value: Double) -> Double {
+        let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
+        return t * t * (3 - 2 * t)
     }
 }
 
 // MARK: - Previews
 
-#Preview("Lock Screen - Steps", as: .content, using: OpenLensActivityAttributes.preview) {
+#Preview("Lock Screen", as: .content, using: OpenLensActivityAttributes.preview) {
     OpenLensLiveActivity()
 } contentStates: {
-    OpenLensActivityAttributes.ContentState.step1
-    OpenLensActivityAttributes.ContentState.step2
-    OpenLensActivityAttributes.ContentState.step3
-    OpenLensActivityAttributes.ContentState.step4
-    OpenLensActivityAttributes.ContentState.step5
+    OpenLensActivityAttributes.ContentState.working
+    OpenLensActivityAttributes.ContentState.waitingForPermission
+    OpenLensActivityAttributes.ContentState.waitingForAnswer
+    OpenLensActivityAttributes.ContentState.waitingForOpenAnswer
+    OpenLensActivityAttributes.ContentState.finished
+    OpenLensActivityAttributes.ContentState(phase: .failed, startDate: .now.addingTimeInterval(-42), endDate: .now)
+}
+
+#Preview("Island Expanded", as: .dynamicIsland(.expanded), using: OpenLensActivityAttributes.preview) {
+    OpenLensLiveActivity()
+} contentStates: {
+    OpenLensActivityAttributes.ContentState.working
+    OpenLensActivityAttributes.ContentState.waitingForPermission
+    OpenLensActivityAttributes.ContentState.waitingForAnswer
+    OpenLensActivityAttributes.ContentState.waitingForOpenAnswer
     OpenLensActivityAttributes.ContentState.finished
 }
 
-#Preview("Lock Screen - Waiting for Permission", as: .content, using: OpenLensActivityAttributes.preview) {
+#Preview("Island Compact", as: .dynamicIsland(.compact), using: OpenLensActivityAttributes.preview) {
     OpenLensLiveActivity()
 } contentStates: {
+    OpenLensActivityAttributes.ContentState.working
     OpenLensActivityAttributes.ContentState.waitingForPermission
-}
-
-#Preview("Lock Screen - Waiting for Answer", as: .content, using: OpenLensActivityAttributes.preview) {
-    OpenLensLiveActivity()
-} contentStates: {
-    OpenLensActivityAttributes.ContentState.waitingForAnswer
-}
-
-#Preview("Lock Screen - Finished", as: .content, using: OpenLensActivityAttributes.preview) {
-    OpenLensLiveActivity()
-} contentStates: {
     OpenLensActivityAttributes.ContentState.finished
 }

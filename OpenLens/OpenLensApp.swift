@@ -508,6 +508,10 @@ struct OpenLensApp: App {
                 }
             }
             .onOpenURL { url in
+                if let sessionID = OpenLensActivityAttributes.sessionID(from: url) {
+                    openLiveActivitySession(sessionID)
+                    return
+                }
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
                 if connection.isConnected || connection.isReconnecting || isPreviewMode {
@@ -660,6 +664,19 @@ struct OpenLensApp: App {
             pendingSessionNavigationID = nil
         } catch {
             pendingSessionNavigationID = nil
+        }
+    }
+
+    /// Opens the session a Live Activity belongs to, unless its chat is already on screen.
+    private func openLiveActivitySession(_ sessionID: String) {
+        if router.selectedTab == .chat,
+           case .chatSession(let session)? = router.chatPath.last,
+           session.id == sessionID {
+            return
+        }
+        pendingSessionNavigationID = sessionID
+        Task {
+            await openDeepLinkedSessionIfNeeded()
         }
     }
 

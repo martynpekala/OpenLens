@@ -78,16 +78,84 @@ struct OpenCodeV2PermissionTests {
     }
 
     @Test(arguments: [false, true], [false, true])
-    func widgetPermissionRepliesUseTheNegotiatedContract(usesV2: Bool, approve: Bool) throws {
-        let request = try SharedConnectionStore.permissionReplyRequest(
-            baseURL: #require(URL(string: "https://example.com")), authHeader: "Basic test",
-            usesV2: usesV2, sessionID: "ses_1", requestID: "per_1", approve: approve
+    func liveActivityPermissionRepliesUseTheNegotiatedContract(usesV2: Bool, approve: Bool) throws {
+        let prompt = OpenLensActivityAttributes.PendingUserResponse(
+            kind: .permission, detail: "bash: npm test", requestID: "per_1", sessionID: "ses_1"
+        )
+        let request = try SharedConnectionStore.replyRequest(
+            to: prompt, with: approve ? .allow : .deny, directory: "/workspace",
+            baseURL: #require(URL(string: "https://example.com")), authHeader: "Basic test", usesV2: usesV2
         )
         #expect(request.url?.path == (usesV2 ? "/api/session/ses_1/permission/per_1/reply" : "/permission/per_1/reply"))
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Basic test")
+        #expect(request.value(forHTTPHeaderField: "x-opencode-directory") == (usesV2 ? nil : "/workspace"))
         let body = try JSONDecoder().decode([String: String].self, from: #require(request.httpBody))
         #expect(body == [usesV2 ? "decision" : "reply": approve ? "once" : "reject"])
+    }
+
+    @Test func liveActivityQuestionRepliesSendTheChosenLabelOverV1() throws {
+        let prompt = OpenLensActivityAttributes.PendingUserResponse(
+            kind: .question, detail: "Rotate tokens?", requestID: "que_1", sessionID: "ses_1",
+            quickReplies: [.init(label: "Rotate", value: .text("Rotate")), .init(label: "Keep", value: .text("Keep"))]
+        )
+        let baseURL = try #require(URL(string: "https://example.com"))
+
+        let request = try SharedConnectionStore.replyRequest(
+            to: prompt, with: .quickReply(1), directory: "/workspace",
+            baseURL: baseURL, authHeader: nil, usesV2: false
+        )
+        #expect(request.url?.path == "/question/que_1/reply")
+        #expect(request.value(forHTTPHeaderField: "x-opencode-directory") == "/workspace")
+        let body = try JSONDecoder().decode([String: [[String]]].self, from: #require(request.httpBody))
+        #expect(body == ["answers": [["Keep"]]])
+
+        #expect(throws: SharedConnectionStore.UnsupportedReply.self) {
+            try SharedConnectionStore.replyRequest(
+                to: prompt, with: .quickReply(1), directory: nil, baseURL: baseURL, authHeader: nil, usesV2: true
+            )
+        }
+        #expect(throws: SharedConnectionStore.UnsupportedReply.self) {
+            try SharedConnectionStore.replyRequest(
+                to: prompt, with: .quickReply(2), directory: nil, baseURL: baseURL, authHeader: nil, usesV2: false
+            )
+        }
+        #expect(throws: SharedConnectionStore.UnsupportedReply.self) {
+            try SharedConnectionStore.replyRequest(
+                to: prompt, with: .allow, directory: nil, baseURL: baseURL, authHeader: nil, usesV2: false
+            )
+        }
+    }
+
+    @Test func liveActivityFormRepliesAnswerTheFieldWithinTheSessionOverV2() throws {
+        let prompt = OpenLensActivityAttributes.PendingUserResponse(
+            kind: .form, detail: "Deploy to staging?", requestID: "frm_1", sessionID: "ses_1", fieldKey: "proceed",
+            quickReplies: [.init(label: "No", value: .flag(false)), .init(label: "Yes", value: .flag(true))]
+        )
+        let baseURL = try #require(URL(string: "https://example.com"))
+
+        let request = try SharedConnectionStore.replyRequest(
+            to: prompt, with: .quickReply(1), directory: "/workspace",
+            baseURL: baseURL, authHeader: "Basic test", usesV2: true
+        )
+        #expect(request.url?.path == "/api/session/ses_1/form/frm_1/reply")
+        #expect(request.value(forHTTPHeaderField: "x-opencode-directory") == nil)
+        let body = try JSONDecoder().decode([String: [String: Bool]].self, from: #require(request.httpBody))
+        #expect(body == ["answer": ["proceed": true]])
+
+        #expect(throws: SharedConnectionStore.UnsupportedReply.self) {
+            try SharedConnectionStore.replyRequest(
+                to: prompt, with: .quickReply(0), directory: nil, baseURL: baseURL, authHeader: nil, usesV2: false
+            )
+        }
+
+        var withoutSession = prompt
+        withoutSession.sessionID = nil
+        #expect(throws: SharedConnectionStore.UnsupportedReply.self) {
+            try SharedConnectionStore.replyRequest(
+                to: withoutSession, with: .quickReply(0), directory: nil, baseURL: baseURL, authHeader: nil, usesV2: true
+            )
+        }
     }
 
     private func permissionListEnvelope() -> Data {

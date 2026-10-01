@@ -3,95 +3,96 @@ import Foundation
 
 /// ActivityAttributes for the coding agent Live Activity.
 /// This file must be compiled into both the main app target and the widget extension target.
-struct OpenLensActivityAttributes: ActivityAttributes {
-    /// Static context set when the activity starts (does not change).
-    var agentName: String
-    var userTask: String
+nonisolated struct OpenLensActivityAttributes: ActivityAttributes {
+    /// Session the turn belongs to; tapping the activity opens it.
+    var sessionID: String?
+    /// Project directory v1 replies are routed to.
+    var directory: String?
+    /// Preview activities from Settings answer prompts locally instead of calling the server.
+    var isPreview = false
+
+    enum Phase: String, Codable, Hashable {
+        case working
+        case finished
+        case stopped
+        case failed
+    }
+
+    /// A prompt answer short enough to offer as a button in the Live Activity.
+    struct QuickReply: Codable, Hashable {
+        enum Value: Codable, Hashable {
+            /// A question option label or form option value.
+            case text(String)
+            /// A yes/no form answer.
+            case flag(Bool)
+        }
+
+        var label: String
+        var value: Value
+    }
 
     struct PendingUserResponse: Codable, Hashable {
         enum Kind: String, Codable, Hashable {
             case permission
             case question
-
-            var statusText: String {
-                switch self {
-                case .permission:
-                    "Waiting for permission"
-                case .question:
-                    "Waiting for answer"
-                }
-            }
-
-            var compactText: String {
-                switch self {
-                case .permission:
-                    "Approve"
-                case .question:
-                    "Answer"
-                }
-            }
-
-            var cardTitle: String {
-                switch self {
-                case .permission:
-                    "Permission required"
-                case .question:
-                    "Answer required"
-                }
-            }
-
-            var iconName: String {
-                switch self {
-                case .permission:
-                    "hand.raised.fill"
-                case .question:
-                    "questionmark.bubble.fill"
-                }
-            }
-
-            var fallbackDetail: String {
-                switch self {
-                case .permission:
-                    "Approve or deny the request so the agent can continue."
-                case .question:
-                    "Open the question sheet and send an answer so the agent can continue."
-                }
-            }
+            case form
         }
 
         var kind: Kind
+        /// Permission command or prompt text, already bounded for the ActivityKit payload.
         var detail: String
         var requestID: String?
-        /// Session ownership required by the v2 permission reply endpoint.
+        /// Session ownership required by the v2 reply endpoints.
         var sessionID: String?
+        /// Form field the quick replies answer.
+        var fieldKey: String?
+        /// Buttons for answering a question or form without opening the app. Empty when the
+        /// prompt needs the full answer sheet.
+        var quickReplies: [QuickReply] = []
     }
 
     /// Dynamic state that updates as the agent works.
     struct ContentState: Codable, Hashable {
-        /// Short subject line summarizing the task.
-        var subject: String?
-        /// The latest intent -- shown in the footer.
-        var currentIntent: String
-        /// SF Symbol name for the current intent's tool category.
-        var currentIntentIcon: String?
-        /// The previous intent -- shown as the top card.
-        var previousIntent: String?
-        /// The 2nd most previous intent -- shown as the card behind.
-        var secondPreviousIntent: String?
-        /// When the current intent started -- used for the live timer.
-        var intentStartDate: Date
-        /// When the current intent ended.
-        var intentEndDate: Date?
-        /// Total step number (completed + current).
-        var stepNumber: Int
-        /// Formatted cost string (e.g. "$0.049"), nil until first usage event.
-        var costTotal: String?
+        var phase: Phase
+        /// When the turn started -- used for the live timer.
+        var startDate: Date
+        /// When the turn ended.
+        var endDate: Date?
         /// Pending user action that is blocking agent progress, if any.
         var pendingUserResponse: PendingUserResponse?
-        /// Whether the agent has finished and the activity should dismiss.
+
         var isFinished: Bool {
-            intentEndDate != nil
+            phase != .working
         }
+    }
+}
+
+// MARK: - Session Links
+
+extension OpenLensActivityAttributes {
+    static let sessionURLHost = "session"
+
+    /// Link that opens the turn's session in the app.
+    var sessionURL: URL? {
+        guard let sessionID, !sessionID.isEmpty else { return nil }
+        var components = URLComponents()
+        components.scheme = "openlens"
+        components.host = Self.sessionURLHost
+        components.queryItems = [URLQueryItem(name: "id", value: sessionID)]
+        return components.url
+    }
+
+    /// The session ID from a link built by `sessionURL`, or nil for any other URL.
+    static func sessionID(from url: URL) -> String? {
+        guard url.scheme?.lowercased() == "openlens",
+              url.host?.lowercased() == sessionURLHost,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let sessionID = components.queryItems?.first(where: { $0.name == "id" })?.value,
+              !sessionID.isEmpty
+        else {
+            return nil
+        }
+        return sessionID
     }
 }
 
@@ -99,126 +100,62 @@ struct OpenLensActivityAttributes: ActivityAttributes {
 
 extension OpenLensActivityAttributes {
     static var preview: OpenLensActivityAttributes {
-        OpenLensActivityAttributes(
-            agentName: "OpenCode",
-            userTask: "Fix the authentication middleware to handle expired tokens"
-        )
+        OpenLensActivityAttributes(sessionID: nil, directory: nil, isPreview: true)
     }
 }
 
 extension OpenLensActivityAttributes.ContentState {
     static var startDate: Date = .now
 
-    static var step1: OpenLensActivityAttributes.ContentState {
-        OpenLensActivityAttributes.ContentState(
-            subject: "Fix auth middleware",
-            currentIntent: "Reading auth middleware...",
-            currentIntentIcon: "doc.text",
-            previousIntent: nil,
-            secondPreviousIntent: nil,
-            intentStartDate: startDate,
-            stepNumber: 1,
-            costTotal: nil
-        )
-    }
-
-    static var step2: OpenLensActivityAttributes.ContentState {
-        OpenLensActivityAttributes.ContentState(
-            subject: "Fix auth middleware",
-            currentIntent: "Searching for token validation...",
-            currentIntentIcon: "magnifyingglass",
-            previousIntent: "Read src/middleware/auth.ts",
-            secondPreviousIntent: nil,
-            intentStartDate: startDate,
-            stepNumber: 2,
-            costTotal: "$0.003"
-        )
-    }
-
-    static var step3: OpenLensActivityAttributes.ContentState {
-        OpenLensActivityAttributes.ContentState(
-            subject: "Fix auth middleware",
-            currentIntent: "Reading token utils...",
-            currentIntentIcon: "doc.text",
-            previousIntent: "Found 3 references to token expiry",
-            secondPreviousIntent: "Read src/middleware/auth.ts",
-            intentStartDate: startDate,
-            stepNumber: 3,
-            costTotal: "$0.005"
-        )
-    }
-
-    static var step4: OpenLensActivityAttributes.ContentState {
-        OpenLensActivityAttributes.ContentState(
-            subject: "Fix auth middleware",
-            currentIntent: "Editing auth.ts...",
-            currentIntentIcon: "pencil.line",
-            previousIntent: "Read src/utils/token.ts",
-            secondPreviousIntent: "Found 3 references to token expiry",
-            intentStartDate: startDate,
-            stepNumber: 4,
-            costTotal: "$0.008"
-        )
-    }
-
-    static var step5: OpenLensActivityAttributes.ContentState {
-        OpenLensActivityAttributes.ContentState(
-            subject: "Fix auth middleware",
-            currentIntent: "Running tests...",
-            currentIntentIcon: "terminal",
-            previousIntent: "Added token refresh logic to auth.ts",
-            secondPreviousIntent: "Read src/utils/token.ts",
-            intentStartDate: startDate,
-            stepNumber: 5,
-            costTotal: "$0.012"
-        )
+    static var working: OpenLensActivityAttributes.ContentState {
+        OpenLensActivityAttributes.ContentState(phase: .working, startDate: startDate)
     }
 
     static var waitingForPermission: OpenLensActivityAttributes.ContentState {
         OpenLensActivityAttributes.ContentState(
-            subject: "Fix auth middleware",
-            currentIntent: "Running tests...",
-            currentIntentIcon: "terminal",
-            previousIntent: "Added token refresh logic to auth.ts",
-            secondPreviousIntent: "Read src/utils/token.ts",
-            intentStartDate: startDate,
-            stepNumber: 5,
-            costTotal: "$0.012",
+            phase: .working,
+            startDate: startDate,
             pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse(
                 kind: .permission,
-                detail: "bash: npm test -- auth middleware",
-                requestID: "preview-permission-id"
+                detail: "npm test -- auth middleware",
+                requestID: "preview-permission"
             )
         )
     }
 
     static var waitingForAnswer: OpenLensActivityAttributes.ContentState {
         OpenLensActivityAttributes.ContentState(
-            subject: "Fix auth middleware",
-            currentIntent: "Running tests...",
-            currentIntentIcon: "terminal",
-            previousIntent: "Added token refresh logic to auth.ts",
-            secondPreviousIntent: "Read src/utils/token.ts",
-            intentStartDate: startDate,
-            stepNumber: 5,
-            costTotal: "$0.012",
+            phase: .working,
+            startDate: startDate,
             pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse(
                 kind: .question,
-                detail: "Should the refresh token be rotated on every successful request?"
+                detail: "Should the refresh token rotate on every request?",
+                requestID: "preview-question",
+                quickReplies: [
+                    .init(label: "Rotate", value: .text("Rotate")),
+                    .init(label: "Keep", value: .text("Keep")),
+                ]
+            )
+        )
+    }
+
+    static var waitingForOpenAnswer: OpenLensActivityAttributes.ContentState {
+        OpenLensActivityAttributes.ContentState(
+            phase: .working,
+            startDate: startDate,
+            pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse(
+                kind: .question,
+                detail: "Which branch should I compare against?",
+                requestID: "preview-open-question"
             )
         )
     }
 
     static var finished: OpenLensActivityAttributes.ContentState {
         OpenLensActivityAttributes.ContentState(
-            subject: "Auth middleware fixed",
-            currentIntent: "Complete",
-            previousIntent: nil,
-            secondPreviousIntent: nil,
-            intentStartDate: startDate,
-            intentEndDate: startDate.addingTimeInterval(24),
-            stepNumber: 5,
-            costTotal: "$0.014"
+            phase: .finished,
+            startDate: startDate,
+            endDate: startDate.addingTimeInterval(84)
         )
     }
 }

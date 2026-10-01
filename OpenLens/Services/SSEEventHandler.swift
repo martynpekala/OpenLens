@@ -295,17 +295,8 @@ final class SSEEventHandler {
                 // sent from desktop). When the user sends from iOS, ChatClient.send()
                 // already calls start() before this event arrives, so the tracker
                 // will end the previous activity and create a fresh one — which is fine.
-                let userTask = delegate.messages.last(where: { $0.role == .user })?.content ?? ""
-                liveActivityTracker.start(
-                    agentName: delegate.currentSession?.title ?? "OpenCode",
-                    userTask: String(userTask.prefix(80))
-                )
-
-                if let permission = delegate.pendingPermission {
-                    liveActivityTracker.setPendingPermission(permission)
-                } else if let question = delegate.pendingQuestion {
-                    liveActivityTracker.setPendingQuestion(question)
-                }
+                // A prompt that is already pending carries over into the new activity.
+                liveActivityTracker.start(session: delegate.currentSession)
             }
         }
     }
@@ -367,11 +358,6 @@ final class SSEEventHandler {
                 if let pid = serverProviderID { existing.providerID = pid }
                 existing.finish = finish
                 existing.setParentUserMessageID(update.parentID)
-
-                // Update Live Activity cost
-                if let cost {
-                    liveActivityTracker.updateCost(String(format: "$%.3f", cost))
-                }
             } else if !delegate.messages.contains(where: { $0.id == messageID }) {
                 // New assistant message — create as pending (hidden from chat).
                 delegate.pendingAssistantMessage = ChatMessage(
@@ -594,10 +580,6 @@ final class SSEEventHandler {
         // bounded preview avoids copying/layouting a growing reasoning transcript.
         let preview = String(text.prefix(280))
         delegate.currentActivity?.thinkingText = preview
-        if liveActivityTracker.subject == nil, !preview.isEmpty {
-            let firstLine = preview.split(separator: "\n", maxSplits: 1).first ?? ""
-            liveActivityTracker.updateSubject(String(firstLine.prefix(60)))
-        }
     }
 
     private func handlePartRemoved(_ event: OCEvent) {
@@ -650,10 +632,6 @@ final class SSEEventHandler {
                 into: currentSession,
                 fields: incoming.presentFields
             )
-        }
-
-        if let title = incoming.title {
-            liveActivityTracker.updateSubject(title)
         }
     }
 
@@ -839,14 +817,11 @@ final class SSEEventHandler {
             let label = ToolLabelFormatter.label(toolName: toolName, state: state)
             delegate.currentActivity?.currentLabel = label
 
-            if let activity = delegate.currentActivity,
-               activity.recordToolCallIfNeeded(
-                   label: label,
-                   detail: ToolLabelFormatter.detail(state: state),
-                   toolCategory: category
-               ) {
-                liveActivityTracker.pushIntent(label, icon: category.iconName)
-            }
+            delegate.currentActivity?.recordToolCallIfNeeded(
+                label: label,
+                detail: ToolLabelFormatter.detail(state: state),
+                toolCategory: category
+            )
 
         case .completed:
             if let activity = delegate.currentActivity {
@@ -859,13 +834,6 @@ final class SSEEventHandler {
                 }
                 activity.currentLabel = "Thinking..."
                 haptics.playStepCompletion()
-            }
-
-            // Update Live Activity cost if available
-            let lastAssistant = delegate.pendingAssistantMessage
-                ?? delegate.messages.last(where: { $0.role == .assistant })
-            if let cost = lastAssistant?.cost {
-                liveActivityTracker.updateCost(String(format: "$%.3f", cost))
             }
 
         case .error:

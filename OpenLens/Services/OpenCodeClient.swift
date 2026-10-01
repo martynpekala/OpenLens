@@ -389,7 +389,8 @@ actor OpenCodeClient {
             let defaultResponse: OCV2Located<OCV2ModelInfo>? = try? await getV2Located("/api/model/default")
             let providersResponse: OCV2Located<[OCV2ProviderInfo]>? = try? await getV2Located("/api/provider")
             let providerNames = Dictionary(
-                uniqueKeysWithValues: (providersResponse?.data ?? []).map { ($0.id, $0.name?.nilIfBlank ?? $0.id) }
+                (providersResponse?.data ?? []).map { ($0.id, $0.name?.nilIfBlank ?? $0.id) },
+                uniquingKeysWith: { first, _ in first }
             )
             let providers = Dictionary(grouping: modelsResponse.data, by: \.providerID)
                 .map { providerID, models in
@@ -397,7 +398,7 @@ actor OpenCodeClient {
                         id: providerID,
                         name: providerNames[providerID] ?? providerID,
                         models: Dictionary(
-                            uniqueKeysWithValues: models.map { model in
+                            models.map { model in
                                 (
                                     model.id,
                                     OCProviderModel(
@@ -412,7 +413,8 @@ actor OpenCodeClient {
                                         variants: model.variants
                                     )
                                 )
-                            }
+                            },
+                            uniquingKeysWith: { first, _ in first }
                         )
                     )
                 }

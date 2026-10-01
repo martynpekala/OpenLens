@@ -500,4 +500,23 @@ struct ChatClientPreviewModeTests {
 
         #expect(selection?.id == "openai/coding-default")
     }
+
+    @Test func legacyModelIDMapToleratesCatalogAliasesSharingUpstreamModel() {
+        let provider = OCProvider(
+            id: "openai",
+            name: "OpenAI",
+            models: [
+                "gpt-6-astra-fast": OCProviderModel(id: "gpt-6-astra-fast", legacyModelID: "gpt-6-astra", name: "Fast"),
+                "gpt-6-astra-deep": OCProviderModel(id: "gpt-6-astra-deep", legacyModelID: "gpt-6-astra", name: "Deep"),
+                "gpt-5.2-coder": OCProviderModel(id: "gpt-5.2-coder", legacyModelID: "gpt-5.2", name: "Coder")
+            ]
+        )
+
+        let map = ChatClient.legacyModelIDMap(providers: [provider])
+
+        #expect(map == [
+            "openai/gpt-6-astra": "gpt-6-astra-deep",
+            "openai/gpt-5.2": "gpt-5.2-coder"
+        ])
+    }
 }

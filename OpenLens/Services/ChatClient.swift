@@ -445,11 +445,21 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private var legacyModelIDs: [String: String] {
-        Dictionary(uniqueKeysWithValues: providers.flatMap { provider in
-            provider.models.values.compactMap { model in
-                model.legacyModelID.map { ("\(provider.id)/\($0)", model.id) }
-            }
-        })
+        Self.legacyModelIDMap(providers: providers)
+    }
+
+    /// Maps `provider/legacyModelID` to a v2 catalog model ID. Several catalog
+    /// aliases can share one upstream model, so collisions resolve to the
+    /// lexicographically smallest catalog ID to stay deterministic.
+    static func legacyModelIDMap(providers: [OCProvider]) -> [String: String] {
+        Dictionary(
+            providers.flatMap { provider in
+                provider.models.values.compactMap { model in
+                    model.legacyModelID.map { ("\(provider.id)/\($0)", model.id) }
+                }
+            },
+            uniquingKeysWith: { min($0, $1) }
+        )
     }
 
     /// Models assigned to the global Code and Review quick actions.
@@ -1023,6 +1033,8 @@ final class ChatClient: SSEEventHandlerDelegate {
             liveActivityTracker.setPendingPermission(pendingPermission)
         } else if let pendingQuestion {
             liveActivityTracker.setPendingQuestion(pendingQuestion)
+        } else if let pendingForm {
+            liveActivityTracker.setPendingForm(pendingForm)
         } else {
             liveActivityTracker.clearPendingUserResponse()
         }
@@ -2116,7 +2128,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         currentActivity = nil
         responseStartDate = nil
         sessionStatus = nil
-        liveActivityTracker?.end()
+        liveActivityTracker?.end(phase: .failed)
     }
 
     func dismissError() {
@@ -2204,10 +2216,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         currentActivity?.currentLabel = "Thinking..."
         responseStartDate = Date()
 
-        liveActivityTracker?.start(
-            agentName: currentSession?.title ?? "OpenCode",
-            userTask: String(text.prefix(80))
-        )
+        liveActivityTracker?.start(session: currentSession)
 
         contentVersion &+= 1
 
@@ -2351,10 +2360,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             currentActivity?.currentLabel = "Running /\(command)..."
             responseStartDate = Date()
 
-            liveActivityTracker?.start(
-                agentName: currentSession?.title ?? "OpenCode",
-                userTask: "/\(command)"
-            )
+            liveActivityTracker?.start(session: currentSession)
         }
 
         contentVersion &+= 1
@@ -2381,10 +2387,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         currentActivity?.currentLabel = "Running /\(agent)..."
         responseStartDate = Date()
 
-        liveActivityTracker?.start(
-            agentName: agent,
-            userTask: prompt.isEmpty ? "/\(agent)" : prompt
-        )
+        liveActivityTracker?.start(session: currentSession)
 
         contentVersion &+= 1
         scrollAnchor &+= 1
@@ -2666,7 +2669,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         showFormSheet = false
         isResolvingForm = false
         cancelInteractiveRequestTimeout()
-        liveActivityTracker?.end()
+        liveActivityTracker?.end(phase: .stopped)
         contentVersion &+= 1
     }
 
@@ -3895,20 +3898,11 @@ extension ChatClient {
 private final class NoopLiveActivityProvider: LiveActivityProviding {
     var isActive: Bool { false }
 
-    func startActivity(agentName: String, userTask: String, subject: String?) {}
+    func startActivity(sessionID: String?, directory: String?) {}
 
-    func update(
-        subject: String?,
-        currentIntent: String,
-        currentIntentIcon: String?,
-        previousIntent: String?,
-        secondPreviousIntent: String?,
-        stepNumber: Int,
-        costTotal: String?,
-        pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
-    ) {}
+    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(completionSummary: String?) {}
+    func endActivity(phase: OpenLensActivityAttributes.Phase) {}
 
     func dismissImmediately() {}
 

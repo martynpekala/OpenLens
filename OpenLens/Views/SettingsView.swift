@@ -124,7 +124,7 @@ struct SettingsView: View {
         .scrollEdgeEffectStyle(.soft, for: .bottom)
         .onChange(of: liveActivitiesEnabled) { _, enabled in
             if !enabled {
-                liveActivity.endActivity()
+                liveActivity.dismissImmediately()
             }
         }
         .task {
