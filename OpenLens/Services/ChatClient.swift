@@ -159,6 +159,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
     private var availableSlashCommandMap: [String: String] = [:]
     private var availableSlashAgentMap: [String: String] = [:]
+    private var availableSkillIDs: [String] = []
 
     struct ContextUsageSummary {
         let usedTokens: Int
@@ -2108,6 +2109,17 @@ final class ChatClient: SSEEventHandlerDelegate {
         availableSlashAgentMap = Dictionary(uniqueKeysWithValues: agents.map { ($0.lowercased(), $0) })
     }
 
+    func updateSkillCatalog(_ skills: [String]) {
+        availableSkillIDs = skills
+    }
+
+    /// v2 servers only load a skill the prompt attaches, so `@skill` mentions
+    /// in the text are sent alongside it the way the TUI sends them.
+    private func skillAttachments(in text: String) -> [OCV2SkillAttachment] {
+        guard usesV2SessionAPI else { return [] }
+        return SkillMention.attachments(in: text, skillIDs: availableSkillIDs)
+    }
+
     private func beginResponse() {
         abortTask?.cancel()
         abortTask = nil
@@ -2291,7 +2303,8 @@ final class ChatClient: SSEEventHandlerDelegate {
                     text: text,
                     model: selectedModelRef,
                     variant: selectedVariant,
-                    messageID: usesV2SessionAPI ? queuedPrompt.messageID : nil
+                    messageID: usesV2SessionAPI ? queuedPrompt.messageID : nil,
+                    skills: skillAttachments(in: text)
                 )
                 guard currentSession?.id == session.id else { return }
                 acceptQueuedPrompt(id: queuedPrompt.id)
@@ -2485,7 +2498,8 @@ final class ChatClient: SSEEventHandlerDelegate {
                 model: selectedModelRef,
                 agent: agent,
                 variant: selectedVariant,
-                messageID: messageID
+                messageID: messageID,
+                skills: skillAttachments(in: text)
             )
             guard currentSession?.id == session.id else { return }
             if usesV2SessionAPI {
@@ -2527,6 +2541,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                 arguments: arguments,
                 model: selectedModelRef,
                 variant: selectedVariant,
+                skills: skillAttachments(in: arguments),
                 delivery: delivery
             )
             guard currentSession?.id == session.id else { return }

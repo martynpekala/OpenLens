@@ -133,7 +133,7 @@ struct OpenCodeV2SessionMutationTests {
             variant: "high",
             files: ["README.md"],
             agents: ["reviewer"],
-            skills: ["swift"],
+            skills: [OCV2SkillAttachment(id: "swift", mention: nil)],
             delivery: .queue
         )
 
@@ -163,6 +163,68 @@ struct OpenCodeV2SessionMutationTests {
         #expect(command["delivery"] as? String == "queue")
         #expect(command["command"] == nil)
         #expect(command["arguments"] == nil)
+    }
+
+    @Test func v2PromptAttachesMentionedSkillsAndOmitsThemWhenThereAreNone() async throws {
+        let transport = V2SessionMutationTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 204, body: Data()),
+            .init(statusCode: 204, body: Data()),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+        _ = try await client.probeCapabilities()
+
+        let text = "Use @swiftui-ui-patterns here"
+        try await client.queuePrompt(
+            sessionID: "ses_1",
+            text: text,
+            messageID: "msg_skill",
+            skills: SkillMention.attachments(in: text, skillIDs: ["swiftui-ui-patterns"])
+        )
+        try await client.queuePrompt(sessionID: "ses_1", text: "No skills", messageID: "msg_plain")
+
+        let requests = transport.recordedRequests()
+        #expect(requests.map(\.path) == [
+            "/api/info",
+            "/api/session/ses_1/prompt",
+            "/api/session/ses_1/prompt",
+        ])
+
+        let skills = try #require(try bodyObject(requests[1])["skills"] as? [[String: Any]])
+        #expect(skills.count == 1)
+        #expect(skills.first?["id"] as? String == "swiftui-ui-patterns")
+        let mention = try #require(skills.first?["mention"] as? [String: Any])
+        #expect(mention["start"] as? Int == 4)
+        #expect(mention["end"] as? Int == 24)
+        #expect(mention["text"] as? String == "@swiftui-ui-patterns")
+        #expect(try bodyObject(requests[2])["skills"] == nil)
+    }
+
+    @Test func v2SkillsAreListedFromTheSkillRouteForTheActiveLocation() async throws {
+        let transport = V2SessionMutationTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 200, body: Data(#"""
+            {"location":{"directory":"/workspace/OpenLens","project":{"id":"openlens","directory":"/workspace/OpenLens"}},"data":[{"id":"swiftui-ui-patterns","name":"swiftui-ui-patterns","description":"Compose SwiftUI screens","autoinvoke":true,"path":"/workspace/OpenLens/.opencode/skills/swiftui-ui-patterns/SKILL.md","content":"# Patterns"}]}
+            """#.utf8)),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            contextDirectory: "/workspace/OpenLens",
+            transport: transport
+        )
+        _ = try await client.probeCapabilities()
+
+        let skills = try await client.listSkills()
+
+        #expect(skills.map(\.id) == ["swiftui-ui-patterns"])
+        #expect(skills.first?.description == "Compose SwiftUI screens")
+        let requests = transport.recordedRequests()
+        #expect(requests.map(\.path) == ["/api/info", "/api/skill"])
+        #expect(requests[1].method == "GET")
+        #expect(requests[1].queryItems["location[directory]"] == "/workspace/OpenLens")
     }
 
     @Test func v2InterruptUsesTheInterruptRouteAndReturnsTheServerResult() async throws {

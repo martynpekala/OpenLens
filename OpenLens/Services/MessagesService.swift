@@ -31,7 +31,8 @@ final class MessagesService {
         model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
         variant: String? = nil,
-        messageID: String? = nil
+        messageID: String? = nil,
+        skills: [OCV2SkillAttachment] = []
     ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
@@ -43,7 +44,8 @@ final class MessagesService {
             model: model,
             agent: agent,
             variant: variant,
-            messageID: messageID
+            messageID: messageID,
+            skills: skills
         )
     }
 
@@ -54,7 +56,8 @@ final class MessagesService {
         model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
         variant: String? = nil,
-        messageID: String? = nil
+        messageID: String? = nil,
+        skills: [OCV2SkillAttachment] = []
     ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
@@ -66,7 +69,8 @@ final class MessagesService {
             model: model,
             agent: agent,
             variant: variant,
-            messageID: messageID
+            messageID: messageID,
+            skills: skills
         )
     }
 
@@ -79,7 +83,7 @@ final class MessagesService {
         variant: String? = nil,
         files: [String] = [],
         agents: [String] = [],
-        skills: [String] = [],
+        skills: [OCV2SkillAttachment] = [],
         delivery: OCV2PromptInput.Delivery = .steer
     ) async throws {
         guard let client = connection.client else {

@@ -304,7 +304,8 @@ actor OpenCodeClient {
         model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
         variant: String? = nil,
-        messageID: String? = nil
+        messageID: String? = nil,
+        skills: [OCV2SkillAttachment] = []
     ) async throws {
         if usesV2 {
             // v2 records selection changes as session mutations. They must be
@@ -320,7 +321,12 @@ actor OpenCodeClient {
             try await sendV2RequestDiscardingResponse(
                 method: "POST",
                 path: "/api/session/\(sessionID)/prompt",
-                body: OCV2PromptInput(id: messageID, text: text, delivery: .steer),
+                body: OCV2PromptInput(
+                    id: messageID,
+                    text: text,
+                    skills: skills.isEmpty ? nil : skills,
+                    delivery: .steer
+                ),
                 includesLocation: false
             )
             return
@@ -340,7 +346,8 @@ actor OpenCodeClient {
         model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
         variant: String? = nil,
-        messageID: String? = nil
+        messageID: String? = nil,
+        skills: [OCV2SkillAttachment] = []
     ) async throws {
         if usesV2 {
             try await applyV2PromptSelection(
@@ -352,7 +359,12 @@ actor OpenCodeClient {
             try await sendV2RequestDiscardingResponse(
                 method: "POST",
                 path: "/api/session/\(sessionID)/prompt",
-                body: OCV2PromptInput(id: messageID, text: text, delivery: .queue),
+                body: OCV2PromptInput(
+                    id: messageID,
+                    text: text,
+                    skills: skills.isEmpty ? nil : skills,
+                    delivery: .queue
+                ),
                 includesLocation: false
             )
             return
@@ -467,6 +479,16 @@ actor OpenCodeClient {
         return try await get("/command")
     }
 
+    // MARK: - Skills
+
+    /// Only v2 servers list skills separately. Older servers include them in
+    /// the command list, so they already appear among the slash commands.
+    func listSkills() async throws -> [OCSkill] {
+        guard usesV2 else { return [] }
+        let response: OCV2Located<[OCSkill]> = try await getV2Located("/api/skill")
+        return response.data
+    }
+
     func sendCommand(
         sessionID: String,
         command: String,
@@ -476,7 +498,7 @@ actor OpenCodeClient {
         variant: String? = nil,
         files: [String] = [],
         agents: [String] = [],
-        skills: [String] = [],
+        skills: [OCV2SkillAttachment] = [],
         delivery: OCV2PromptInput.Delivery = .steer
     ) async throws {
         if usesV2 {
@@ -494,7 +516,7 @@ actor OpenCodeClient {
                     text: arguments,
                     files: files.map { ["uri": $0] },
                     agents: agents.map { ["name": $0] },
-                    skills: skills.map { ["id": $0] },
+                    skills: skills,
                     delivery: delivery
                 ),
                 includesLocation: false

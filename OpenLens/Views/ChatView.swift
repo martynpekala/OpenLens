@@ -30,6 +30,8 @@ struct ChatView: View {
     @State private var availableSlashActions: [WorkspaceSlashActionItem] = []
     @State private var selectedSlashAction: WorkspaceSlashActionItem?
     @State private var isLoadingCommands = false
+    @State private var availableSkills: [WorkspaceSkillItem] = []
+    @State private var isLoadingSkills = false
     @State private var displayedResponseState: ChatResponseState = .idle
     @State private var isComposerExpanded = false
 
@@ -130,6 +132,7 @@ struct ChatView: View {
             await chatClient.recoverPendingPermission()
             await chatClient.recoverPendingQuestions()
             await chatClient.recoverPendingForms()
+            await loadSkills()
         }
 
         // Foreground recovery: stream events may have been missed while iOS
@@ -146,6 +149,7 @@ struct ChatView: View {
                     await chatClient.recoverPendingPermission()
                     await chatClient.recoverPendingQuestions()
                     await chatClient.recoverPendingForms()
+                    await loadSkills()
                 }
             }
         }
@@ -617,6 +621,13 @@ struct ChatView: View {
             if showsCommandPicker {
                 slashCommandPicker
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if showsSkillPicker {
+                SkillMentionPicker(
+                    skills: filteredSkills,
+                    visualMode: visualMode,
+                    onSelect: applySkillMention
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -686,7 +697,8 @@ struct ChatView: View {
     }
 
     private var composerPlaceholder: String {
-        selectedSlashAction == nil ? AppText.messagePlaceholder : "Add arguments..."
+        guard selectedSlashAction == nil else { return "Add arguments..." }
+        return availableSkills.isEmpty ? AppText.messagePlaceholder : AppText.messagePlaceholderWithSkills
     }
 
     private var selectedSlashActionTint: Color {
@@ -1059,6 +1071,26 @@ struct ChatView: View {
         selectedSlashAction == nil && slashQuery != nil && chatClient.currentSession != nil
     }
 
+    private var skillMentionQuery: String? {
+        SkillMention.activeQuery(in: chatClient.inputText)
+    }
+
+    private var filteredSkills: [WorkspaceSkillItem] {
+        guard let skillMentionQuery else { return [] }
+        guard !skillMentionQuery.isEmpty else { return availableSkills }
+
+        return availableSkills.filter { skill in
+            skill.id.localizedCaseInsensitiveContains(skillMentionQuery) ||
+                skill.name.localizedCaseInsensitiveContains(skillMentionQuery)
+        }
+    }
+
+    /// Hidden when nothing matches, so an `@` that is not a skill reads as
+    /// plain text instead of an empty picker.
+    private var showsSkillPicker: Bool {
+        chatClient.currentSession != nil && !filteredSkills.isEmpty
+    }
+
     @MainActor
     private func loadCommands(force: Bool = false) async {
         guard force || availableSlashActions.isEmpty else { return }
@@ -1075,6 +1107,24 @@ struct ChatView: View {
         isLoadingCommands = false
     }
 
+    /// Only v2 servers list skills here; older ones include them among the
+    /// slash commands, so the list stays empty and `@` is plain text.
+    @MainActor
+    private func loadSkills() async {
+        guard !isLoadingSkills else { return }
+
+        isLoadingSkills = true
+        let skills = await workspaceService.loadSkills()
+        availableSkills = skills
+        chatClient.updateSkillCatalog(skills.map(\.id))
+        isLoadingSkills = false
+    }
+
+    private func applySkillMention(_ skill: WorkspaceSkillItem) {
+        chatClient.inputText = SkillMention.completing(chatClient.inputText, with: skill.id)
+        isInputFocused = true
+    }
+
     private func applySlashAction(_ action: WorkspaceSlashActionItem) {
         selectedSlashAction = action
         chatClient.inputText = ""
@@ -1084,6 +1134,12 @@ struct ChatView: View {
     private func handleComposerTextChange(_ newValue: String) {
         if shouldClearSelectedSlashAction(forComposerText: newValue) {
             clearSelectedSlashAction()
+        }
+
+        if SkillMention.activeQuery(in: newValue) == "", availableSkills.isEmpty, !isLoadingSkills {
+            Task {
+                await loadSkills()
+            }
         }
 
         guard selectedSlashAction == nil,
@@ -1684,6 +1740,88 @@ private extension Array where Element == String {
     var cleanedForDisplay: [String] {
         map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+}
+
+/// Lists the skills a v2 server can attach while an `@` mention is typed, the
+/// way the OpenCode TUI does.
+private struct SkillMentionPicker: View {
+    let skills: [WorkspaceSkillItem]
+    let visualMode: ChatVisualMode
+    let onSelect: (WorkspaceSkillItem) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(skills.enumerated()), id: \.element.id) { index, skill in
+                    Button {
+                        onSelect(skill)
+                    } label: {
+                        row(for: skill)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Attach skill \(skill.id)")
+
+                    if index < skills.count - 1 {
+                        Divider()
+                            .overlay(isRetroChat ? RetroChatStyle.ink.opacity(0.6) : Color.clear)
+                            .padding(.leading, 50)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: 252)
+        .fixedSize(horizontal: false, vertical: true)
+        .chatPopoverChrome(visualMode)
+    }
+
+    private func row(for skill: WorkspaceSkillItem) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "wand.and.sparkles")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(primaryTextColor)
+                .frame(width: 22)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(skill.mention)
+                        .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+
+                    Text("Skill")
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(secondaryTextColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .chatModeChipChrome(visualMode, usesGlassInStandardMode: false)
+                }
+                if !skill.description.isEmpty {
+                    Text(skill.description)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14))
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+    }
+
+    private var isRetroChat: Bool {
+        visualMode.isRetro
+    }
+
+    private var primaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.ink : Color.appPrimary
+    }
+
+    private var secondaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary
     }
 }
 

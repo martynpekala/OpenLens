@@ -15,6 +15,15 @@ struct WorkspaceAgentItem: Identifiable, Hashable, Sendable {
     let prompt: String
 }
 
+struct WorkspaceSkillItem: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let description: String
+
+    /// The token typed in the composer, matching the TUI's `@skill` list.
+    var mention: String { "@\(id)" }
+}
+
 struct WorkspaceSlashActionItem: Identifiable, Hashable, Sendable {
     enum Kind: String, Sendable {
         case command
@@ -321,6 +330,30 @@ final class WorkspaceService {
                 }
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
+    }
+
+    func loadSkills() async -> [WorkspaceSkillItem] {
+        if ScreenshotFixtures.isEnabled {
+            return []
+        }
+
+        guard let client = connection.client else { return [] }
+
+        let contextDirectory = await client.currentContextDirectory() ?? "nil"
+        do {
+            return try await client.listSkills()
+                .map { skill in
+                    WorkspaceSkillItem(
+                        id: skill.id,
+                        name: skill.name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? skill.id,
+                        description: skill.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    )
+                }
+                .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        } catch {
+            Logger.api.error("WorkspaceService failed to load skills for context directory \(contextDirectory, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return []
+        }
     }
 
     private func tryCurrentProject(_ client: OpenCodeClient) async -> OCProject? {

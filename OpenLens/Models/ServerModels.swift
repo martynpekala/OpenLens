@@ -2466,6 +2466,15 @@ nonisolated struct OCCommand: Codable, Identifiable, Sendable {
     }
 }
 
+// MARK: - Skill
+
+/// A skill a v2 server can attach to a prompt through an `@` mention.
+nonisolated struct OCSkill: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let description: String?
+}
+
 // MARK: - Prompt Input
 
  struct OCPromptInput: Codable {
@@ -2503,6 +2512,7 @@ nonisolated struct OCV2CreateSessionInput: Encodable, Sendable {
 nonisolated struct OCV2PromptInput: Codable, Sendable {
     let id: String?
     let text: String
+    let skills: [OCV2SkillAttachment]?
     let delivery: Delivery
 
     nonisolated enum Delivery: String, Codable, Sendable {
@@ -2519,8 +2529,21 @@ nonisolated struct OCV2CommandInput: Codable, Sendable {
     let text: String
     let files: [[String: String]]
     let agents: [[String: String]]
-    let skills: [[String: String]]
+    let skills: [OCV2SkillAttachment]
     let delivery: OCV2PromptInput.Delivery
+}
+
+/// A skill attached to a v2 prompt or command. The mention locates the
+/// `@skill` token in the submitted text, in UTF-16 offsets as the TUI sends.
+nonisolated struct OCV2SkillAttachment: Codable, Hashable, Sendable {
+    nonisolated struct Mention: Codable, Hashable, Sendable {
+        let start: Int
+        let end: Int
+        let text: String
+    }
+
+    let id: String
+    let mention: Mention?
 }
 
 /// Result returned by the v2 interrupt endpoint.
