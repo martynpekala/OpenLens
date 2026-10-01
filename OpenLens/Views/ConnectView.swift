@@ -90,7 +90,6 @@ struct ConnectView: View {
     @State private var username: String = "opencode"
     @State private var password: String = ""
 
-    @State private var showOnboarding: Bool = false
     /// The attempt shown in place of the setup step; nil while the user is setting up.
     @State private var connectionStatus: ConnectionSetupStatus?
     @State private var connectionError: String?
@@ -116,7 +115,7 @@ struct ConnectView: View {
             ConnectionWelcomeView(
                 step: $setupStep,
                 status: connectionStatus,
-                isCameraActive: connectionStatus == nil && !showOnboarding,
+                isCameraActive: connectionStatus == nil,
                 canConnectManually: !manualURL.isEmpty,
                 onScanned: handleScannedCode,
                 onConnectManually: connectManual,
@@ -128,11 +127,6 @@ struct ConnectView: View {
             } manualAccessories: {
                 manualConnectionAccessories
             }
-            .toolbar {
-                if setupStep == .manual && connectionStatus == nil {
-                    manualConnectionToolbar
-                }
-            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
@@ -141,10 +135,6 @@ struct ConnectView: View {
         }
         .onChange(of: connection.state) { _, newState in
             connectionStateChanged(to: newState)
-        }
-        .sheet(isPresented: $showOnboarding) {
-            OnboardingView(onDone: { showOnboarding = false })
-                .presentationBackground(Color.appBackground)
         }
         .onAppear {
             guard !consumePendingDeepLinkIfNeeded() else { return }
@@ -163,32 +153,6 @@ struct ConnectView: View {
             pendingDeepLink = nil
             currentConnectionMethod = .deepLink
             applyDeepLink(deepLink)
-        }
-    }
-
-    private var manualConnectionToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            Button {
-                startNearbyDiscovery()
-            } label: {
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
-                    .symbolEffect(.breathe, isActive: discovery.isSearching)
-            }
-            .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
-            .accessibilityHint("Searches for nearby OpenCode servers on your local network")
-            .accessibilityIdentifier("connection.setup.manual.nearby")
-
-            Button {
-                showOnboarding = true
-            } label: {
-                Image(systemName: "questionmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.appPrimary)
-            }
-            .accessibilityLabel(AppText.help)
-            .accessibilityIdentifier("connection.setup.manual.help")
         }
     }
 

@@ -32,6 +32,8 @@ struct ConnectionSetupStatus: Equatable {
 
 private enum ConnectionSetupSheet: String, Identifiable {
     case tips
+    /// The manual form's version of the tips: just how each OpenCode version listens on the network.
+    case manualTips
 
     var id: String { rawValue }
 }
@@ -51,8 +53,7 @@ private struct ConnectionSetupHaloOutline: Equatable {
 /// Pairing entry point. The QR lens and the manual form both condense out of the dot field in
 /// place, so the whole setup stays on one screen. Connection attempts play out there too: the open
 /// step condenses into a status orb that the dots circle while OpenLens waits on the network. The
-/// caller supplies the manual form's fields and the controls below them, plus any manual-step
-/// toolbar items (the tips button hides there).
+/// caller supplies the manual form's fields and the controls below them.
 struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View {
     @Binding var step: ConnectionSetupStep
     /// The attempt in progress; the step it started from comes back once it clears.
@@ -236,7 +237,7 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
             if showsTipsButton {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        presentedSheet = .tips
+                        presentedSheet = step == .manual ? .manualTips : .tips
                     } label: {
                         Image(systemName: "questionmark")
                             .font(.system(size: 14, weight: .semibold))
@@ -275,8 +276,8 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
         .onChange(of: status?.phase) { _, newPhase in
             statusPhaseChanged(to: newPhase)
         }
-        .sheet(item: $presentedSheet) { _ in
-            ConnectionSetupTipsView()
+        .sheet(item: $presentedSheet) { sheet in
+            ConnectionSetupTipsView(sheet: sheet)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Color.appBackground)
@@ -293,9 +294,9 @@ struct ConnectionWelcomeView<ManualFields: View, ManualAccessories: View>: View 
         reduceMotion ? .opacity : AnyTransition(.blurReplace)
     }
 
-    /// Tips stay out of the way of the manual form and of an attempt still in progress.
+    /// Tips stay out of the way of an attempt still in progress.
     private var showsTipsButton: Bool {
-        guard let status else { return step != .manual }
+        guard let status else { return true }
         if case .failed = status.phase { return true }
         return false
     }
@@ -757,27 +758,20 @@ private struct SweepWedge: Shape {
 }
 
 private struct ConnectionSetupTipsView: View {
+    let sheet: ConnectionSetupSheet
+
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    ConnectionSetupDetail(
-                        systemImage: "wifi",
-                        title: AppText.connectionSetupNetworkTitle,
-                        text: AppText.connectionSetupNetworkDetail
-                    )
-                    ConnectionSetupDetail(
-                        systemImage: "network",
-                        title: AppText.connectionSetupHostnameTitle,
-                        text: AppText.connectionSetupHostnameDetail
-                    )
-                    ConnectionSetupDetail(
-                        systemImage: "qrcode",
-                        title: AppText.connectionSetupPairingTitle,
-                        text: AppText.connectionPairingHint
-                    )
+                    switch sheet {
+                    case .tips:
+                        pairingTips
+                    case .manualTips:
+                        manualTips
+                    }
                 }
                 .padding(28)
                 .frame(maxWidth: 440, alignment: .leading)
@@ -794,6 +788,39 @@ private struct ConnectionSetupTipsView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var manualTips: some View {
+        ConnectionSetupDetail(
+            systemImage: "network",
+            title: AppText.connectionManualTipsV2Title,
+            text: AppText.connectionSetupHostnameDetail
+        )
+        ConnectionSetupDetail(
+            systemImage: "terminal",
+            title: AppText.connectionManualTipsV1Title,
+            text: AppText.connectionManualTipsV1Detail
+        )
+    }
+
+    @ViewBuilder
+    private var pairingTips: some View {
+        ConnectionSetupDetail(
+            systemImage: "wifi",
+            title: AppText.connectionSetupNetworkTitle,
+            text: AppText.connectionSetupNetworkDetail
+        )
+        ConnectionSetupDetail(
+            systemImage: "network",
+            title: AppText.connectionSetupHostnameTitle,
+            text: AppText.connectionSetupHostnameDetail
+        )
+        ConnectionSetupDetail(
+            systemImage: "qrcode",
+            title: AppText.connectionSetupPairingTitle,
+            text: AppText.connectionPairingHint
+        )
     }
 }
 
@@ -1029,5 +1056,9 @@ private struct ConnectionWelcomePreview: View {
 }
 
 #Preview("Connection tips") {
-    ConnectionSetupTipsView()
+    ConnectionSetupTipsView(sheet: .tips)
+}
+
+#Preview("Manual connection tips") {
+    ConnectionSetupTipsView(sheet: .manualTips)
 }
