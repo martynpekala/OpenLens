@@ -36,6 +36,14 @@ struct SkillMentionTests {
         #expect(SkillMention.attachments(in: "@review", skillIDs: []).isEmpty)
     }
 
+    @Test func sentMessagesFindEveryMentionToDrawIncludingRepeats() {
+        let text = "@review this, then @Review. Not me@review or @unknown"
+        let mentions = SkillMention.mentionRanges(in: text, skillIDs: skillIDs).map { String(text[$0]) }
+
+        #expect(mentions == ["@review", "@Review"])
+        #expect(SkillMention.mentionRanges(in: "@review", skillIDs: []).isEmpty)
+    }
+
     @Test func activeQueryIsTheTrailingMentionStillBeingTyped() {
         #expect(SkillMention.activeQuery(in: "@") == "")
         #expect(SkillMention.activeQuery(in: "Use @sw") == "sw")

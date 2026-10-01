@@ -11,39 +11,22 @@ nonisolated enum SkillMention {
     /// anything else after an `@` is treated as plain text. Offsets are UTF-16
     /// code units, which is what the server expects.
     static func attachments(in text: String, skillIDs: some Sequence<String>) -> [OCV2SkillAttachment] {
-        var catalog: [String: String] = [:]
-        for id in skillIDs where catalog[id.lowercased()] == nil {
-            catalog[id.lowercased()] = id
-        }
-        guard !catalog.isEmpty else { return [] }
-
-        var attachments: [OCV2SkillAttachment] = []
         var seen = Set<String>()
-        var index = text.startIndex
-
-        while let at = text[index...].firstIndex(of: "@") {
-            index = text.index(after: at)
-            guard at == text.startIndex || text[text.index(before: at)].isWhitespace else { continue }
-
-            let tokenEnd = text[index...].firstIndex(where: \.isWhitespace) ?? text.endIndex
-            var name = text[index..<tokenEnd]
-            while catalog[name.lowercased()] == nil, let last = name.last, trailingPunctuation.contains(last) {
-                name = name.dropLast()
-            }
-            index = tokenEnd
-
-            guard !name.isEmpty, let id = catalog[name.lowercased()], seen.insert(id).inserted else { continue }
-            let mentionText = String(text[at..<name.endIndex])
-            let start = text.utf16.distance(from: text.startIndex, to: at)
-            attachments.append(
-                OCV2SkillAttachment(
-                    id: id,
-                    mention: .init(start: start, end: start + mentionText.utf16.count, text: mentionText)
-                )
+        return matches(in: text, skillIDs: skillIDs).compactMap { match in
+            guard seen.insert(match.id).inserted else { return nil }
+            let mentionText = String(text[match.range])
+            let start = text.utf16.distance(from: text.startIndex, to: match.range.lowerBound)
+            return OCV2SkillAttachment(
+                id: match.id,
+                mention: .init(start: start, end: start + mentionText.utf16.count, text: mentionText)
             )
         }
+    }
 
-        return attachments
+    /// Every mention in `text`, repeats included, as the range of the `@` and
+    /// the name, so a sent message can draw each one as a chip.
+    static func mentionRanges(in text: String, skillIDs: some Sequence<String>) -> [Range<String.Index>] {
+        matches(in: text, skillIDs: skillIDs).map(\.range)
     }
 
     /// The partial skill name after a trailing `@` that is still being typed,
@@ -73,10 +56,7 @@ nonisolated enum SkillMention {
         from text: String,
         skillIDs: some Sequence<String>
     ) -> (text: String, skillIDs: [String]) {
-        var catalog: [String: String] = [:]
-        for id in skillIDs where catalog[id.lowercased()] == nil {
-            catalog[id.lowercased()] = id
-        }
+        let catalog = catalog(of: skillIDs)
         guard !catalog.isEmpty, text.contains("@") else { return (text, []) }
 
         var remaining = ""
@@ -119,5 +99,42 @@ nonisolated enum SkillMention {
         let arguments = text[commandEnd...].drop(while: \.isWhitespace)
         let command = text[..<commandEnd]
         return arguments.isEmpty ? "\(command) \(mentions)" : "\(command) \(mentions) \(arguments)"
+    }
+
+    private static func matches(
+        in text: String,
+        skillIDs: some Sequence<String>
+    ) -> [(id: String, range: Range<String.Index>)] {
+        let catalog = catalog(of: skillIDs)
+        guard !catalog.isEmpty, text.contains("@") else { return [] }
+
+        var matches: [(id: String, range: Range<String.Index>)] = []
+        var index = text.startIndex
+
+        while let at = text[index...].firstIndex(of: "@") {
+            index = text.index(after: at)
+            guard at == text.startIndex || text[text.index(before: at)].isWhitespace else { continue }
+
+            let tokenEnd = text[index...].firstIndex(where: \.isWhitespace) ?? text.endIndex
+            var name = text[index..<tokenEnd]
+            while catalog[name.lowercased()] == nil, let last = name.last, trailingPunctuation.contains(last) {
+                name = name.dropLast()
+            }
+            index = tokenEnd
+
+            guard !name.isEmpty, let id = catalog[name.lowercased()] else { continue }
+            matches.append((id, at..<name.endIndex))
+        }
+
+        return matches
+    }
+
+    /// Lowercased name to listed id; the first id wins when two differ only by case.
+    private static func catalog(of skillIDs: some Sequence<String>) -> [String: String] {
+        var catalog: [String: String] = [:]
+        for id in skillIDs where catalog[id.lowercased()] == nil {
+            catalog[id.lowercased()] = id
+        }
+        return catalog
     }
 }

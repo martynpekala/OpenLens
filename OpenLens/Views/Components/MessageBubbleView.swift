@@ -114,7 +114,7 @@ struct MessageBubbleView: View {
 
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Text(message.content)
+            SkillMentionText(text: message.content, chipStyle: isRetroChat ? .retro : .standard(.appUserOnAccent))
                 .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                 .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appUserOnAccent)
                 .padding(.horizontal, isRetroChat ? 14 : 16)

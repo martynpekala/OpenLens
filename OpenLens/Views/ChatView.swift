@@ -54,6 +54,7 @@ struct ChatView: View {
             ChatMessagesListView(
                 chatClient: chatClient
             )
+            .environment(\.chatSkillIDs, availableSkills.map(\.id))
 
             if let error = chatClient.errorMessage {
                 HStack(spacing: 8) {
@@ -2726,7 +2727,7 @@ private struct QueuedPromptBubbleView: View {
             Spacer(minLength: isRetroChat ? 42 : 64)
 
             VStack(alignment: .trailing, spacing: 6) {
-                Text(prompt.text)
+                SkillMentionText(text: prompt.text, chipStyle: isRetroChat ? .retro : .standard(.appAccent))
                     .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                     .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)
                     .padding(.horizontal, isRetroChat ? 14 : 16)
