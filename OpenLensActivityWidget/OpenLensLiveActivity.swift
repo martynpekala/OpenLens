@@ -43,7 +43,7 @@ private extension Color {
     )
     static let laAccent = openLensDynamic(
         light: .openLens(26, 26, 26),
-        dark: .openLens(239, 237, 233)
+        dark: .openLens(167, 139, 250)
     )
     static let laOnAccent = openLensDynamic(
         light: .white,

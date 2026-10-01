@@ -190,7 +190,7 @@ extension OpenLensTheme {
             secondary: .init(light: .openLens(107, 107, 107), dark: .openLens(171, 168, 161)),
             tertiary: .init(light: .openLens(239, 237, 233), dark: .openLens(44, 46, 51)),
             separator: .init(light: .openLens(224, 222, 221), dark: .openLens(64, 66, 71)),
-            accent: .init(light: .openLens(26, 26, 26), dark: .openLens(239, 237, 233)),
+            accent: .init(light: .openLens(26, 26, 26), dark: .openLens(167, 139, 250)),
             onAccent: .init(light: .white, dark: .openLens(26, 26, 26)),
             success: .init(light: .openLens(31, 145, 84), dark: .openLens(77, 199, 130)),
             warning: .init(light: .openLens(194, 117, 35), dark: .openLens(235, 166, 78)),

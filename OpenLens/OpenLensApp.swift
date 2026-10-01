@@ -1,5 +1,7 @@
+import AppIntents
 import StoreKit
 import SwiftUI
+import os
 
 private enum BuiltinChatPreview {
     case demo
@@ -185,6 +187,7 @@ struct OpenLensApp: App {
     private let savedConnectionsStore: SavedConnectionsStore
     private let recordedReplayStore: RecordedReplayStore
     private let chatEasterEgg: ChatEasterEggController
+    private let pendingAppActions: PendingAppActions
 
     @State private var chatClient: ChatClient
 
@@ -328,6 +331,9 @@ struct OpenLensApp: App {
         let gitHubStars = GitHubStarsService()
         let recordedReplayStore = RecordedReplayStore()
         let chatEasterEgg = ChatEasterEggController()
+        let pendingAppActions = PendingAppActions()
+        // App Intents can launch the app cold and run before any view appears, so register here.
+        AppDependencyManager.shared.add(dependency: pendingAppActions)
 
         self.savedConnectionsStore = savedConnections
         self.liveActivity = liveActivity
@@ -342,6 +348,7 @@ struct OpenLensApp: App {
         self.gitHubStarsService = gitHubStars
         self.recordedReplayStore = recordedReplayStore
         self.chatEasterEgg = chatEasterEgg
+        self.pendingAppActions = pendingAppActions
 
         self._connection = State(initialValue: connection)
 
@@ -533,7 +540,14 @@ struct OpenLensApp: App {
                 if newState == .connected {
                     Task {
                         await openDeepLinkedSessionIfNeeded()
+                        await createRequestedSessionIfNeeded()
                     }
+                }
+            }
+            .onChange(of: pendingAppActions.newSessionRequest, initial: true) { _, request in
+                guard request != nil else { return }
+                Task {
+                    await createRequestedSessionIfNeeded()
                 }
             }
             .alert(
@@ -664,6 +678,24 @@ struct OpenLensApp: App {
             pendingSessionNavigationID = nil
         } catch {
             pendingSessionNavigationID = nil
+        }
+    }
+
+    /// Creates the session an App Shortcut asked for once the app is connected to a server.
+    @MainActor
+    private func createRequestedSessionIfNeeded() async {
+        guard !isPreviewMode,
+              connection.isConnected,
+              let request = pendingAppActions.consumeNewSessionRequest()
+        else {
+            return
+        }
+
+        do {
+            let session = try await sessionsService.createSession(title: request.title)
+            router.selectChatSession(session)
+        } catch {
+            Logger.chat.error("Couldn't create the session an App Shortcut requested: \(error, privacy: .public)")
         }
     }
 
