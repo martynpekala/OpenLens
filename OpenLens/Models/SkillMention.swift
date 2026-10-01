@@ -57,13 +57,67 @@ nonisolated enum SkillMention {
         return String(query)
     }
 
-    /// Replaces the trailing mention being typed with `@id ` so the user can
-    /// keep typing. Without one, the mention is appended instead.
-    static func completing(_ text: String, with id: String) -> String {
-        guard let query = activeQuery(in: text) else {
-            let separator = text.isEmpty || text.last?.isWhitespace == true ? "" : " "
-            return text + separator + "@\(id) "
+    /// Drops the trailing mention being typed, once the composer has turned
+    /// the picked skill into a chip.
+    static func removingActiveQuery(from text: String) -> String {
+        guard let query = activeQuery(in: text) else { return text }
+        return String(text.dropLast(query.count + 1))
+    }
+
+    /// Pulls finished `@skill` tokens out of `text` so the composer can show
+    /// them as chips. A token is finished once whitespace follows it, and it
+    /// must name a listed skill exactly (ignoring case); one following space
+    /// or tab goes with it. Anything else, including the token still being
+    /// typed, stays in the text.
+    static func extractingCompletedMentions(
+        from text: String,
+        skillIDs: some Sequence<String>
+    ) -> (text: String, skillIDs: [String]) {
+        var catalog: [String: String] = [:]
+        for id in skillIDs where catalog[id.lowercased()] == nil {
+            catalog[id.lowercased()] = id
         }
-        return String(text.dropLast(query.count + 1)) + "@\(id) "
+        guard !catalog.isEmpty, text.contains("@") else { return (text, []) }
+
+        var remaining = ""
+        var ids: [String] = []
+        var copyStart = text.startIndex
+        var index = text.startIndex
+
+        while let at = text[index...].firstIndex(of: "@") {
+            index = text.index(after: at)
+            guard at == text.startIndex || text[text.index(before: at)].isWhitespace,
+                  let tokenEnd = text[index...].firstIndex(where: \.isWhitespace) else { continue }
+            index = tokenEnd
+            guard let id = catalog[text[text.index(after: at)..<tokenEnd].lowercased()] else { continue }
+
+            remaining += text[copyStart..<at]
+            if !ids.contains(id) {
+                ids.append(id)
+            }
+            copyStart = text[tokenEnd] == " " || text[tokenEnd] == "\t" ? text.index(after: tokenEnd) : tokenEnd
+            index = copyStart
+        }
+
+        guard !ids.isEmpty else { return (text, []) }
+        remaining += text[copyStart...]
+        return (remaining, ids)
+    }
+
+    /// Writes chip skills back into the text as `@skill` mentions, which is
+    /// how the server receives them. They lead the prompt, or follow the
+    /// command name so a `/command` still parses.
+    static func composing(_ text: String, mentioning ids: [String]) -> String {
+        guard !ids.isEmpty else { return text }
+        let mentions = ids.map { "@\($0)" }.joined(separator: " ")
+
+        guard text.hasPrefix("/") else {
+            return text.isEmpty ? mentions : "\(mentions) \(text)"
+        }
+
+        let commandEnd = text.firstIndex(where: \.isWhitespace) ?? text.endIndex
+        let arguments = text[commandEnd...].drop(while: \.isWhitespace)
+        let command = text[..<commandEnd]
+        return arguments.isEmpty ? "\(command) \(mentions)" : "\(command) \(mentions) \(arguments)"
     }
 }

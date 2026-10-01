@@ -95,6 +95,7 @@ enum AppText {
     static let manualConnectErrorTitle = "Could not connect to server"
     static let messagePlaceholder = "Ask anything or use /command"
     static let messagePlaceholderWithSkills = "Ask anything, /command or @skill"
+    static let messagePlaceholderWithAttachedSkills = "Ask anything..."
     static let model = "Model"
     static let chooseModel = "Choose model"
     static let recentModels = "Recent"

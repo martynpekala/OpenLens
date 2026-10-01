@@ -44,13 +44,48 @@ struct SkillMentionTests {
         #expect(SkillMention.activeQuery(in: "No mention") == nil)
     }
 
-    @Test func completingReplacesTheTypedQueryWithAnAttachableMention() {
-        #expect(SkillMention.completing("Use @sw", with: "swift") == "Use @swift ")
-        #expect(SkillMention.completing("@", with: "review") == "@review ")
-        #expect(SkillMention.completing("Use", with: "swift") == "Use @swift ")
-        #expect(SkillMention.completing("", with: "swift") == "@swift ")
+    @Test func pickingASkillDropsTheTypedQueryForItsChip() {
+        #expect(SkillMention.removingActiveQuery(from: "Use @sw") == "Use ")
+        #expect(SkillMention.removingActiveQuery(from: "@") == "")
+        #expect(SkillMention.removingActiveQuery(from: "Use @swift ") == "Use @swift ")
+        #expect(SkillMention.removingActiveQuery(from: "No mention") == "No mention")
+    }
 
-        let completed = SkillMention.completing("Check this with @swiftui", with: "swiftui-ui-patterns") + "please"
-        #expect(SkillMention.attachments(in: completed, skillIDs: skillIDs).map(\.id) == ["swiftui-ui-patterns"])
+    @Test func finishedMentionsOfListedSkillsBecomeChips() {
+        let leading = SkillMention.extractingCompletedMentions(from: "@swift fix this", skillIDs: skillIDs)
+        #expect(leading.text == "fix this")
+        #expect(leading.skillIDs == ["swift"])
+
+        let inline = SkillMention.extractingCompletedMentions(from: "Use @Review and @swift\tnow @review ", skillIDs: skillIDs)
+        #expect(inline.text == "Use and now ")
+        #expect(inline.skillIDs == ["review", "swift"])
+
+        let newline = SkillMention.extractingCompletedMentions(from: "@swift\nnext", skillIDs: skillIDs)
+        #expect(newline.text == "\nnext")
+        #expect(newline.skillIDs == ["swift"])
+    }
+
+    @Test func unfinishedOrUnknownMentionsStayAsText() {
+        for text in ["Use @swift", "@swiftly now", "x@swift now", "@swift, now", "@ now"] {
+            let extracted = SkillMention.extractingCompletedMentions(from: text, skillIDs: skillIDs)
+            #expect(extracted.text == text)
+            #expect(extracted.skillIDs.isEmpty)
+        }
+        #expect(SkillMention.extractingCompletedMentions(from: "@swift now", skillIDs: []).skillIDs.isEmpty)
+    }
+
+    @Test func chipSkillsAreSentAsMentionsThatStillLetCommandsParse() {
+        #expect(SkillMention.composing("fix this", mentioning: ["swift", "review"]) == "@swift @review fix this")
+        #expect(SkillMention.composing("", mentioning: ["swift"]) == "@swift")
+        #expect(SkillMention.composing("plain", mentioning: []) == "plain")
+        #expect(SkillMention.composing("/review the diff", mentioning: ["swift"]) == "/review @swift the diff")
+        #expect(SkillMention.composing("/review", mentioning: ["swift"]) == "/review @swift")
+
+        let composed = SkillMention.composing("Tidy this screen", mentioning: ["swiftui-ui-patterns"])
+        #expect(SkillMention.attachments(in: composed, skillIDs: skillIDs).map(\.id) == ["swiftui-ui-patterns"])
+
+        let restored = SkillMention.extractingCompletedMentions(from: composed, skillIDs: skillIDs)
+        #expect(restored.text == "Tidy this screen")
+        #expect(restored.skillIDs == ["swiftui-ui-patterns"])
     }
 }
