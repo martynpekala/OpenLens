@@ -395,6 +395,14 @@ The `openlens-qr` tool encodes this into the QR code automatically.
 
 If `sessionID` is present, OpenLens connects first and then opens that session automatically.
 
+To promote OpenCode v2 support without any server details (for example as an App Store in-app event deep link), use:
+
+```
+openlens://setup
+```
+
+Without a connection, OpenLens shows connection setup. When it is connected, or reconnecting to the saved server, it shows the OpenCode v2 support screen with the server's detected version instead.
+
 
 ## License
 

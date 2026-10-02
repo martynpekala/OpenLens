@@ -871,7 +871,7 @@ private struct ConnectionSetupPage<Content: View, Actions: View>: View {
     }
 }
 
-private struct ConnectionSetupHeading: View {
+struct ConnectionSetupHeading: View {
     let systemImage: String
     let title: String
     let subtitle: String
@@ -894,7 +894,7 @@ private struct ConnectionSetupHeading: View {
     }
 }
 
-private struct ConnectionSetupDetail: View {
+struct ConnectionSetupDetail: View {
     let systemImage: String
     let title: String
     let text: String

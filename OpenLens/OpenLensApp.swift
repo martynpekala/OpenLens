@@ -205,6 +205,10 @@ struct OpenLensApp: App {
 
     /// Alert shown when a deep link arrives while already connected.
     @State private var showDeepLinkSwitch: Bool = false
+    /// Set by `openlens://setup` while connected or reconnecting; presented once the connected root is on screen.
+    @State private var isOpenCodeV2SupportRequested = false
+    @State private var isOpenCodeV2SupportPresented = false
+    @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnectEnabled: Bool = true
     @State private var initialSessionsReadiness: InitialSessionsReadiness
     /// Keeps the connect screen up while it shows a fresh connection's connected moment.
     @State private var isConnectScreenFinishing = false
@@ -450,6 +454,17 @@ struct OpenLensApp: App {
                         .task {
                             openScreenshotPermissionSheetIfNeeded()
                         }
+                        .onChange(of: isOpenCodeV2SupportRequested, initial: true) { _, isRequested in
+                            guard isRequested else { return }
+                            isOpenCodeV2SupportRequested = false
+                            isOpenCodeV2SupportPresented = true
+                        }
+                        .sheet(isPresented: $isOpenCodeV2SupportPresented) {
+                            OpenCodeV2SupportView(serverCapabilities: connection.serverCapabilities)
+                                .presentationDetents([.medium, .large])
+                                .presentationDragIndicator(.visible)
+                                .presentationBackground(Color.appBackground)
+                        }
                         .transition(.opacity)
 
                 case .connect:
@@ -519,6 +534,15 @@ struct OpenLensApp: App {
                     openLiveActivitySession(sessionID)
                     return
                 }
+                if ConnectionSetupLink.matches(url) {
+                    if isPreviewMode {
+                        // Previews sit on top of connection setup.
+                        exitPreview()
+                    } else if connection.isConnected || connection.isReconnecting || isAutoReconnectExpected {
+                        isOpenCodeV2SupportRequested = true
+                    }
+                    return
+                }
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
                 if connection.isConnected || connection.isReconnecting || isPreviewMode {
@@ -529,6 +553,14 @@ struct OpenLensApp: App {
                 }
             }
             .onChange(of: connection.state) { oldState, newState in
+                switch newState {
+                case .disconnected, .error:
+                    // The awaited (re)connection did not happen; the user stays on connection setup.
+                    isOpenCodeV2SupportRequested = false
+                case .connecting, .connected, .reconnecting:
+                    break
+                }
+
                 if newState == .connected {
                     onboardingCompleted = true
                 }
@@ -604,6 +636,25 @@ struct OpenLensApp: App {
 
     private var isPreviewMode: Bool {
         activePreviewSource != nil
+    }
+
+    /// Whether the connect screen is about to reconnect to the saved server, e.g. on a cold launch from a link.
+    private var isAutoReconnectExpected: Bool {
+        switch connection.state {
+        case .connecting:
+            true
+        case .disconnected:
+            shouldAttemptAutoReconnect(
+                isEnabled: autoReconnectEnabled,
+                isConnected: false,
+                isConnectionStatusPresented: false,
+                isQRScannerPresented: false,
+                didManuallyDisconnect: connection.didManuallyDisconnect,
+                savedConnection: savedConnectionsStore.mostRecent
+            )
+        case .connected, .reconnecting, .error:
+            false
+        }
     }
 
     private func startPreview(_ source: ChatPreviewSource) {

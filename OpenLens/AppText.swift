@@ -126,6 +126,12 @@ enum AppText {
     static let noProviders = "No providers available"
     static let none = "None"
     static let openCodeServer = "OpenCode Server"
+    static let openCodeV2SupportTitle = "OpenCode v2 Support"
+    static let openCodeV2SupportSubtitle = "OpenLens works with OpenCode v2 and v1, and detects your server’s version automatically."
+    static let openCodeV2SupportServerV2Title = "Connected to OpenCode v2"
+    static let openCodeV2SupportServerV2Detail = "You’re all set."
+    static let openCodeV2SupportServerV1Title = "Connected to OpenCode v1"
+    static let openCodeV2SupportServerV1Detail = "To switch to v2, update OpenCode and run opencode pair."
     static let optional = "Optional"
     static let openSettings = "Open Settings"
     static let pass = "Pass"
@@ -141,6 +147,7 @@ enum AppText {
     static let prsAndStuff = "PR's and stuff"
     static let quickActions = "Quick Actions"
     static let configureQuickActions = "Configure Quick Actions"
+    static func openCodeServerVersion(_ version: String) -> String { "Server \(version)." }
     static func chooseQuickActionModel(_ action: String) -> String { "Choose \(action) model" }
     static func chooseQuickActionVariant(_ action: String) -> String { "Choose \(action) variant" }
     static func changeQuickActionModel(_ action: String) -> String { "Change \(action) model" }
