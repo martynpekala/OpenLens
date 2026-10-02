@@ -52,21 +52,20 @@ actor OpenCodeClient {
     /// Negotiate the wire protocol from endpoint capability evidence.
     ///
     /// A successful, usable `/api/info` response selects v2. A missing v2
-    /// capability endpoint selects the legacy v1 health contract. Other
-    /// failures are surfaced as compatibility or connectivity failures instead
-    /// of being hidden by an unsafe downgrade.
+    /// capability endpoint selects the legacy v1 health contract; v1 servers
+    /// report a missing route either as 404/405 or by serving the web app's
+    /// HTML shell with HTTP 200. Other failures are surfaced as compatibility
+    /// or connectivity failures instead of being hidden by an unsafe downgrade.
     func probeCapabilities() async throws -> OpenCodeServerCapabilities {
         do {
-            let info: OCV2ServerInfo = try await getV2(
-                "/api/info",
-                includesLocation: false
-            )
+            let info = try await fetchV2ServerInfo()
             guard info.isUsable else {
                 throw OpenCodeError.invalidPayload("The v2 server-info response did not contain a usable version.")
             }
 
             let capabilities = OpenCodeServerCapabilities.v2(info)
             self.capabilities = capabilities
+            Logger.api.info("Negotiated OpenCode v2 protocol (server \(info.version, privacy: .public))")
             return capabilities
         } catch {
             guard shouldFallbackToV1(afterV2ProbeError: error) else {
@@ -76,8 +75,33 @@ actor OpenCodeClient {
             let health = try await checkHealth()
             let capabilities = OpenCodeServerCapabilities.v1(health)
             self.capabilities = capabilities
+            Logger.api.info("Negotiated OpenCode v1 protocol (server \(health.version ?? "unknown", privacy: .public))")
             return capabilities
         }
+    }
+
+    private func fetchV2ServerInfo() async throws -> OCV2ServerInfo {
+        let request = makeV2Request(path: "/api/info", includesLocation: false)
+        Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → OCV2ServerInfo")
+        let (data, response) = try await transport.data(for: request)
+        try validateResponse(response, data: data)
+        if Self.isWebAppDocument(response: response, data: data) {
+            throw V2CapabilityRouteUnavailable()
+        }
+        return try decode(data)
+    }
+
+    /// Detects the OpenCode web app shell that v1 servers return for routes
+    /// they do not implement.
+    private nonisolated static func isWebAppDocument(response: URLResponse, data: Data) -> Bool {
+        if let contentType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type"),
+           contentType.lowercased().hasPrefix("text/html") {
+            return true
+        }
+        let leadingText = String(decoding: data.prefix(64), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}")))
+            .lowercased()
+        return leadingText.hasPrefix("<!doctype html") || leadingText.hasPrefix("<html")
     }
 
     // MARK: - Sessions
@@ -1381,6 +1405,10 @@ actor OpenCodeClient {
     }
 
     private func shouldFallbackToV1(afterV2ProbeError error: Error) -> Bool {
+        if error is V2CapabilityRouteUnavailable {
+            return true
+        }
+
         if let openCodeError = error as? OpenCodeError {
             switch openCodeError {
             case let .httpError(statusCode),
@@ -1420,6 +1448,10 @@ actor OpenCodeClient {
 }
 
 // MARK: - Errors
+
+/// Signals that the server has no v2 capability route, so negotiation should
+/// continue with the v1 contract. Never surfaced to the user.
+private nonisolated struct V2CapabilityRouteUnavailable: Error {}
 
 enum OpenCodeError: LocalizedError {
     case invalidResponse

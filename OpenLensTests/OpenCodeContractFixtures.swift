@@ -14,6 +14,21 @@ enum OpenCodeContractFixtures {
 
     static let invalidV2InfoResponse = Data(#"{"version":""}"#.utf8)
 
+    /// v1 servers answer unknown routes such as `/api/info` with the web app
+    /// shell (HTTP 200, `text/html`) instead of a 404.
+    static let v1WebAppDocument = Data(#"""
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <title>OpenCode</title>
+      </head>
+      <body><div id="root"></div></body>
+    </html>
+    """#.utf8)
+
+    static let v1LiveHealthResponse = Data(#"{"healthy":true,"version":"1.2.27"}"#.utf8)
+
     static let v1EventStream = Data(
         (
             "event: server.heartbeat\n"

@@ -354,6 +354,40 @@ struct OpenCodeProtocolSelectionTests {
         #expect(paths == ["/api/info", "/global/health"])
     }
 
+    @Test(arguments: [
+        OpenCodeContractTransport.Fixture(
+            statusCode: 200,
+            body: OpenCodeContractFixtures.v1WebAppDocument,
+            headers: ["Content-Type": "text/html; charset=utf-8"]
+        ),
+        OpenCodeContractTransport.Fixture(
+            statusCode: 200,
+            body: Data("\n<!DOCTYPE html>\n<html><body></body></html>".utf8),
+            headers: [:]
+        ),
+    ])
+    func v1ServerFallsBackWhenV2CapabilityRouteServesTheWebApp(
+        webAppResponse: OpenCodeContractTransport.Fixture
+    ) async throws {
+        let transport = OpenCodeContractTransport(routes: [
+            "/api/info": webAppResponse,
+            "/global/health": .init(statusCode: 200, body: OpenCodeContractFixtures.v1LiveHealthResponse)
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+
+        let capabilities = try await client.probeCapabilities()
+
+        #expect(capabilities.protocolVersion == .v1)
+        #expect(capabilities.serverVersion == "1.2.27")
+        #expect(capabilities.eventStreamPath == "/event")
+        #expect(capabilities.evidence == .v1Health)
+        let paths = await transport.recordedPaths()
+        #expect(paths == ["/api/info", "/global/health"])
+    }
+
     @Test func incompatibleV2PayloadDoesNotSilentlyDowngradeToV1() async throws {
         let transport = OpenCodeContractTransport(routes: [
             "/api/info": .init(
