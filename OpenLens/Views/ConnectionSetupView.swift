@@ -952,12 +952,12 @@ private struct ConnectionSetupButton: View {
 
     private var foregroundColor: Color {
         if !isEnabled { return Color.appSecondary.opacity(0.6) }
-        return isPrimary ? Color.appOnAccent : Color.appPrimary
+        return isPrimary ? Color.appOnNeutralAction : Color.appPrimary
     }
 
     private var backgroundColor: Color {
         if !isEnabled { return Color.appTertiary }
-        return isPrimary ? Color.appAccent : Color.clear
+        return isPrimary ? Color.appNeutralAction : Color.clear
     }
 }
 

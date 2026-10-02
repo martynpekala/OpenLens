@@ -452,6 +452,11 @@ extension Color {
     /// this in `body` refresh automatically when the preference changes.
     static var appUserAccent: Color { AccentColorPreference.shared.color }
     static var appUserOnAccent: Color { AccentColorPreference.shared.onAccentColor }
+    /// Fixed primary-button colors for the connection flow (onboarding, setup, connect) and the
+    /// new-session FAB. Ignore both the theme accent and the user accent: near-black with white
+    /// text in light mode, white with black text in dark mode.
+    static let appNeutralAction = OpenLensSemanticColor(light: .openLens(26, 26, 26), dark: .white).color
+    static let appOnNeutralAction = OpenLensSemanticColor(light: .white, dark: .black).color
     static var appSuccess: Color { OpenLensDesignSystem.currentTheme.colors.success.color }
     static var appWarning: Color { OpenLensDesignSystem.currentTheme.colors.warning.color }
     static var appDanger: Color { OpenLensDesignSystem.currentTheme.colors.danger.color }

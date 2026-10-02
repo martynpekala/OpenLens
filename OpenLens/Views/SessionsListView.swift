@@ -215,11 +215,12 @@ struct SessionsListView: View {
         Button(action: presentNewSessionSheet) {
             Image(systemName: "plus")
                 .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Color.appOnNeutralAction)
         }
         .buttonStyle(.glassProminent)
         .buttonBorderShape(.circle)
         .controlSize(.large)
-        .tint(Color.appUserAccent)
+        .tint(Color.appNeutralAction)
         .accessibilityLabel(AppText.newSession)
     }
 

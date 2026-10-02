@@ -253,10 +253,10 @@ struct ConnectView: View {
                 } label: {
                     Text(AppText.openSettings)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appOnAccent)
+                        .foregroundStyle(Color.appOnNeutralAction)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
-                        .background(Capsule().fill(Color.appAccent))
+                        .background(Capsule().fill(Color.appNeutralAction))
                 }
 
                 Button {
