@@ -1,5 +1,7 @@
+import AppIntents
 import StoreKit
 import SwiftUI
+import os
 
 private enum BuiltinChatPreview {
     case demo
@@ -86,23 +88,6 @@ private enum ChatPreviewSource {
     }
 }
 
-private enum ReviewPromptTrigger {
-    case completedOnboarding
-    case connectedUsage
-
-    static let fallbackConnectionThreshold = 3
-    static let maximumAttempts = 2
-
-    var delayNanoseconds: UInt64 {
-        switch self {
-        case .completedOnboarding:
-            return 1_500_000_000
-        case .connectedUsage:
-            return 750_000_000
-        }
-    }
-}
-
 struct InitialSessionsReadiness: Equatable {
     enum State: Equatable {
         case idle
@@ -163,7 +148,6 @@ private enum OpenLensRootDestination {
         client: ChatClient,
         connection: ConnectionManager
     )
-    case onboarding
     case connected(initialSessions: SessionsListView.InitialState)
     case connect
 }
@@ -199,9 +183,11 @@ struct OpenLensApp: App {
     private let inboxService: InboxService
     private let workspaceService: WorkspaceService
     private let sessionInsightsService: SessionInsightsService
+    private let gitHubStarsService: GitHubStarsService
     private let savedConnectionsStore: SavedConnectionsStore
     private let recordedReplayStore: RecordedReplayStore
     private let chatEasterEgg: ChatEasterEggController
+    private let pendingAppActions: PendingAppActions
 
     @State private var chatClient: ChatClient
 
@@ -212,8 +198,6 @@ struct OpenLensApp: App {
 
     @AppStorage("onboardingCompleted") private var onboardingCompleted: Bool = false
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
-    @AppStorage("reviewPromptAttemptCount") private var reviewPromptAttemptCount: Int = 0
-    @AppStorage("reviewPromptSuccessfulConnections") private var reviewPromptSuccessfulConnections: Int = 0
 
     /// Deep link connection received via `openlens://connect` URL.
     @State private var pendingDeepLink: DeepLinkConnection?
@@ -221,9 +205,13 @@ struct OpenLensApp: App {
 
     /// Alert shown when a deep link arrives while already connected.
     @State private var showDeepLinkSwitch: Bool = false
-    @State private var reviewPromptTask: Task<Void, Never>?
-    @State private var showReviewPrePrompt = false
+    /// Set by `openlens://setup` while connected or reconnecting; presented once the connected root is on screen.
+    @State private var isOpenCodeV2SupportRequested = false
+    @State private var isOpenCodeV2SupportPresented = false
+    @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnectEnabled: Bool = true
     @State private var initialSessionsReadiness: InitialSessionsReadiness
+    /// Keeps the connect screen up while it shows a fresh connection's connected moment.
+    @State private var isConnectScreenFinishing = false
 
     private var resolvedInitialSessions: SessionsListView.InitialState? {
         switch initialSessionsReadiness.state {
@@ -246,16 +234,17 @@ struct OpenLensApp: App {
             )
         }
 
-        if !screenshotModeEnabled && !onboardingCompleted {
-            return .onboarding
-        }
-
         if (connection.isConnected || connection.isReconnecting),
+           !isConnectScreenFinishing,
            let resolvedInitialSessions {
             return .connected(initialSessions: resolvedInitialSessions)
         }
 
         return .connect
+    }
+
+    private var isShowingConnectScreen: Bool {
+        if case .connect = rootDestination { true } else { false }
     }
 
     private var startDebugPreviewAction: (() -> Void)? {
@@ -309,10 +298,18 @@ struct OpenLensApp: App {
             )
         )
 
-//        if screenshotModeEnabled, ScreenshotFixtures.opensDefaultChatSession {
-//            router.selectedTab = .chat
-//            router.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
-//        }
+        var initialRouter = AppRouter()
+        if screenshotModeEnabled,
+           ScreenshotFixtures.opensDefaultChatSession
+            || ScreenshotFixtures.opensPermissionSheet
+            || ScreenshotFixtures.opensFormSheet {
+            initialRouter.selectedTab = .chat
+            initialRouter.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
+        }
+        if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
+            initialRouter.selectedTab = launchTab
+        }
+        self._router = State(initialValue: initialRouter)
 
         let savedConnections = SavedConnectionsStore()
         let connection = ConnectionManager()
@@ -335,8 +332,12 @@ struct OpenLensApp: App {
         let inbox = InboxService(connection: connection)
         let workspace = WorkspaceService(connection: connection)
         let sessionInsights = SessionInsightsService()
+        let gitHubStars = GitHubStarsService()
         let recordedReplayStore = RecordedReplayStore()
         let chatEasterEgg = ChatEasterEggController()
+        let pendingAppActions = PendingAppActions()
+        // App Intents can launch the app cold and run before any view appears, so register here.
+        AppDependencyManager.shared.add(dependency: pendingAppActions)
 
         self.savedConnectionsStore = savedConnections
         self.liveActivity = liveActivity
@@ -348,8 +349,10 @@ struct OpenLensApp: App {
         self.inboxService = inbox
         self.workspaceService = workspace
         self.sessionInsightsService = sessionInsights
+        self.gitHubStarsService = gitHubStars
         self.recordedReplayStore = recordedReplayStore
         self.chatEasterEgg = chatEasterEgg
+        self.pendingAppActions = pendingAppActions
 
         self._connection = State(initialValue: connection)
 
@@ -366,6 +369,12 @@ struct OpenLensApp: App {
                 demoClient.pendingPermission = ScreenshotFixtures.inboxSnapshot.permissions.first
                 demoClient.showPermissionAlert = demoClient.pendingPermission != nil
             }
+            if ScreenshotFixtures.opensFormSheet {
+                let session = ScreenshotFixtures.defaultSession
+                demoClient.currentSession = session
+                demoClient.pendingForm = ScreenshotFixtures.inboxSnapshot.forms.first
+                demoClient.showFormSheet = demoClient.pendingForm != nil
+            }
             self._chatClient = State(initialValue: demoClient)
         } else {
             self._chatClient = State(initialValue: ChatClient(
@@ -378,10 +387,6 @@ struct OpenLensApp: App {
                 savedConnectionsStore: savedConnections,
                 recordedReplayStore: recordedReplayStore
             ))
-        }
-
-        if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
-            router.selectedTab = launchTab
         }
 
         if streamStressModeEnabled {
@@ -439,10 +444,6 @@ struct OpenLensApp: App {
                             .environment(\.connection, previewConnection)
                     }
 
-                case .onboarding:
-                    OnboardingView(onDone: { onboardingCompleted = true })
-                        .transition(.opacity)
-
                 case .connected(let initialSessions):
                     ConnectedRootView(
                         chatClient: chatClient,
@@ -452,6 +453,17 @@ struct OpenLensApp: App {
                         .environment(router)
                         .task {
                             openScreenshotPermissionSheetIfNeeded()
+                        }
+                        .onChange(of: isOpenCodeV2SupportRequested, initial: true) { _, isRequested in
+                            guard isRequested else { return }
+                            isOpenCodeV2SupportRequested = false
+                            isOpenCodeV2SupportPresented = true
+                        }
+                        .sheet(isPresented: $isOpenCodeV2SupportPresented) {
+                            OpenCodeV2SupportView(serverCapabilities: connection.serverCapabilities)
+                                .presentationDetents([.medium, .large])
+                                .presentationDragIndicator(.visible)
+                                .presentationBackground(Color.appBackground)
                         }
                         .transition(.opacity)
 
@@ -465,13 +477,16 @@ struct OpenLensApp: App {
                             startPreview(.recordedReplay(replay, mode: mode))
                         },
                         pendingDeepLink: $pendingDeepLink,
-                        pendingSessionNavigationID: $pendingSessionNavigationID
+                        pendingSessionNavigationID: $pendingSessionNavigationID,
+                        isFinishingConnection: $isConnectScreenFinishing
                     )
                     .environment(\.connection, connection)
                     .transition(.opacity)
                 }
             }
+            .animation(.easeInOut(duration: 0.45), value: isShowingConnectScreen)
             .openLensTheme(OpenLensAppearance.fallback.theme)
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .environment(\.liveActivity, liveActivity)
             .environment(\.savedConnections, savedConnectionsStore)
             .environment(\.sessionsService, sessionsService)
@@ -482,10 +497,11 @@ struct OpenLensApp: App {
             .environment(\.inboxService, inboxService)
             .environment(\.workspaceService, workspaceService)
             .environment(\.sessionInsightsService, sessionInsightsService)
+            .environment(\.gitHubStarsService, gitHubStarsService)
             .environment(\.recordedReplayStore, recordedReplayStore)
             .environment(\.chatEasterEgg, chatEasterEgg)
             .environment(\.requestReviewPrompt, {
-                presentReviewPrePrompt()
+                presentSystemReviewPrompt()
             })
             .task(id: connection.state) {
                 await prepareInitialSessions(for: connection.state)
@@ -513,20 +529,20 @@ struct OpenLensApp: App {
                     }
                 }
             }
-//            .sheet(isPresented: $showReviewPrePrompt) {
-//                ReviewRequestSheet(
-//                    onReview: {
-//                        presentSystemReviewPrompt()
-//                    },
-//                    onNotNow: {
-//                        showReviewPrePrompt = false
-//                    }
-//                )
-//                .presentationDetents([.fraction(0.7)])
-//                .presentationDragIndicator(.visible)
-//                .presentationBackground(Color.appBackground)
-//            }
             .onOpenURL { url in
+                if let sessionID = OpenLensActivityAttributes.sessionID(from: url) {
+                    openLiveActivitySession(sessionID)
+                    return
+                }
+                if ConnectionSetupLink.matches(url) {
+                    if isPreviewMode {
+                        // Previews sit on top of connection setup.
+                        exitPreview()
+                    } else if connection.isConnected || connection.isReconnecting || isAutoReconnectExpected {
+                        isOpenCodeV2SupportRequested = true
+                    }
+                    return
+                }
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
                 if connection.isConnected || connection.isReconnecting || isPreviewMode {
@@ -537,21 +553,34 @@ struct OpenLensApp: App {
                 }
             }
             .onChange(of: connection.state) { oldState, newState in
+                switch newState {
+                case .disconnected, .error:
+                    // The awaited (re)connection did not happen; the user stays on connection setup.
+                    isOpenCodeV2SupportRequested = false
+                case .connecting, .connected, .reconnecting:
+                    break
+                }
+
+                if newState == .connected {
+                    onboardingCompleted = true
+                }
+
                 if shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
-                    reviewPromptSuccessfulConnections += 1
-                    requestReviewIfNeeded(for: .connectedUsage)
                     router.selectedTab = .chat
                 }
 
                 if newState == .connected {
                     Task {
                         await openDeepLinkedSessionIfNeeded()
+                        await createRequestedSessionIfNeeded()
                     }
                 }
             }
-            .onChange(of: onboardingCompleted) { _, completed in
-                guard completed else { return }
-                requestReviewIfNeeded(for: .completedOnboarding)
+            .onChange(of: pendingAppActions.newSessionRequest, initial: true) { _, request in
+                guard request != nil else { return }
+                Task {
+                    await createRequestedSessionIfNeeded()
+                }
             }
             .alert(
                 AppText.switchServerTitle,
@@ -584,7 +613,7 @@ struct OpenLensApp: App {
             let generation = initialSessionsReadiness.beginLoading()
 
             do {
-                let sessions = try await sessionsService.listSessions()
+                let sessions = try await sessionsService.listAllSessions()
                 guard !Task.isCancelled, connection.isConnected else { return }
                 initialSessionsReadiness.succeed(with: sessions, generation: generation)
             } catch is CancellationError {
@@ -607,6 +636,25 @@ struct OpenLensApp: App {
 
     private var isPreviewMode: Bool {
         activePreviewSource != nil
+    }
+
+    /// Whether the connect screen is about to reconnect to the saved server, e.g. on a cold launch from a link.
+    private var isAutoReconnectExpected: Bool {
+        switch connection.state {
+        case .connecting:
+            true
+        case .disconnected:
+            shouldAttemptAutoReconnect(
+                isEnabled: autoReconnectEnabled,
+                isConnected: false,
+                isConnectionStatusPresented: false,
+                isQRScannerPresented: false,
+                didManuallyDisconnect: connection.didManuallyDisconnect,
+                savedConnection: savedConnectionsStore.mostRecent
+            )
+        case .connected, .reconnecting, .error:
+            false
+        }
     }
 
     private func startPreview(_ source: ChatPreviewSource) {
@@ -684,131 +732,45 @@ struct OpenLensApp: App {
         }
     }
 
-    private func requestReviewIfNeeded(for trigger: ReviewPromptTrigger) {
-        guard onboardingCompleted,
-              !screenshotModeEnabled,
-              !isPreviewMode
+    /// Creates the session an App Shortcut asked for once the app is connected to a server.
+    @MainActor
+    private func createRequestedSessionIfNeeded() async {
+        guard !isPreviewMode,
+              connection.isConnected,
+              let request = pendingAppActions.consumeNewSessionRequest()
         else {
             return
         }
 
-        switch trigger {
-        case .completedOnboarding:
-            guard reviewPromptAttemptCount == 0 else { return }
-        case .connectedUsage:
-            guard reviewPromptSuccessfulConnections >= ReviewPromptTrigger.fallbackConnectionThreshold,
-                  reviewPromptAttemptCount < ReviewPromptTrigger.maximumAttempts
-            else {
-                return
-            }
-        }
-
-        scheduleReviewPrompt(for: trigger)
-    }
-
-    private func scheduleReviewPrompt(for trigger: ReviewPromptTrigger) {
-        reviewPromptAttemptCount += 1
-        reviewPromptTask?.cancel()
-        reviewPromptTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: trigger.delayNanoseconds)
-
-            guard !Task.isCancelled,
-                  onboardingCompleted,
-                  !screenshotModeEnabled,
-                  !isPreviewMode,
-                  !showReviewPrePrompt
-            else {
-                return
-            }
-
-            presentReviewPrePrompt()
-            reviewPromptTask = nil
+        do {
+            let session = try await sessionsService.createSession(title: request.title)
+            router.selectChatSession(session)
+        } catch {
+            Logger.chat.error("Couldn't create the session an App Shortcut requested: \(error, privacy: .public)")
         }
     }
 
-    private func presentReviewPrePrompt() {
-        guard !showReviewPrePrompt else { return }
-        showReviewPrePrompt = true
+    /// Opens the session a Live Activity belongs to, unless its chat is already on screen.
+    private func openLiveActivitySession(_ sessionID: String) {
+        if router.selectedTab == .chat,
+           case .chatSession(let session)? = router.chatPath.last,
+           session.id == sessionID {
+            return
+        }
+        pendingSessionNavigationID = sessionID
+        Task {
+            await openDeepLinkedSessionIfNeeded()
+        }
     }
 
     private func presentSystemReviewPrompt() {
-        showReviewPrePrompt = false
-
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard onboardingCompleted,
-                  !screenshotModeEnabled,
-                  !isPreviewMode
-            else {
-                return
-            }
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-                AppStore.requestReview(in: windowScene)
-            }
+        guard onboardingCompleted,
+              !screenshotModeEnabled,
+              !isPreviewMode,
+              let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+        else {
+            return
         }
-    }
-}
-
-private struct ReviewRequestSheet: View {
-    let onReview: () -> Void
-    let onNotNow: () -> Void
-
-    var body: some View {
-        VStack(spacing: 22) {
-            VStack(spacing: 16) {
-                Image("ReviewPanda")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 116, height: 116)
-                    .shadow(color: Color.appAccent.opacity(0.16), radius: 18, x: 0, y: 8)
-                    .accessibilityHidden(true)
-
-                Text(AppText.reviewRequestSubtitle)
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(Color.appPrimary)
-                    .multilineTextAlignment(.center)
-                    .padding(.bottom, 16)
-                
-                Text(AppText.reviewRequestBody)
-                    .font(.system(size: 15, design: .rounded))
-                    .foregroundStyle(Color.appPrimary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-
-            Spacer()
-
-            VStack(spacing: 10) {
-                Button {
-                    onReview()
-                } label: {
-                    Label(AppText.reviewRequestPrimaryAction, systemImage: "star.bubble.fill")
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(Color.appOnAccent)
-                .tint(Color.appAccent)
-                .controlSize(.large)
-
-                Button {
-                    onNotNow()
-                } label: {
-                    Text(AppText.reviewRequestLater)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.appSecondary)
-                .padding(.vertical, 6)
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.appBackground)
-        .accessibilityElement(children: .contain)
+        AppStore.requestReview(in: windowScene)
     }
 }

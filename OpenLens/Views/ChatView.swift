@@ -13,6 +13,7 @@ struct ChatView: View {
     }()
 
     @Bindable var chatClient: ChatClient
+    let initialSession: OCSession?
 
     @FocusState private var isInputFocused: Bool
     @GestureState private var isInputBarPressed = false
@@ -28,9 +29,17 @@ struct ChatView: View {
     @State private var showTodoList = false
     @State private var availableSlashActions: [WorkspaceSlashActionItem] = []
     @State private var selectedSlashAction: WorkspaceSlashActionItem?
+    @State private var attachedSkills: [WorkspaceSkillItem] = []
     @State private var isLoadingCommands = false
+    @State private var availableSkills: [WorkspaceSkillItem] = []
+    @State private var isLoadingSkills = false
     @State private var displayedResponseState: ChatResponseState = .idle
     @State private var isComposerExpanded = false
+
+    init(chatClient: ChatClient, initialSession: OCSession? = nil) {
+        self._chatClient = Bindable(wrappedValue: chatClient)
+        self.initialSession = initialSession
+    }
 
     private static let undoSlashAction = WorkspaceSlashActionItem(
         kind: .command,
@@ -45,6 +54,7 @@ struct ChatView: View {
             ChatMessagesListView(
                 chatClient: chatClient
             )
+            .environment(\.chatSkillIDs, availableSkills.map(\.id))
 
             if let error = chatClient.errorMessage {
                 HStack(spacing: 8) {
@@ -90,10 +100,11 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ChatHeaderToolbar(
-                projectName: chatClient.currentSession?.workspaceDisplayName ?? connection.projectName,
+                projectName: headerSession?.workspaceDisplayName
+                    ?? connection.projectName,
                 branch: connection.branch,
                 connectionState: connection.state,
-                sessionTitle: chatClient.currentSession?.title,
+                sessionTitle: headerSession?.title,
                 showsRecordingControls: chatClient.isRecordingStream || (debugFeaturesEnabled && chatClient.supportsStreamRecording),
                 isRecordingStream: chatClient.isRecordingStream,
                 visualMode: visualMode,
@@ -116,24 +127,31 @@ struct ChatView: View {
         // Initial load: ensure session is loaded when view appears
         .task {
             chatClient.setupSSEHandlers()
+            if initialSession == nil {
+                await chatClient.ensureSession()
+            }
             await loadCommands(force: true)
-            await chatClient.ensureSession()
             await chatClient.recoverPendingPermission()
             await chatClient.recoverPendingQuestions()
+            await chatClient.recoverPendingForms()
+            await loadSkills()
         }
 
-        // Foreground recovery: refresh messages and questions when app becomes active
+        // Foreground recovery: stream events may have been missed while iOS
+        // suspended the app, so reconcile session and transcript before the
+        // incremental stream is considered current again.
         .onChange(of: scenePhase) { _, newPhase in
             updateShakeMonitoring(for: newPhase)
 
             if newPhase == .active {
                 chatClient.setupSSEHandlers()
+                chatClient.synchronizeCurrentSessionFromServer()
                 Task {
                     await loadCommands(force: true)
-                    await chatClient.refreshCurrentSessionStatus()
-                    await chatClient.loadMessages()
                     await chatClient.recoverPendingPermission()
                     await chatClient.recoverPendingQuestions()
+                    await chatClient.recoverPendingForms()
+                    await loadSkills()
                 }
             }
         }
@@ -172,6 +190,26 @@ struct ChatView: View {
                 .presentationDetents([.medium, .large])
             }
         }
+        .sheet(isPresented: $chatClient.showFormSheet, onDismiss: {
+            if chatClient.pendingForm != nil {
+                chatClient.cancelForm()
+            }
+        }) {
+            if let form = chatClient.pendingForm {
+                FormView(
+                    form: form,
+                    onSubmit: { answer in
+                        chatClient.respondToForm(answer: answer)
+                    },
+                    onCancel: {
+                        chatClient.cancelForm()
+                    },
+                    isSubmitting: chatClient.isResolvingForm
+                )
+                .presentationDetents([.medium, .large])
+                .interactiveDismissDisabled(chatClient.isResolvingForm)
+            }
+        }
         .onChange(of: chatClient.inputText) { _, newValue in
             handleComposerTextChange(newValue)
         }
@@ -191,6 +229,16 @@ struct ChatView: View {
 
     private var visualMode: ChatVisualMode {
         chatEasterEgg.visualMode
+    }
+
+    private var headerSession: OCSession? {
+        guard let initialSession else {
+            return chatClient.currentSession
+        }
+
+        return chatClient.currentSession?.id == initialSession.id
+            ? chatClient.currentSession
+            : initialSession
     }
 
     private var isRetroChat: Bool {
@@ -575,27 +623,41 @@ struct ChatView: View {
             if showsCommandPicker {
                 slashCommandPicker
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if showsSkillPicker {
+                SkillMentionPicker(
+                    skills: filteredSkills,
+                    visualMode: visualMode,
+                    onSelect: applySkillMention
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .center, spacing: 8) {
-                    if let selectedSlashAction {
-                        selectedSlashActionChip(selectedSlashAction)
-                    }
+                    ComposerTokenLayout(spacing: 6, minimumFieldWidth: 120, lineHeight: 32) {
+                        if let selectedSlashAction {
+                            selectedSlashActionChip(selectedSlashAction)
+                        }
 
-                     TextField(composerPlaceholder, text: $chatClient.inputText, axis: .vertical)
-                         .focused($isInputFocused)
-                         .onSubmit {
-                             performComposerAction()
-                         }
-                         .onTapGesture {
-                             setComposerExpanded(true)
-                         }
-                        .lineLimit(1 ... 5)
-                        .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
-                        .foregroundStyle(primaryTextColor)
-                        .disabled(chatClient.currentSession == nil)
-                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                        ForEach(attachedSkills) { skill in
+                            attachedSkillChip(skill)
+                                .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
+                        TextField(composerPlaceholder, text: $chatClient.inputText, axis: .vertical)
+                            .focused($isInputFocused)
+                            .onSubmit {
+                                performComposerAction()
+                            }
+                            .onTapGesture {
+                                setComposerExpanded(true)
+                            }
+                            .lineLimit(1 ... 5)
+                            .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
+                            .foregroundStyle(primaryTextColor)
+                            .disabled(chatClient.currentSession == nil)
+                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    }
 
                     composerActionButton
                         .padding(4)
@@ -609,20 +671,48 @@ struct ChatView: View {
         .padding(.horizontal, 16)
     }
 
+    @ViewBuilder
     private var composerActionButton: some View {
-        Button {
-            performComposerAction()
-        } label: {
-            composerActionButtonLabel
-                .animation(.spring(duration: 0.25), value: chatClient.isLoading)
-                .animation(.spring(duration: 0.25), value: chatClient.isQueueingPrompt)
+        if chatClient.isLoading && hasComposerText {
+            Menu {
+                Button(AppText.queuePrompt) {
+                    if commitComposerChips() {
+                        chatClient.queuePrompt()
+                    }
+                }
+                if chatClient.canSteerPrompt {
+                    Button(AppText.steerPrompt) {
+                        if commitComposerChips() {
+                            chatClient.steerPrompt()
+                        }
+                    }
+                }
+            } label: {
+                animatedComposerActionButtonLabel
+            }
+            .disabled(isComposerActionDisabled)
+            .accessibilityLabel("Choose prompt delivery")
+        } else {
+            Button {
+                performComposerAction()
+            } label: {
+                animatedComposerActionButtonLabel
+            }
+            .disabled(isComposerActionDisabled)
+            .accessibilityLabel(composerActionAccessibilityLabel)
         }
-        .disabled(isComposerActionDisabled)
-        .accessibilityLabel(composerActionAccessibilityLabel)
+    }
+
+    private var animatedComposerActionButtonLabel: some View {
+        composerActionButtonLabel
+            .animation(.spring(duration: 0.25), value: chatClient.isLoading)
+            .animation(.spring(duration: 0.25), value: chatClient.isQueueingPrompt)
     }
 
     private var composerPlaceholder: String {
-        selectedSlashAction == nil ? AppText.messagePlaceholder : "Add arguments..."
+        guard selectedSlashAction == nil else { return "Add arguments..." }
+        guard attachedSkills.isEmpty else { return AppText.messagePlaceholderWithAttachedSkills }
+        return availableSkills.isEmpty ? AppText.messagePlaceholder : AppText.messagePlaceholderWithSkills
     }
 
     private var selectedSlashActionTint: Color {
@@ -665,16 +755,57 @@ struct ChatView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var attachedSkillTint: Color {
+        isRetroChat ? RetroChatStyle.blueAccent : .blue
+    }
+
+    private func attachedSkillChip(_ skill: WorkspaceSkillItem) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wand.and.sparkles")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(attachedSkillTint)
+
+            Text(skill.id)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(attachedSkillTint)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Button {
+                removeAttachedSkill(skill)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(attachedSkillTint.opacity(0.75))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove skill \(skill.id)")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            attachedSkillTint.opacity(isRetroChat ? 0.18 : 0.12),
+            in: Capsule()
+        )
+        .overlay {
+            Capsule()
+                .stroke(attachedSkillTint.opacity(isRetroChat ? 0.75 : 0.32), lineWidth: isRetroChat ? 1.5 : 1)
+        }
+        .frame(maxWidth: 180, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Skill \(skill.id)")
+    }
+
     @ViewBuilder
     private var composerActionButtonLabel: some View {
         if chatClient.isQueueingPrompt {
             ZStack {
                 Circle()
-                    .fill(isRetroChat ? RetroChatStyle.ink : Color.appAccent)
+                    .fill(isRetroChat ? RetroChatStyle.ink : Color.appUserAccent)
 
                 ProgressView()
                     .controlSize(.small)
-                    .tint(isRetroChat ? RetroChatStyle.paper : Color.appOnAccent)
+                    .tint(isRetroChat ? RetroChatStyle.paper : Color.appUserOnAccent)
             }
             .frame(width: 32, height: 32)
             .contentShape(Circle())
@@ -702,8 +833,8 @@ struct ChatView: View {
                 .font(.system(size: isRetroChat ? 28 : 30, weight: isRetroChat ? .bold : .regular))
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(
-                    isRetroChat ? RetroChatStyle.paper : Color.appOnAccent,
-                    isRetroChat ? RetroChatStyle.ink : Color.appAccent
+                    isRetroChat ? RetroChatStyle.paper : Color.appUserOnAccent,
+                    isRetroChat ? RetroChatStyle.ink : Color.appUserAccent
                 )
                 .frame(width: 32, height: 32)
                 .contentShape(Circle())
@@ -752,17 +883,23 @@ struct ChatView: View {
     }
 
     private func sendComposerInput() {
-        guard let selectedSlashAction else {
-            sendCurrentComposerInput()
-            return
-        }
+        guard commitComposerChips() else { return }
+        sendCurrentComposerInput()
+    }
 
-        let composedText = composedSlashActionText(for: selectedSlashAction)
-        guard !composedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    /// Folds the slash command and skill chips into the text the chat client
+    /// sends, returning false when there is nothing to send. If the client
+    /// leaves that text in place, the skill mentions turn back into chips.
+    private func commitComposerChips() -> Bool {
+        guard selectedSlashAction != nil || !attachedSkills.isEmpty else { return true }
+
+        let composedText = composerSendText
+        guard !composedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
 
         chatClient.inputText = composedText
-        self.selectedSlashAction = nil
-        sendCurrentComposerInput()
+        selectedSlashAction = nil
+        attachedSkills = []
+        return true
     }
 
     private func sendCurrentComposerInput() {
@@ -789,6 +926,21 @@ struct ChatView: View {
 
     private func clearSelectedSlashAction() {
         selectedSlashAction = nil
+    }
+
+    private func attachSkills(_ skills: [WorkspaceSkillItem]) {
+        let newSkills = skills.filter { skill in !attachedSkills.contains { $0.id == skill.id } }
+        guard !newSkills.isEmpty else { return }
+        withAnimation(.snappy(duration: 0.2)) {
+            attachedSkills.append(contentsOf: newSkills)
+        }
+    }
+
+    private func removeAttachedSkill(_ skill: WorkspaceSkillItem) {
+        withAnimation(.snappy(duration: 0.2)) {
+            attachedSkills.removeAll { $0.id == skill.id }
+        }
+        isInputFocused = true
     }
 
     private func collapseComposerFocus() {
@@ -959,11 +1111,13 @@ struct ChatView: View {
     }
 
     private var composerSendText: String {
-        guard let selectedSlashAction else {
-            return chatClient.inputText
-        }
+        let text = selectedSlashAction.map(composedSlashActionText(for:)) ?? chatClient.inputText
+        guard !attachedSkills.isEmpty else { return text }
 
-        return composedSlashActionText(for: selectedSlashAction)
+        return SkillMention.composing(
+            text.trimmingCharacters(in: .whitespacesAndNewlines),
+            mentioning: attachedSkills.map(\.id)
+        )
     }
 
     private var slashQuery: String? {
@@ -995,6 +1149,29 @@ struct ChatView: View {
         selectedSlashAction == nil && slashQuery != nil && chatClient.currentSession != nil
     }
 
+    private var skillMentionQuery: String? {
+        SkillMention.activeQuery(in: chatClient.inputText)
+    }
+
+    private var filteredSkills: [WorkspaceSkillItem] {
+        guard let skillMentionQuery else { return [] }
+        let unattachedSkills = availableSkills.filter { skill in
+            !attachedSkills.contains { $0.id == skill.id }
+        }
+        guard !skillMentionQuery.isEmpty else { return unattachedSkills }
+
+        return unattachedSkills.filter { skill in
+            skill.id.localizedCaseInsensitiveContains(skillMentionQuery) ||
+                skill.name.localizedCaseInsensitiveContains(skillMentionQuery)
+        }
+    }
+
+    /// Hidden when nothing matches, so an `@` that is not a skill reads as
+    /// plain text instead of an empty picker.
+    private var showsSkillPicker: Bool {
+        chatClient.currentSession != nil && !filteredSkills.isEmpty
+    }
+
     @MainActor
     private func loadCommands(force: Bool = false) async {
         guard force || availableSlashActions.isEmpty else { return }
@@ -1011,6 +1188,25 @@ struct ChatView: View {
         isLoadingCommands = false
     }
 
+    /// Only v2 servers list skills here; older ones include them among the
+    /// slash commands, so the list stays empty and `@` is plain text.
+    @MainActor
+    private func loadSkills() async {
+        guard !isLoadingSkills else { return }
+
+        isLoadingSkills = true
+        let skills = await workspaceService.loadSkills()
+        availableSkills = skills
+        chatClient.updateSkillCatalog(skills.map(\.id))
+        isLoadingSkills = false
+    }
+
+    private func applySkillMention(_ skill: WorkspaceSkillItem) {
+        attachSkills([skill])
+        chatClient.inputText = SkillMention.removingActiveQuery(from: chatClient.inputText)
+        isInputFocused = true
+    }
+
     private func applySlashAction(_ action: WorkspaceSlashActionItem) {
         selectedSlashAction = action
         chatClient.inputText = ""
@@ -1021,6 +1217,14 @@ struct ChatView: View {
         if shouldClearSelectedSlashAction(forComposerText: newValue) {
             clearSelectedSlashAction()
         }
+
+        if SkillMention.activeQuery(in: newValue) == "", availableSkills.isEmpty, !isLoadingSkills {
+            Task {
+                await loadSkills()
+            }
+        }
+
+        convertFinishedSkillMentionsToChips(in: newValue)
 
         guard selectedSlashAction == nil,
               newValue.hasPrefix("/"),
@@ -1034,6 +1238,16 @@ struct ChatView: View {
         Task {
             await loadCommands(force: true)
         }
+    }
+
+    /// Covers mentions typed out in full or put back by the chat client, such
+    /// as a prompt restored after a failed queue.
+    private func convertFinishedSkillMentionsToChips(in text: String) {
+        let extracted = SkillMention.extractingCompletedMentions(from: text, skillIDs: availableSkills.map(\.id))
+        guard !extracted.skillIDs.isEmpty else { return }
+
+        attachSkills(extracted.skillIDs.compactMap { id in availableSkills.first { $0.id == id } })
+        chatClient.inputText = extracted.text
     }
 
     private func shouldClearSelectedSlashAction(forComposerText newValue: String) -> Bool {
@@ -1620,6 +1834,152 @@ private extension Array where Element == String {
     var cleanedForDisplay: [String] {
         map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+}
+
+/// Lists the skills a v2 server can attach while an `@` mention is typed, the
+/// way the OpenCode TUI does.
+/// Lays out the composer like a token field: chips come first, wrapping onto
+/// lines at least `lineHeight` tall, and the last subview, the text field,
+/// takes the rest of the final line, or a line of its own when less than
+/// `minimumFieldWidth` is left.
+private struct ComposerTokenLayout: Layout {
+    var spacing: CGFloat
+    var minimumFieldWidth: CGFloat
+    /// The field's single-line height, so chips centre on its first line.
+    var lineHeight: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = frames(for: subviews, width: proposal.width)
+        return CGSize(
+            width: proposal.width ?? frames.map(\.maxX).max() ?? 0,
+            height: frames.map(\.maxY).max() ?? 0
+        )
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, frame) in zip(subviews, frames(for: subviews, width: bounds.width)) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(frame.size)
+            )
+        }
+    }
+
+    private func frames(for subviews: Subviews, width: CGFloat?) -> [CGRect] {
+        guard let field = subviews.last else { return [] }
+        let availableWidth = width ?? .infinity
+        var frames: [CGRect] = []
+        var x: CGFloat = 0
+        var rowY: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        func startRow() {
+            rowY += rowHeight
+            x = 0
+            rowHeight = 0
+        }
+
+        for chip in subviews.dropLast() {
+            var size = chip.sizeThatFits(.unspecified)
+            size.width = min(size.width, availableWidth)
+            if x > 0, x + size.width > availableWidth {
+                startRow()
+            }
+            frames.append(CGRect(origin: CGPoint(x: x, y: rowY + max(0, (lineHeight - size.height) / 2)), size: size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height, lineHeight)
+        }
+
+        if x > 0, availableWidth - x < minimumFieldWidth {
+            startRow()
+        }
+
+        let fieldWidth = availableWidth.isFinite ? availableWidth - x : nil
+        let fieldSize = field.sizeThatFits(ProposedViewSize(width: fieldWidth, height: nil))
+        frames.append(CGRect(x: x, y: rowY, width: fieldWidth ?? fieldSize.width, height: fieldSize.height))
+
+        return frames
+    }
+}
+
+private struct SkillMentionPicker: View {
+    let skills: [WorkspaceSkillItem]
+    let visualMode: ChatVisualMode
+    let onSelect: (WorkspaceSkillItem) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(skills.enumerated()), id: \.element.id) { index, skill in
+                    Button {
+                        onSelect(skill)
+                    } label: {
+                        row(for: skill)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Attach skill \(skill.id)")
+
+                    if index < skills.count - 1 {
+                        Divider()
+                            .overlay(isRetroChat ? RetroChatStyle.ink.opacity(0.6) : Color.clear)
+                            .padding(.leading, 50)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: 252)
+        .fixedSize(horizontal: false, vertical: true)
+        .chatPopoverChrome(visualMode)
+    }
+
+    private func row(for skill: WorkspaceSkillItem) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "wand.and.sparkles")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(primaryTextColor)
+                .frame(width: 22)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(skill.mention)
+                        .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+
+                    Text("Skill")
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(secondaryTextColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .chatModeChipChrome(visualMode, usesGlassInStandardMode: false)
+                }
+                if !skill.description.isEmpty {
+                    Text(skill.description)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 14))
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+    }
+
+    private var isRetroChat: Bool {
+        visualMode.isRetro
+    }
+
+    private var primaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.ink : Color.appPrimary
+    }
+
+    private var secondaryTextColor: Color {
+        isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary
     }
 }
 
@@ -2367,7 +2727,7 @@ private struct QueuedPromptBubbleView: View {
             Spacer(minLength: isRetroChat ? 42 : 64)
 
             VStack(alignment: .trailing, spacing: 6) {
-                Text(prompt.text)
+                SkillMentionText(text: prompt.text, chipStyle: isRetroChat ? .retro : .standard(.appAccent))
                     .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                     .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)
                     .padding(.horizontal, isRetroChat ? 14 : 16)

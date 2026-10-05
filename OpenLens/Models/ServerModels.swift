@@ -21,7 +21,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     var createdAt: Double { time.created / 1000.0 }
 
     enum CodingKeys: String, CodingKey {
-        case id, projectID, directory, parentID, title, version, time, share, revert
+        case id, projectID, directory, location, parentID, title, version, time, share, revert
     }
 
     init(
@@ -48,15 +48,29 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let location = try container.decodeIfPresent(OCV2LocationInfo.self, forKey: .location)
         id = try container.decode(String.self, forKey: .id)
-        projectID = try container.decodeIfPresent(String.self, forKey: .projectID)
-        directory = try container.decodeIfPresent(String.self, forKey: .directory)
+        projectID = try container.decodeIfPresent(String.self, forKey: .projectID) ?? location?.project?.id
+        directory = try container.decodeIfPresent(String.self, forKey: .directory) ?? location?.directory
         parentID = try container.decodeIfPresent(String.self, forKey: .parentID)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         version = try container.decodeIfPresent(String.self, forKey: .version)
         time = try container.decodeIfPresent(OCSessionTime.self, forKey: .time) ?? OCSessionTime(created: 0, updated: 0)
         share = try container.decodeIfPresent(OCShareInfo.self, forKey: .share)
         revert = try container.decodeIfPresent(OCSessionRevert.self, forKey: .revert)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(projectID, forKey: .projectID)
+        try container.encodeIfPresent(directory, forKey: .directory)
+        try container.encodeIfPresent(parentID, forKey: .parentID)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(version, forKey: .version)
+        try container.encode(time, forKey: .time)
+        try container.encodeIfPresent(share, forKey: .share)
+        try container.encodeIfPresent(revert, forKey: .revert)
     }
 
     func hash(into hasher: inout Hasher) {
@@ -163,6 +177,44 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
         case id, sessionID, role, time, cost, tokens, error
         case modelID, providerID, mode, path, finish
         case agent, model, system, summary, parentID
+    }
+
+    init(
+        id: String,
+        sessionID: String,
+        role: OCMessageRole,
+        time: OCMessageTime? = nil,
+        cost: Double? = nil,
+        tokens: OCTokenUsage? = nil,
+        error: OCAPIError? = nil,
+        modelID: String? = nil,
+        providerID: String? = nil,
+        mode: String? = nil,
+        path: OCMessagePath? = nil,
+        finish: String? = nil,
+        agent: String? = nil,
+        model: OCMessageModelRef? = nil,
+        system: String? = nil,
+        summary: OCMessageSummary? = nil,
+        parentID: String? = nil
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.role = role
+        self.time = time
+        self.cost = cost
+        self.tokens = tokens
+        self.error = error
+        self.modelID = modelID
+        self.providerID = providerID
+        self.mode = mode
+        self.path = path
+        self.finish = finish
+        self.agent = agent
+        self.model = model
+        self.system = system
+        self.summary = summary
+        self.parentID = parentID
     }
 
     init(from decoder: Decoder) throws {
@@ -288,11 +340,19 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decodeIfPresent(String.self, forKey: .name)
+            ?? container.decodeIfPresent(String.self, forKey: .type)
         data = try container.decodeIfPresent(OCAPIErrorData.self, forKey: .data)
+            ?? container.decodeIfPresent(String.self, forKey: .message).map { OCAPIErrorData(message: $0) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(data, forKey: .data)
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, data
+        case name, data, type, message
     }
 }
 
@@ -302,7 +362,7 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
 
 // MARK: - Message Parts
 
- struct OCMessageWithParts: Codable, Identifiable, Sendable {
+nonisolated struct OCMessageWithParts: Codable, Identifiable, Sendable {
     let info: OCMessage
     let parts: [OCPart]
 
@@ -489,6 +549,15 @@ nonisolated struct OCPart: Codable, Identifiable, Sendable {
 }
 
 nonisolated struct OCToolState: Codable, Sendable {
+    private struct ContentItem: Decodable {
+        let type: OCPartType
+        let text: String?
+    }
+
+    private struct ErrorDetail: Decodable {
+        let message: String?
+    }
+
     let status: OCToolStatus
     let input: AnyCodable?
     let output: String?
@@ -500,6 +569,10 @@ nonisolated struct OCToolState: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case status, input, output, title, error, metadata, time, attachments
+    }
+
+    private enum DecodingKeys: String, CodingKey {
+        case status, input, output, content, title, error, metadata, time, attachments
     }
 
     init(status: OCToolStatus, input: AnyCodable? = nil, output: String? = nil,
@@ -516,12 +589,18 @@ nonisolated struct OCToolState: Codable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
         status = try container.decodeIfPresent(OCToolStatus.self, forKey: .status) ?? .pending
         input = try? container.decodeIfPresent(AnyCodable.self, forKey: .input)
         // output can sometimes be a non-string value; fall back gracefully
         if let str = try? container.decodeIfPresent(String.self, forKey: .output) {
             output = str
+        } else if let content = try? container.decodeIfPresent([ContentItem].self, forKey: .content) {
+            let text = content
+                .filter { $0.type == .text }
+                .compactMap(\.text)
+                .joined(separator: "\n")
+            output = text.isEmpty ? nil : text
         } else if let any = try? container.decodeIfPresent(AnyCodable.self, forKey: .output) {
             output = String(describing: any.value)
         } else {
@@ -531,6 +610,9 @@ nonisolated struct OCToolState: Codable, Sendable {
         // error can sometimes be a non-string value
         if let str = try? container.decodeIfPresent(String.self, forKey: .error) {
             error = str
+        } else if let detail = try? container.decodeIfPresent(ErrorDetail.self, forKey: .error),
+                  let message = detail.message {
+            error = message
         } else if let any = try? container.decodeIfPresent(AnyCodable.self, forKey: .error) {
             error = String(describing: any.value)
         } else {
@@ -583,6 +665,13 @@ extension OCEvent {
              "question.asked",
              "question.replied",
              "question.rejected":
+            return propertiesDictionary["sessionID"] as? String
+
+        case "form.created", "form.asked":
+            return propertiesDictionary["sessionID"] as? String
+                ?? nestedDictionary(for: "form", in: propertiesDictionary)?["sessionID"] as? String
+
+        case "form.replied", "form.cancelled":
             return propertiesDictionary["sessionID"] as? String
 
         case "message.updated":
@@ -680,8 +769,12 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
 /// Matches the provider list model shape:
 /// `{ id, name, release_date, attachment, reasoning, temperature, tool_call, capabilities?, cost?, limit, status?, options, ... }`
 /// We decode defensively — most fields are optional.
- struct OCProviderModel: Codable, Identifiable, Sendable {
+struct OCProviderModel: Codable, Identifiable, Sendable {
     let id: String
+    /// Provider-facing model ID when a v2 catalog alias has a different
+    /// selectable ID. This lets persisted v1 selections be reconciled without
+    /// replacing the catalog ID used by the v2 picker.
+    let legacyModelID: String?
     let name: String
     let releaseDate: String?
     let attachment: Bool?
@@ -689,6 +782,11 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
     let temperature: Bool?
     let toolCall: Bool?
     let cost: OCModelCost?
+    /// Runtime-catalog input media. `nil` means the provider exposed only the
+    /// legacy attachment boolean, so the picker keeps its legacy Files badge.
+    let inputMedia: [String]?
+    /// Runtime-catalog prices can have a base rate plus context tiers.
+    let costTiers: [OCModelCost]?
     let limit: OCModelLimit?
     let status: String?
     let variants: [String: OCProviderVariant]?
@@ -702,11 +800,13 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
         case cost, limit, status, variants
     }
 
-    init(id: String, name: String, releaseDate: String? = nil, attachment: Bool? = nil,
+    init(id: String, legacyModelID: String? = nil, name: String, releaseDate: String? = nil, attachment: Bool? = nil,
          reasoning: Bool? = nil, temperature: Bool? = nil, toolCall: Bool? = nil,
-         cost: OCModelCost? = nil, limit: OCModelLimit? = nil, status: String? = nil,
+         cost: OCModelCost? = nil, inputMedia: [String]? = nil, costTiers: [OCModelCost]? = nil,
+         limit: OCModelLimit? = nil, status: String? = nil,
          variants: [String: OCProviderVariant]? = nil) {
         self.id = id
+        self.legacyModelID = legacyModelID
         self.name = name
         self.releaseDate = releaseDate
         self.attachment = attachment
@@ -714,6 +814,8 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
         self.temperature = temperature
         self.toolCall = toolCall
         self.cost = cost
+        self.inputMedia = inputMedia
+        self.costTiers = costTiers
         self.limit = limit
         self.status = status
         self.variants = variants
@@ -723,6 +825,7 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let capabilities = try container.decodeIfPresent(OCProviderModelCapabilities.self, forKey: .capabilities)
         id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        legacyModelID = nil
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         releaseDate = try container.decodeIfPresent(String.self, forKey: .releaseDate)
         attachment = try container.decodeIfPresent(Bool.self, forKey: .attachment) ?? capabilities?.attachment
@@ -730,6 +833,8 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
         temperature = try container.decodeIfPresent(Bool.self, forKey: .temperature) ?? capabilities?.temperature
         toolCall = try container.decodeIfPresent(Bool.self, forKey: .toolCall) ?? capabilities?.toolCall
         cost = try container.decodeIfPresent(OCModelCost.self, forKey: .cost)
+        inputMedia = nil
+        costTiers = nil
         limit = try container.decodeIfPresent(OCModelLimit.self, forKey: .limit)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         variants = try container.decodeIfPresent([String: OCProviderVariant].self, forKey: .variants)
@@ -796,6 +901,28 @@ struct OCProviderVariant: Codable, Hashable, Sendable {
         case reasoningConfig
     }
 
+    init(
+        disabled: Bool? = nil,
+        reasoningEffort: String? = nil,
+        effort: String? = nil,
+        budgetTokens: Int? = nil,
+        maxReasoningEffort: String? = nil,
+        thinking: OCThinkingVariant? = nil,
+        thinkingConfig: OCThinkingVariant? = nil,
+        reasoning: OCReasoningVariant? = nil,
+        reasoningConfig: OCReasoningConfigVariant? = nil
+    ) {
+        self.disabled = disabled
+        self.reasoningEffort = reasoningEffort
+        self.effort = effort
+        self.budgetTokens = budgetTokens
+        self.maxReasoningEffort = maxReasoningEffort
+        self.thinking = thinking
+        self.thinkingConfig = thinkingConfig
+        self.reasoning = reasoning
+        self.reasoningConfig = reasoningConfig
+    }
+
     var isDisabled: Bool { disabled ?? false }
 
     var isThinkingEffortVariant: Bool {
@@ -839,16 +966,65 @@ struct OCReasoningConfigVariant: Codable, Hashable, Sendable {
     }
 }
 
- struct OCModelCost: Codable, Sendable {
+struct OCModelCost: Codable, Sendable {
+    let tier: Int?
     let input: Double?
     let output: Double?
     let cacheRead: Double?
     let cacheWrite: Double?
 
     enum CodingKeys: String, CodingKey {
-        case input, output
+        case tier, input, output, cache
         case cacheRead = "cache_read"
         case cacheWrite = "cache_write"
+    }
+
+    private struct ContextTier: Decodable {
+        let size: Int
+    }
+
+    private struct Cache: Codable, Sendable {
+        let read: Double?
+        let write: Double?
+    }
+
+    init(
+        tier: Int? = nil,
+        input: Double? = nil,
+        output: Double? = nil,
+        cacheRead: Double? = nil,
+        cacheWrite: Double? = nil
+    ) {
+        self.tier = tier
+        self.input = input
+        self.output = output
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let legacyTier = try? container.decodeIfPresent(Int.self, forKey: .tier) {
+            tier = legacyTier
+        } else {
+            tier = try container.decodeIfPresent(ContextTier.self, forKey: .tier)?.size
+        }
+        input = try container.decodeIfPresent(Double.self, forKey: .input)
+        output = try container.decodeIfPresent(Double.self, forKey: .output)
+        let cache = try container.decodeIfPresent(Cache.self, forKey: .cache)
+        let legacyCacheRead = try container.decodeIfPresent(Double.self, forKey: .cacheRead)
+        let legacyCacheWrite = try container.decodeIfPresent(Double.self, forKey: .cacheWrite)
+        cacheRead = cache?.read ?? legacyCacheRead
+        cacheWrite = cache?.write ?? legacyCacheWrite
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(tier, forKey: .tier)
+        try container.encodeIfPresent(input, forKey: .input)
+        try container.encodeIfPresent(output, forKey: .output)
+        try container.encodeIfPresent(cacheRead, forKey: .cacheRead)
+        try container.encodeIfPresent(cacheWrite, forKey: .cacheWrite)
     }
 }
 
@@ -859,21 +1035,139 @@ struct OCReasoningConfigVariant: Codable, Hashable, Sendable {
 
 /// Response shape for `GET /provider`:
 /// `{ all: Provider[], default: { [key: string]: string }, connected: string[] }`
- struct OCProviderResponse: Codable, Sendable {
+struct OCProviderResponse: Codable, Sendable {
     let all: [OCProvider]
     let `default`: [String: String]?
     let connected: [String]?
 }
 
+/// A model returned by the v2 runtime catalog. The catalog ID is the stable
+/// selection value; `modelID` is the provider-facing identifier and can differ
+/// for configured aliases.
+nonisolated struct OCV2ModelInfo: Decodable, Sendable {
+    let id: String
+    let modelID: String
+    let providerID: String
+    let name: String?
+    let capabilities: OCV2ModelCapabilities?
+    let costs: [OCModelCost]
+    let limit: OCModelLimit?
+    let variants: [String: OCProviderVariant]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, modelID, providerID, name, capabilities, cost, limit, variants
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let catalogID = try container.decodeIfPresent(String.self, forKey: .id)?.nilIfBlank
+        let upstreamID = try container.decodeIfPresent(String.self, forKey: .modelID)?.nilIfBlank
+        guard let id = catalogID ?? upstreamID,
+              let providerID = try container.decodeIfPresent(String.self, forKey: .providerID)?.nilIfBlank else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "Expected non-empty model id and providerID."
+            )
+        }
+        self.id = id
+        modelID = upstreamID ?? id
+        self.providerID = providerID
+        name = try container.decodeIfPresent(String.self, forKey: .name)?.nilIfBlank
+        capabilities = try container.decodeIfPresent(OCV2ModelCapabilities.self, forKey: .capabilities)
+        costs = try container.decodeIfPresent([OCModelCost].self, forKey: .cost) ?? []
+        limit = try container.decodeIfPresent(OCModelLimit.self, forKey: .limit)
+        if let variantsByID = try? container.decodeIfPresent([String: OCProviderVariant].self, forKey: .variants) {
+            variants = variantsByID
+        } else if let variantList = try? container.decodeIfPresent([OCV2ModelVariant].self, forKey: .variants) {
+            variants = variantList.isEmpty
+                ? nil
+                : Dictionary(uniqueKeysWithValues: variantList.map { ($0.id, $0.providerVariant) })
+        } else {
+            variants = nil
+        }
+    }
+}
+
+private nonisolated struct OCV2ModelVariant: Decodable, Sendable {
+    let id: String
+    let disabled: Bool?
+    let reasoningEffort: String?
+    let effort: String?
+    let budgetTokens: Int?
+    let thinking: OCThinkingVariant?
+    let reasoning: OCReasoningVariant?
+    let settings: OCProviderVariant?
+
+    enum CodingKeys: String, CodingKey {
+        case id, disabled, reasoningEffort, effort, budgetTokens, thinking, reasoning, settings
+    }
+
+    var providerVariant: OCProviderVariant {
+        OCProviderVariant(
+            disabled: settings?.disabled ?? disabled,
+            reasoningEffort: settings?.reasoningEffort ?? reasoningEffort,
+            effort: settings?.effort ?? effort,
+            budgetTokens: settings?.budgetTokens ?? budgetTokens,
+            maxReasoningEffort: settings?.maxReasoningEffort,
+            thinking: settings?.thinking ?? thinking,
+            thinkingConfig: settings?.thinkingConfig,
+            reasoning: settings?.reasoning ?? reasoning,
+            reasoningConfig: settings?.reasoningConfig
+        )
+    }
+}
+
+nonisolated struct OCV2ModelCapabilities: Decodable, Sendable {
+    let input: [String]?
+    let output: [String]?
+    let tools: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case input, output, tools
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        input = try container.decodeIfPresent([String].self, forKey: .input)
+        output = try container.decodeIfPresent([String].self, forKey: .output)
+        tools = try container.decodeIfPresent(Bool.self, forKey: .tools)
+    }
+
+    var supportsAttachments: Bool {
+        input?.contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare("text") != .orderedSame
+        } ?? false
+    }
+}
+
+nonisolated struct OCV2ProviderInfo: Decodable, Sendable {
+    let id: String
+    let name: String?
+}
+
 /// The server's Config type is very large. We only decode the fields we use.
 /// Uses AnyCodable fallback to avoid decode failures on unknown fields.
- struct OCConfig: Codable, Sendable {
+struct OCConfig: Codable, Sendable {
     let model: String?
     let provider: [String: AnyCodable]?
     /// When set, ONLY these providers will be enabled. All others are ignored.
     let enabledProviders: [String]?
     /// Disable providers that are loaded automatically.
     let disabledProviders: [String]?
+
+    init(
+        model: String? = nil,
+        provider: [String: AnyCodable]? = nil,
+        enabledProviders: [String]? = nil,
+        disabledProviders: [String]? = nil
+    ) {
+        self.model = model
+        self.provider = provider
+        self.enabledProviders = enabledProviders
+        self.disabledProviders = disabledProviders
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -892,7 +1186,7 @@ struct OCReasoningConfigVariant: Codable, Hashable, Sendable {
 
 // MARK: - Health
 
- struct OCHealthResponse: Codable, Sendable {
+ nonisolated struct OCHealthResponse: Codable, Equatable, Sendable {
     let healthy: Bool
     let version: String?
 }
@@ -996,6 +1290,28 @@ nonisolated struct OCPermissionRequest: Codable, Identifiable, Sendable {
         legacyTitle = try container.decodeIfPresent(String.self, forKey: .title)
         legacyToolName = try? container.decodeIfPresent(String.self, forKey: .tool)
         displayScopeWasTruncated = try container.decodeIfPresent(Bool.self, forKey: .displayScopeWasTruncated) ?? false
+    }
+
+    /// Session-scoped v2 permission routes own their session identity even
+    /// when an older server omits it from the response body.
+    func assigned(toSessionID sessionID: String) -> OCPermissionRequest {
+        OCPermissionRequest(
+            id: id,
+            sessionID: sessionID,
+            permission: permission,
+            action: action,
+            patterns: patterns,
+            resources: resources,
+            metadata: metadata,
+            always: always,
+            save: save,
+            toolRef: toolRef,
+            input: input,
+            description: legacyDescription,
+            title: legacyTitle,
+            toolName: legacyToolName,
+            displayScopeWasTruncated: displayScopeWasTruncated
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1225,11 +1541,306 @@ nonisolated struct OCQuestionRequest: Codable, Identifiable, Sendable {
     let answers: [[String]]
 }
 
+// MARK: - Forms
+
+/// A server-driven v2 form. Unlike legacy questions, forms carry typed fields
+/// and must retain their session identity for their session-scoped operations.
+nonisolated struct OCFormRequest: Decodable, Identifiable, Sendable {
+    let id: String
+    let sessionID: String
+    let title: String
+    let fields: [OCFormField]
+    let state: OCFormState
+
+    init(
+        id: String,
+        sessionID: String,
+        title: String,
+        fields: [OCFormField],
+        state: OCFormState = .pending
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.title = title
+        self.fields = fields
+        self.state = state
+    }
+
+    var hasUnsupportedFields: Bool {
+        fields.contains { !$0.isSupported }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sessionID, title, fields, state
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID) ?? ""
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        fields = try container.decodeIfPresent([OCFormField].self, forKey: .fields) ?? []
+        state = try container.decodeIfPresent(OCFormState.self, forKey: .state) ?? .pending
+    }
+}
+
+nonisolated enum OCFormState: Equatable, Sendable {
+    case pending
+    case answered
+    case cancelled
+    case unknown
+}
+
+extension OCFormState: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case status
+    }
+
+    init(from decoder: Decoder) throws {
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+            self = .unknown
+            return
+        }
+
+        switch try? container.decodeIfPresent(String.self, forKey: .status) {
+        case "pending": self = .pending
+        case "answered": self = .answered
+        case "cancelled": self = .cancelled
+        default: self = .unknown
+        }
+    }
+}
+
+nonisolated enum OCFormFieldKind: String, Equatable, Sendable {
+    case string
+    case number
+    case integer
+    case boolean
+    case multiselect
+    case external
+    case unsupported
+}
+
+/// A decoded v2 form field. We intentionally retain an explicit unsupported
+/// case: an added server field must not make the entire form undecodable or
+/// tempt the client to submit a guessed value.
+nonisolated struct OCFormField: Decodable, Identifiable, Sendable {
+    let key: String
+    let kind: OCFormFieldKind
+    let rawType: String
+    let title: String?
+    let description: String?
+    let required: Bool
+    let hidden: Bool
+    let stringFormat: String?
+    let stringMinimum: Int?
+    let stringMaximum: Int?
+    let stringPattern: String?
+    let placeholder: String?
+    let stringDefault: String?
+    let options: [OCFormOption]
+    let custom: Bool
+    let numberMinimum: Double?
+    let numberMaximum: Double?
+    let numberDefault: Double?
+    let booleanDefault: Bool?
+    let multiselectMinimum: Int?
+    let multiselectMaximum: Int?
+    let multiselectDefault: [String]
+    let externalURLString: String?
+    /// Conditions are part of the documented contract, but OpenLens does not
+    /// yet evaluate them. Treat them as unsupported instead of submitting
+    /// values for fields that may be inactive.
+    let hasConditionalRules: Bool
+
+    var id: String { key }
+    var isSupported: Bool {
+        kind != .unsupported
+            && !hasConditionalRules
+            && (kind != .string || stringFormat.map {
+                ["email", "uri", "date", "date-time"].contains($0)
+            } ?? true)
+            && (kind != .external || externalURL != nil)
+    }
+
+    var displayTitle: String {
+        title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? key
+    }
+
+    var externalURL: URL? {
+        guard kind == .external,
+              let externalURLString,
+              let url = URL(string: externalURLString),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host,
+              !host.isEmpty
+        else {
+            return nil
+        }
+        return url
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, type, title, description, required, hidden
+        case format, minLength, maxLength, pattern, placeholder, `default`, options, custom
+        case minimum, maximum, minItems, maxItems, url, when
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decodeIfPresent(String.self, forKey: .key) ?? ""
+        rawType = try container.decodeIfPresent(String.self, forKey: .type) ?? ""
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        required = try container.decodeIfPresent(Bool.self, forKey: .required) ?? false
+        hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        stringFormat = try container.decodeIfPresent(String.self, forKey: .format)
+        stringMinimum = try container.decodeIfPresent(Int.self, forKey: .minLength)
+        stringMaximum = try container.decodeIfPresent(Int.self, forKey: .maxLength)
+        stringPattern = try container.decodeIfPresent(String.self, forKey: .pattern)
+        placeholder = try container.decodeIfPresent(String.self, forKey: .placeholder)
+        options = try container.decodeIfPresent([OCFormOption].self, forKey: .options) ?? []
+        custom = try container.decodeIfPresent(Bool.self, forKey: .custom) ?? false
+        numberMinimum = Self.finiteNumber(from: container, key: .minimum)
+        numberMaximum = Self.finiteNumber(from: container, key: .maximum)
+        multiselectMinimum = try container.decodeIfPresent(Int.self, forKey: .minItems)
+        multiselectMaximum = try container.decodeIfPresent(Int.self, forKey: .maxItems)
+        externalURLString = try container.decodeIfPresent(String.self, forKey: .url)
+        if container.contains(.when) {
+            // An empty condition list has no effect. A malformed condition is
+            // treated as conditional so the field falls back safely instead
+            // of being submitted with guessed visibility semantics.
+            if let conditions = try? container.decode([OCFormCondition].self, forKey: .when) {
+                hasConditionalRules = !conditions.isEmpty
+            } else {
+                hasConditionalRules = true
+            }
+        } else {
+            hasConditionalRules = false
+        }
+
+        switch rawType {
+        case "string":
+            kind = .string
+            stringDefault = try container.decodeIfPresent(String.self, forKey: .default)
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = []
+        case "number":
+            kind = .number
+            stringDefault = nil
+            numberDefault = Self.finiteNumber(from: container, key: .default)
+            booleanDefault = nil
+            multiselectDefault = []
+        case "integer":
+            kind = .integer
+            stringDefault = nil
+            numberDefault = Self.finiteNumber(from: container, key: .default)
+            booleanDefault = nil
+            multiselectDefault = []
+        case "boolean":
+            kind = .boolean
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = try container.decodeIfPresent(Bool.self, forKey: .default)
+            multiselectDefault = []
+        case "multiselect":
+            kind = .multiselect
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = try container.decodeIfPresent([String].self, forKey: .default) ?? []
+        case "external":
+            kind = .external
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = []
+        default:
+            kind = .unsupported
+            stringDefault = nil
+            numberDefault = nil
+            booleanDefault = nil
+            multiselectDefault = []
+        }
+    }
+
+    private static func finiteNumber(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> Double? {
+        guard let value = try? container.decode(Double.self, forKey: key),
+              value.isFinite
+        else {
+            return nil
+        }
+        return value
+    }
+}
+
+nonisolated struct OCFormOption: Decodable, Identifiable, Sendable {
+    let value: String
+    let label: String
+    let description: String?
+
+    var id: String { value }
+
+    private enum CodingKeys: String, CodingKey {
+        case value, label, description
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        value = try container.decodeIfPresent(String.self, forKey: .value) ?? ""
+        label = try container.decodeIfPresent(String.self, forKey: .label) ?? ""
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+    }
+}
+
+/// Conditions are intentionally only decoded to decide whether a form field
+/// needs the unsupported fallback. OpenLens does not evaluate them yet.
+private nonisolated struct OCFormCondition: Decodable {
+    let key: String
+    let op: String
+    let value: AnyCodable
+
+    private enum CodingKeys: String, CodingKey {
+        case key, op, value
+    }
+}
+
+/// Values accepted by the v2 form reply contract. The number case represents
+/// both `number` and `integer` fields; integer validation happens before the
+/// value reaches this transport type.
+nonisolated enum OCFormValue: Equatable, Sendable {
+    case string(String)
+    case number(Double)
+    case boolean(Bool)
+    case strings([String])
+}
+
+extension OCFormValue: Encodable {
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .boolean(let value):
+            try container.encode(value)
+        case .strings(let values):
+            try container.encode(values)
+        }
+    }
+}
+
 // MARK: - Project / Path / VCS
 
 /// Matches the server's `Project` type:
 /// `{ id, worktree, vcsDir?, vcs?, time: { created, initialized? } }`
- struct OCProject: Codable, Identifiable {
+nonisolated struct OCProject: Decodable, Identifiable, Sendable {
     let id: String
     let worktree: String?
     let vcsDir: String?
@@ -1254,35 +1865,240 @@ nonisolated struct OCQuestionRequest: Codable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         worktree = try container.decodeIfPresent(String.self, forKey: .worktree)
+            ?? container.decodeIfPresent(String.self, forKey: .directory)
         vcsDir = try container.decodeIfPresent(String.self, forKey: .vcsDir)
         vcs = try container.decodeIfPresent(String.self, forKey: .vcs)
         time = try? container.decodeIfPresent(OCProjectTime.self, forKey: .time)
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, worktree, vcsDir, vcs, time
+        case id, worktree, directory, vcsDir, vcs, time
     }
 }
 
- struct OCProjectTime: Codable {
+nonisolated struct OCProjectTime: Codable, Sendable {
     let created: Double?
     let initialized: Double?
 }
 
- struct OCPathInfo: Codable {
+nonisolated struct OCPathInfo: Codable, Sendable {
     let state: String?
     let config: String?
     let worktree: String?
     let directory: String?
 }
 
- struct OCVCSInfo: Codable {
+nonisolated struct OCVCSInfo: Decodable, Sendable {
     let branch: String?
+
+    init(branch: String?) {
+        self.branch = branch
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case branch
+    }
+
+    private struct Branch: Decodable {
+        let current: String?
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let branch = try? container.decodeIfPresent(String.self, forKey: .branch) {
+            self.branch = branch
+        } else {
+            self.branch = try container.decodeIfPresent(Branch.self, forKey: .branch)?.current
+        }
+    }
+}
+
+/// Canonical workspace identity returned by v2 location-scoped endpoints.
+/// The app uses the resolved directory rather than trusting the request value.
+nonisolated struct OCV2LocationInfo: Codable, Sendable {
+    nonisolated struct Project: Codable, Sendable {
+        let id: String
+        let directory: String
+    }
+
+    let directory: String
+    let project: Project?
+}
+
+nonisolated struct OCV2Located<Value: Decodable & Sendable>: Decodable, Sendable {
+    let location: OCV2LocationInfo
+    let data: Value
+}
+
+/// A v2 response whose payload is independent of the active location.
+nonisolated struct OCV2Envelope<Value: Decodable & Sendable>: Decodable, Sendable {
+    let data: Value
+}
+
+/// A v2 session that currently owns a running turn. The active-session
+/// endpoint is a sparse snapshot: a session is absent when it is not running.
+nonisolated struct OCV2ActiveSession: Decodable, Sendable {
+    let type: String
+}
+
+/// A cursor page returned by the v2 session and session-message endpoints.
+nonisolated struct OCV2CursorPage<Value: Decodable & Sendable>: Decodable, Sendable {
+    nonisolated struct Cursor: Decodable, Sendable {
+        let previous: String?
+        let next: String?
+    }
+
+    let data: Value
+    let cursor: Cursor
+}
+
+/// A single decoded cursor page with its validated continuation cursor.
+nonisolated struct OCV2PageResult<Value: Sendable>: Sendable {
+    let values: [Value]
+    let nextCursor: String?
+}
+
+/// One page of the session list. `nextCursor` is nil on the last page.
+nonisolated struct OCSessionPage: Sendable {
+    let sessions: [OCSession]
+    let nextCursor: String?
+}
+
+/// A tagged message projection returned by v2 session transcript endpoints.
+/// Unsupported timeline entries are decoded but omitted from OpenLens's
+/// two-role chat domain, so newer server entries do not invalidate a page.
+nonisolated struct OCV2SessionMessage: Decodable, Sendable {
+    nonisolated struct Model: Decodable, Sendable {
+        let id: String?
+        let providerID: String?
+    }
+
+    nonisolated struct Content: Decodable, Sendable {
+        let id: String?
+        let type: OCPartType
+        let text: String?
+        let callID: String?
+        let name: String?
+        let tool: String?
+        let state: OCToolState?
+
+        enum CodingKeys: String, CodingKey {
+            case id, type, text, callID, name, tool, state
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(String.self, forKey: .id)
+            type = try container.decodeIfPresent(OCPartType.self, forKey: .type) ?? .unknown
+            text = try container.decodeIfPresent(String.self, forKey: .text)
+            callID = try container.decodeIfPresent(String.self, forKey: .callID)
+            name = try container.decodeIfPresent(String.self, forKey: .name)
+            tool = try container.decodeIfPresent(String.self, forKey: .tool)
+            state = try? container.decodeIfPresent(OCToolState.self, forKey: .state)
+        }
+    }
+
+    let id: String
+    let type: String
+    let time: OCMessageTime?
+    let text: String?
+    let agent: String?
+    let model: Model?
+    let content: [Content]
+    let cost: Double?
+    let tokens: OCTokenUsage?
+    let finish: String?
+    let error: OCAPIError?
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, time, text, agent, model, content, cost, tokens, finish, error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        time = try? container.decodeIfPresent(OCMessageTime.self, forKey: .time)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        agent = try container.decodeIfPresent(String.self, forKey: .agent)
+        model = try? container.decodeIfPresent(Model.self, forKey: .model)
+        content = (try? container.decodeIfPresent([Content].self, forKey: .content)) ?? []
+        cost = try container.decodeIfPresent(Double.self, forKey: .cost)
+        tokens = try? container.decodeIfPresent(OCTokenUsage.self, forKey: .tokens)
+        finish = try container.decodeIfPresent(String.self, forKey: .finish)
+        error = try container.decodeIfPresent(OCAPIError.self, forKey: .error)
+    }
+
+    func asMessage(sessionID: String) -> OCMessageWithParts? {
+        let role: OCMessageRole
+        switch type {
+        case "user":
+            role = .user
+        case "assistant":
+            role = .assistant
+        default:
+            return nil
+        }
+
+        let info = OCMessage(
+            id: id,
+            sessionID: sessionID,
+            role: role,
+            time: time,
+            cost: cost,
+            tokens: tokens,
+            error: error,
+            modelID: model?.id,
+            providerID: model?.providerID,
+            finish: finish,
+            agent: agent
+        )
+        let parts: [OCPart]
+        if role == .user {
+            parts = text.map {
+                [
+                    OCPart(
+                        id: "\(id)-text",
+                        sessionID: sessionID,
+                        messageID: id,
+                        type: .text,
+                        text: $0
+                    ),
+                ]
+            } ?? []
+        } else {
+            parts = content.enumerated().map { index, item in
+                OCPart(
+                    id: item.id ?? "\(id)-\(index)",
+                    sessionID: sessionID,
+                    messageID: id,
+                    type: item.type,
+                    text: item.text,
+                    callID: item.callID,
+                    tool: item.type == .tool ? item.name ?? item.tool : nil,
+                    state: item.state
+                )
+            }
+        }
+        return OCMessageWithParts(info: info, parts: parts)
+    }
+}
+
+nonisolated struct OCV2FileSystemEntry: Codable, Sendable {
+    let path: String
+    let type: String
+}
+
+nonisolated struct OCV2VCSFileStatus: Codable, Sendable {
+    let file: String
+    let additions: Int
+    let deletions: Int
+    let status: String
 }
 
 // MARK: - File Browser
 
-struct OCWorkspaceFileEntry: Codable, Identifiable, Sendable {
+nonisolated struct OCWorkspaceFileEntry: Codable, Identifiable, Sendable {
     let name: String
     let path: String
     let absolute: String?
@@ -1292,7 +2108,7 @@ struct OCWorkspaceFileEntry: Codable, Identifiable, Sendable {
     var id: String { absolute ?? path }
 }
 
-struct OCWorkspaceFileStatus: Codable, Hashable, Sendable {
+nonisolated struct OCWorkspaceFileStatus: Codable, Hashable, Sendable {
     let path: String
     let added: Int
     let removed: Int
@@ -1310,7 +2126,7 @@ struct OCWorkspaceFileStatus: Codable, Hashable, Sendable {
     }
 }
 
-struct OCFilePatchHunk: Codable, Hashable, Sendable {
+nonisolated struct OCFilePatchHunk: Codable, Hashable, Sendable {
     let oldStart: Int
     let oldLines: Int
     let newStart: Int
@@ -1318,7 +2134,7 @@ struct OCFilePatchHunk: Codable, Hashable, Sendable {
     let lines: [String]
 }
 
-struct OCFilePatch: Codable, Hashable, Sendable {
+nonisolated struct OCFilePatch: Codable, Hashable, Sendable {
     let oldFileName: String
     let newFileName: String
     let oldHeader: String?
@@ -1327,7 +2143,7 @@ struct OCFilePatch: Codable, Hashable, Sendable {
     let index: String?
 }
 
-struct OCFileContent: Codable, Hashable, Sendable {
+nonisolated struct OCFileContent: Codable, Hashable, Sendable {
     let type: String?
     let content: String?
     let diff: String?
@@ -1401,7 +2217,7 @@ struct OCFileContent: Codable, Hashable, Sendable {
 
 // MARK: - File Diff
 
- struct OCFileDiff: Codable, Sendable {
+nonisolated struct OCFileDiff: Codable, Sendable {
     let file: String?
     let path: String?
     let status: String?
@@ -1565,7 +2381,7 @@ struct OCFileContent: Codable, Hashable, Sendable {
 
 // MARK: - Agent
 
- struct OCAgent: Codable, Identifiable {
+nonisolated struct OCAgent: Codable, Identifiable, Sendable {
     let id: String
     let name: String?
     let description: String?
@@ -1604,7 +2420,7 @@ struct OCFileContent: Codable, Hashable, Sendable {
 
 // MARK: - Command
 
- struct OCCommand: Codable, Identifiable {
+nonisolated struct OCCommand: Codable, Identifiable, Sendable {
     let id: String
     let name: String?
     let description: String?
@@ -1650,6 +2466,15 @@ struct OCFileContent: Codable, Hashable, Sendable {
     }
 }
 
+// MARK: - Skill
+
+/// A skill a v2 server can attach to a prompt through an `@` mention.
+nonisolated struct OCSkill: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let description: String?
+}
+
 // MARK: - Prompt Input
 
  struct OCPromptInput: Codable {
@@ -1663,6 +2488,77 @@ struct OCFileContent: Codable, Hashable, Sendable {
         let providerID: String
         let modelID: String
     }
+}
+
+/// Input accepted by the v2 session prompt endpoint. Unlike the legacy
+/// prompt endpoint, agent and model selection are applied through dedicated
+/// session mutations before this input is admitted.
+nonisolated struct OCV2PermissionReplyInput: Encodable, Sendable {
+    let reply: OCPermissionReply
+
+    enum CodingKeys: String, CodingKey { case reply = "decision" }
+}
+
+nonisolated struct OCV2FormReplyInput: Encodable, Sendable {
+    let answer: [String: OCFormValue]
+}
+
+nonisolated struct OCV2CreateSessionInput: Encodable, Sendable {
+    let id: String
+    let title: String?
+    let location: OCV2LocationInfo?
+}
+
+nonisolated struct OCV2PromptInput: Codable, Sendable {
+    let id: String?
+    let text: String
+    let skills: [OCV2SkillAttachment]?
+    let delivery: Delivery
+
+    nonisolated enum Delivery: String, Codable, Sendable {
+        case steer
+        case queue
+    }
+}
+
+/// Input accepted by the v2 session command endpoint. Commands execute using
+/// the session's current agent and model selection, so only the command's
+/// supported command inputs are included here.
+nonisolated struct OCV2CommandInput: Codable, Sendable {
+    let name: String
+    let text: String
+    let files: [[String: String]]
+    let agents: [[String: String]]
+    let skills: [OCV2SkillAttachment]
+    let delivery: OCV2PromptInput.Delivery
+}
+
+/// A skill attached to a v2 prompt or command. The mention locates the
+/// `@skill` token in the submitted text, in UTF-16 offsets as the TUI sends.
+nonisolated struct OCV2SkillAttachment: Codable, Hashable, Sendable {
+    nonisolated struct Mention: Codable, Hashable, Sendable {
+        let start: Int
+        let end: Int
+        let text: String
+    }
+
+    let id: String
+    let mention: Mention?
+}
+
+/// Result returned by the v2 interrupt endpoint.
+nonisolated struct OCV2InterruptResponse: Decodable, Sendable {
+    let interrupted: Bool
+
+    private enum CodingKeys: String, CodingKey { case interrupted }
+}
+
+/// The v2 session model endpoints use `id`, rather than the legacy
+/// `modelID`, and include the selected reasoning variant in the same object.
+nonisolated struct OCV2ModelRef: Codable, Sendable {
+    let id: String
+    let providerID: String
+    let variant: String?
 }
 
  struct OCPromptPart: Codable {
@@ -1772,4 +2668,10 @@ nonisolated struct AnyCodable: Codable {
             try container.encodeNil()
         }
     }
+}
+
+/// v2 creates a reversible boundary before committing a one-tap revert.
+nonisolated struct OCV2RevertStageInput: Encodable, Sendable {
+    let messageID: String
+    let files: Bool
 }

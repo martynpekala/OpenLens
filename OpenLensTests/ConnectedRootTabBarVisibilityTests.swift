@@ -30,13 +30,6 @@ struct ConnectedRootTabBarVisibilityTests {
         ))
     }
 
-    @Test func hidesTabBarWhenReturningFromSettingsIntoChatSession() {
-        #expect(shouldHideConnectedRootTabBar(
-            selectedTab: .chat,
-            chatPath: [.chatSession(session: session)]
-        ))
-    }
-
     @Test func selectingAnotherChatSessionReplacesTheDetailRoute() {
         let router = AppRouter()
         let replacement = OCSession(

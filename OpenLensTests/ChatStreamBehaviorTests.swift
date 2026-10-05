@@ -2205,7 +2205,7 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
-    @Test func stoppedResponseStateClearsAfterDelayAndAllowsLaterAssistantSSE() async {
+    @Test func stoppedResponseStateKeepsIgnoringLateAssistantSSEUntilServerConfirmsIdle() async {
         let client = ChatClient(demoMode: true)
         let handler = makeHandler(delegate: client)
         let sessionID = "session-1"
@@ -2257,6 +2257,32 @@ struct ChatStreamBehaviorTests {
                 type: "message.updated",
                 properties: AnyCodable([
                     "info": [
+                        "id": "assistant-after-idle",
+                        "sessionID": sessionID,
+                        "role": "assistant"
+                    ]
+                ])
+            )
+        )
+
+        #expect(client.pendingAssistantMessage == nil)
+        #expect(client.messages.last?.id == stoppedMessageID)
+        #expect(client.messages.last?.content == "partial")
+
+        handler.handleEvent(
+            OCEvent(
+                type: "session.status",
+                properties: AnyCodable([
+                    "sessionID": sessionID,
+                    "status": ["type": "idle"]
+                ])
+            )
+        )
+        handler.handleEvent(
+            OCEvent(
+                type: "message.updated",
+                properties: AnyCodable([
+                    "info": [
                         "id": "assistant-next",
                         "sessionID": sessionID,
                         "role": "assistant"
@@ -2266,8 +2292,6 @@ struct ChatStreamBehaviorTests {
         )
 
         #expect(client.pendingAssistantMessage?.id == "assistant-next")
-        #expect(client.messages.last?.id == stoppedMessageID)
-        #expect(client.messages.last?.content == "partial")
     }
 
     @MainActor
@@ -4531,20 +4555,11 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
 private final class TestLiveActivityProvider: LiveActivityProviding {
     var isActive: Bool { false }
 
-    func startActivity(agentName: String, userTask: String, subject: String?) {}
+    func startActivity(sessionID: String?, directory: String?) {}
 
-    func update(
-        subject: String?,
-        currentIntent: String,
-        currentIntentIcon: String?,
-        previousIntent: String?,
-        secondPreviousIntent: String?,
-        stepNumber: Int,
-        costTotal: String?,
-        pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
-    ) {}
+    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(completionSummary: String?) {}
+    func endActivity(phase: OpenLensActivityAttributes.Phase) {}
 
     func dismissImmediately() {}
 

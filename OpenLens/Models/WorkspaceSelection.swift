@@ -4,6 +4,10 @@ struct WorkspaceSelectionSnapshot {
     let currentProject: OCProject?
     let projects: [OCProject]
     let pathInfo: OCPathInfo?
+    /// Remembered folders the server explicitly refused to open. Absence from
+    /// `projects` proves nothing: that list only names project roots, so
+    /// non-git folders, subfolders and differently spelled paths never appear.
+    var inaccessibleDirectories: Set<String> = []
 }
 
 struct WorkspaceSelectionOption: Identifiable, Hashable {
@@ -65,18 +69,19 @@ enum WorkspaceSelectionBuilder {
             currentDirectories.insert(directory)
         }
 
-        rememberCandidate(directory: snapshot.currentProject?.worktree, projectID: snapshot.currentProject?.id)
-        rememberCandidate(directory: snapshot.pathInfo?.worktree, projectID: snapshot.currentProject?.id)
-        rememberCandidate(directory: snapshot.pathInfo?.directory, projectID: snapshot.currentProject?.id)
+        for reported in reportedDirectories(in: snapshot) {
+            // Folders outside a git repository belong to the server's `global`
+            // project, rooted at `/`. That is a placeholder, not a workspace to
+            // open; the folder browser refuses `/` for the same reason.
+            guard normalizedDirectory(reported.directory) != "/" else { continue }
+            rememberCandidate(directory: reported.directory, projectID: reported.projectID)
+        }
 
         rememberCurrentDirectory(snapshot.currentProject?.worktree)
         rememberCurrentDirectory(snapshot.pathInfo?.worktree)
         rememberCurrentDirectory(snapshot.pathInfo?.directory)
 
-        for project in snapshot.projects {
-            rememberCandidate(directory: project.worktree, projectID: project.id)
-        }
-
+        let inaccessibleDirectories = Set(snapshot.inaccessibleDirectories.compactMap(normalizedDirectory))
         let normalizedPreferred = normalizedDirectory(preferredDirectory)
         let normalizedRecents = uniqueDirectories([normalizedPreferred].compactMap { $0 } + recentDirectories)
         let recentSet = Set(normalizedRecents)
@@ -96,13 +101,15 @@ enum WorkspaceSelectionBuilder {
                 )
             }
 
+            // Remembered but not reported by the server. It stays usable unless
+            // the server refused to open it.
             return WorkspaceSelectionOption(
                 id: optionID(for: directory),
                 directory: directory,
                 projectID: nil,
                 title: displayName(for: directory),
                 subtitle: directory,
-                availability: .unavailable,
+                availability: inaccessibleDirectories.contains(directory) ? .unavailable : .available,
                 isCurrent: false,
                 isRecent: true
             )
@@ -117,15 +124,37 @@ enum WorkspaceSelectionBuilder {
         }
         let defaultOptionID = preferredOption?.id ?? options.first(where: \.canCreateSession)?.id
 
-        let unavailablePreferredDirectory = normalizedPreferred.flatMap { preferred in
-            candidatesByDirectory[preferred] == nil ? preferred : nil
-        }
+        let unavailablePreferredDirectory = options
+            .first { $0.directory == normalizedPreferred && $0.availability == .unavailable }?
+            .directory
 
         return WorkspaceSelectionResult(
             options: options,
             defaultOptionID: defaultOptionID,
             unavailablePreferredDirectory: unavailablePreferredDirectory
         )
+    }
+
+    /// Remembered folders the server did not report itself. Only the server can
+    /// say whether it can still open them, so callers ask it directly.
+    static func directoriesNeedingVerification(
+        _ directories: [String],
+        in snapshot: WorkspaceSelectionSnapshot
+    ) -> [String] {
+        let reported = Set(reportedDirectories(in: snapshot).compactMap { normalizedDirectory($0.directory) })
+        return uniqueDirectories(directories).filter { !reported.contains($0) }
+    }
+
+    /// Every directory the server named itself: the active location and each project root.
+    private static func reportedDirectories(
+        in snapshot: WorkspaceSelectionSnapshot
+    ) -> [(directory: String?, projectID: String?)] {
+        let currentProjectID = snapshot.currentProject?.id
+        return [
+            (snapshot.currentProject?.worktree, currentProjectID),
+            (snapshot.pathInfo?.worktree, currentProjectID),
+            (snapshot.pathInfo?.directory, currentProjectID),
+        ] + snapshot.projects.map { ($0.worktree, $0.id) }
     }
 
     nonisolated static func normalizedDirectory(_ value: String?) -> String? {

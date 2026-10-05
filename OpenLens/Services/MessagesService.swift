@@ -30,55 +30,89 @@ final class MessagesService {
         text: String,
         model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
-        variant: String? = nil
+        variant: String? = nil,
+        messageID: String? = nil,
+        skills: [OCV2SkillAttachment] = []
     ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        try await client.sendPromptAsync(sessionID: sessionID, text: text, model: model, agent: agent, variant: variant)
+        try await client.sendPromptAsync(
+            sessionID: sessionID,
+            text: text,
+            model: model,
+            agent: agent,
+            variant: variant,
+            messageID: messageID,
+            skills: skills
+        )
     }
 
     /// Queue a follow-up behind the active session turn.
-    func queuePrompt(sessionID: String, text: String) async throws {
+    func queuePrompt(
+        sessionID: String,
+        text: String,
+        model: OCPromptInput.OCModelRef? = nil,
+        agent: String? = nil,
+        variant: String? = nil,
+        messageID: String? = nil,
+        skills: [OCV2SkillAttachment] = []
+    ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        try await client.queuePrompt(sessionID: sessionID, text: text)
+        try await client.queuePrompt(
+            sessionID: sessionID,
+            text: text,
+            model: model,
+            agent: agent,
+            variant: variant,
+            messageID: messageID,
+            skills: skills
+        )
     }
 
     func sendCommand(
         sessionID: String,
         command: String,
         arguments: String,
-        model: String? = nil,
+        model: OCPromptInput.OCModelRef? = nil,
         agent: String? = nil,
-        variant: String? = nil
+        variant: String? = nil,
+        files: [String] = [],
+        agents: [String] = [],
+        skills: [OCV2SkillAttachment] = [],
+        delivery: OCV2PromptInput.Delivery = .steer
     ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        let _ = try await client.sendCommand(
+        try await client.sendCommand(
             sessionID: sessionID,
             command: command,
             arguments: arguments,
             model: model,
             agent: agent,
-            variant: variant
+            variant: variant,
+            files: files,
+            agents: agents,
+            skills: skills,
+            delivery: delivery
         )
     }
 
     // MARK: - Abort
 
     /// Abort the current generation for a session.
-    func abort(sessionID: String) async throws {
+    func abort(sessionID: String) async throws -> Bool {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        let _ = try await client.abortSession(id: sessionID)
+        return try await client.abortSession(id: sessionID)
     }
 
     // MARK: - Turn Diffs

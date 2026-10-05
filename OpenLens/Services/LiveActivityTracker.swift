@@ -1,21 +1,18 @@
 import Foundation
 
-/// Manages Live Activity intent-history state for a single agent turn.
+/// Tracks the prompt the Live Activity shows for a single agent turn. Progress is shown with
+/// generic copy only, so the tracker mirrors just the pending permission, question, or form.
 /// Pure value tracking — delegates actual ActivityKit calls to `LiveActivityManager`.
 final class LiveActivityTracker {
 
     private static let maximumDetailCharacters = 180
     private static let maximumInspectedDetailCharacters = 512
+    /// Live Activity buttons fit a few short answers; anything longer opens the app instead.
+    private static let maximumQuickReplies = 4
+    private static let maximumQuickReplyBytes = 64
 
     // MARK: - State
 
-    private(set) var stepNumber: Int = 0
-    private(set) var previousIntent: String?
-    private(set) var secondPreviousIntent: String?
-    private(set) var currentIntent: String = "Thinking"
-    private(set) var currentIntentIcon: String?
-    private(set) var subject: String?
-    private(set) var cost: String?
     private(set) var pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
 
     // MARK: - Dependency
@@ -28,98 +25,67 @@ final class LiveActivityTracker {
 
     // MARK: - Lifecycle
 
-    /// Reset all state for a new agent turn.
-    func reset() {
-        stepNumber = 0
-        previousIntent = nil
-        secondPreviousIntent = nil
-        currentIntent = "Thinking"
-        currentIntentIcon = nil
-        subject = nil
-        cost = nil
-        pendingUserResponse = nil
-    }
-
-    /// Start the Live Activity for a new turn.
-    func start(agentName: String, userTask: String) {
-        reset()
-        liveActivity.startActivity(
-            agentName: boundedDetail(agentName) ?? "OpenCode",
-            userTask: boundedDetail(userTask) ?? "",
-            subject: nil
-        )
-    }
-
-    /// Push a new intent, shifting the history.
-    func pushIntent(_ intent: String, icon: String? = nil) {
-        secondPreviousIntent = previousIntent
-        previousIntent = currentIntent
-        currentIntent = intent
-        currentIntentIcon = icon
-        pendingUserResponse = nil
-        stepNumber += 1
-        pushCurrentState()
-    }
-
-    /// Update the subject (e.g. from reasoning text or session title).
-    func updateSubject(_ newSubject: String) {
-        guard let boundedSubject = boundedDetail(newSubject) else { return }
-        if subject == nil || subject?.isEmpty == true {
-            subject = boundedSubject
+    /// Start the Live Activity for a new turn. A prompt that is still pending carries over,
+    /// since the chat only reports prompts when they change.
+    func start(session: OCSession?) {
+        liveActivity.startActivity(sessionID: session?.id, directory: session?.directory)
+        if pendingUserResponse != nil {
             pushCurrentState()
         }
     }
 
-    /// Update the cost string (e.g. "$0.003").
-    func updateCost(_ newCost: String) {
-        guard newCost != cost else { return }
-        cost = newCost
-        pushCurrentState()
-    }
-
     func setPendingPermission(_ permission: OCPermissionRequest) {
-        pendingUserResponse = .init(
+        setPendingUserResponse(.init(
             kind: .permission,
             detail: permissionLiveActivityDetail(permission),
-            requestID: permission.id
-        )
-        pushCurrentState()
+            requestID: permission.id,
+            sessionID: permission.sessionID
+        ))
     }
 
     func setPendingQuestion(_ question: OCQuestionRequest) {
-        pendingUserResponse = .init(
+        setPendingUserResponse(.init(
             kind: .question,
-            detail: questionLiveActivityDetail(question)
-        )
-        pushCurrentState()
+            detail: questionLiveActivityDetail(question),
+            requestID: question.id,
+            sessionID: question.sessionID,
+            quickReplies: quickReplies(for: question)
+        ))
+    }
+
+    func setPendingForm(_ form: OCFormRequest) {
+        let quickAnswer = quickAnswer(for: form)
+        setPendingUserResponse(.init(
+            kind: .form,
+            detail: formLiveActivityDetail(form),
+            requestID: form.id,
+            sessionID: form.sessionID,
+            fieldKey: quickAnswer?.fieldKey,
+            quickReplies: quickAnswer?.replies ?? []
+        ))
     }
 
     func clearPendingUserResponse() {
-        guard pendingUserResponse != nil else { return }
-        pendingUserResponse = nil
+        setPendingUserResponse(nil)
+    }
+
+    /// End the Live Activity, showing how the turn ended.
+    func end(phase: OpenLensActivityAttributes.Phase = .finished) {
+        liveActivity.endActivity(phase: phase)
+    }
+
+    private func setPendingUserResponse(_ response: OpenLensActivityAttributes.PendingUserResponse?) {
+        guard response != pendingUserResponse else { return }
+        pendingUserResponse = response
         pushCurrentState()
     }
 
-    /// Push the current state to the Live Activity without advancing the step history.
-    /// Used when cost or subject changes between tool calls.
     private func pushCurrentState() {
         guard liveActivity.isActive else { return }
-        liveActivity.update(
-            subject: subject,
-            currentIntent: currentIntent,
-            currentIntentIcon: currentIntentIcon,
-            previousIntent: previousIntent,
-            secondPreviousIntent: secondPreviousIntent,
-            stepNumber: max(stepNumber, 1),
-            costTotal: cost,
-            pendingUserResponse: pendingUserResponse
-        )
+        liveActivity.update(pendingUserResponse: pendingUserResponse)
     }
 
-    /// End the Live Activity with a completion summary.
-    func end() {
-        liveActivity.endActivity(completionSummary: subject)
-    }
+    // MARK: - Prompt Details
 
     private func permissionLiveActivityDetail(_ permission: OCPermissionRequest) -> String {
         let title = boundedDetail(permission.title)
@@ -133,7 +99,7 @@ final class LiveActivityTracker {
         case (let title?, _):
             return title
         default:
-            return OpenLensActivityAttributes.PendingUserResponse.Kind.permission.fallbackDetail
+            return "Allow or deny the request so the agent can continue."
         }
     }
 
@@ -146,7 +112,74 @@ final class LiveActivityTracker {
             return header
         }
 
-        return OpenLensActivityAttributes.PendingUserResponse.Kind.question.fallbackDetail
+        return "The agent needs an answer to continue."
+    }
+
+    private func formLiveActivityDetail(_ form: OCFormRequest) -> String {
+        let field = form.fields.first { !$0.hidden }
+        return boundedDetail(field?.title)
+            ?? boundedDetail(field?.description)
+            ?? boundedDetail(form.title)
+            ?? "The agent needs an answer to continue."
+    }
+
+    // MARK: - Quick Replies
+
+    /// Buttons for a single single-choice question. The v1 reply carries option labels, so a
+    /// label that doesn't fit a button can't be offered at all.
+    private func quickReplies(for question: OCQuestionRequest) -> [OpenLensActivityAttributes.QuickReply] {
+        guard question.questions.count == 1,
+              let info = question.questions.first,
+              !info.multiple,
+              (1...Self.maximumQuickReplies).contains(info.options.count)
+        else { return [] }
+
+        let labels = info.options.map(\.label)
+        guard labels.allSatisfy(fitsQuickReply), Set(labels).count == labels.count else { return [] }
+        return labels.map { .init(label: $0, value: .text($0)) }
+    }
+
+    /// Buttons for a form with one visible choice or yes/no field, kept only when every button
+    /// is an answer the form accepts.
+    private func quickAnswer(
+        for form: OCFormRequest
+    ) -> (fieldKey: String, replies: [OpenLensActivityAttributes.QuickReply])? {
+        let visibleFields = form.fields.filter { !$0.hidden }
+        guard visibleFields.count == 1, let field = visibleFields.first else { return nil }
+
+        let candidates: [(reply: OpenLensActivityAttributes.QuickReply, value: OCFormValue)]
+        switch field.kind {
+        case .string:
+            guard (1...Self.maximumQuickReplies).contains(field.options.count),
+                  field.options.allSatisfy({ fitsQuickReply($0.value) })
+            else { return nil }
+            candidates = field.options.map { option in
+                let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (.init(label: label.isEmpty ? option.value : label, value: .text(option.value)), .string(option.value))
+            }
+        case .boolean:
+            candidates = [
+                (.init(label: "No", value: .flag(false)), .boolean(false)),
+                (.init(label: "Yes", value: .flag(true)), .boolean(true)),
+            ]
+        default:
+            return nil
+        }
+
+        let labels = candidates.map(\.reply.label)
+        guard Set(labels).count == labels.count,
+              candidates.allSatisfy({ candidate in
+                  fitsQuickReply(candidate.reply.label)
+                      && InteractiveFormSafety.accepts(answer: [field.key: candidate.value], for: form)
+              })
+        else { return nil }
+
+        return (field.key, candidates.map(\.reply))
+    }
+
+    private func fitsQuickReply(_ text: String) -> Bool {
+        text.utf8.count <= Self.maximumQuickReplyBytes
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Builds a short value without scanning or trimming an unbounded server

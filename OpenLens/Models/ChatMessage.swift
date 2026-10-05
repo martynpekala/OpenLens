@@ -1997,11 +1997,18 @@ final class ChatMessage: Identifiable {
             let inlineDetailPreview = usesInlineDetail
                 ? toolPathPreview(from: state)
                 : nil
-            let outputPreview = isTodoTool
-                ? nil
-                : inlineDetailPreview
+            let outputPreview: String?
+            if isTodoTool {
+                outputPreview = nil
+            } else if state.status == .error {
+                outputPreview = inlineDetailPreview
+                    ?? ToolOutputPreview.make(from: state.error)
+                    ?? ToolOutputPreview.make(from: state.output)
+            } else {
+                outputPreview = inlineDetailPreview
                     ?? ToolOutputPreview.make(from: state.output)
                     ?? ToolOutputPreview.make(from: state.error)
+            }
 
             return PersistedToolStep(
                 id: part.id,

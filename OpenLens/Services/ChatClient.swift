@@ -17,14 +17,21 @@ struct QueuedPrompt: Identifiable, Equatable {
     }
 
     let id: UUID
+    let messageID: String
     let text: String
     var state: State
 
-    init(id: UUID = UUID(), text: String, state: State) {
+    init(id: UUID = UUID(), messageID: String = UUID().uuidString, text: String, state: State) {
         self.id = id
+        self.messageID = messageID
         self.text = text
         self.state = state
     }
+}
+
+private struct OptimisticV2CommandMessage {
+    let text: String
+    let knownTranscriptMessageIDs: Set<String>
 }
 
 /// Thin coordinator for the chat interface.
@@ -105,6 +112,13 @@ final class ChatClient: SSEEventHandlerDelegate {
         didSet { syncLiveActivityPendingUserResponse() }
     }
     var showQuestionSheet: Bool = false
+    /// Pending v2 form. Forms are distinct from legacy questions because their
+    /// field values and cancellation operation are session-scoped.
+    var pendingForm: OCFormRequest? {
+        didSet { syncLiveActivityPendingUserResponse() }
+    }
+    var showFormSheet: Bool = false
+    var isResolvingForm: Bool = false
     var isRecordingStream: Bool = false
 
     /// Active todo list from the server (updated via `todo.updated` SSE event).
@@ -145,6 +159,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
     private var availableSlashCommandMap: [String: String] = [:]
     private var availableSlashAgentMap: [String: String] = [:]
+    private var availableSkillIDs: [String] = []
 
     struct ContextUsageSummary {
         let usedTokens: Int
@@ -187,6 +202,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         let cost: OCModelCost?
         let limit: OCModelLimit?
         let variants: [SelectableVariant]
+        /// Non-text input media explicitly listed by the v2 runtime catalog.
+        /// `nil` preserves the v1 attachment-only presentation.
+        let inputMedia: [String]?
+        /// A runtime catalog can report multiple price tiers. v1 models retain
+        /// their single `cost` value instead.
+        let costTiers: [OCModelCost]
         var id: String { "\(providerID)/\(modelID)" }
 
         // Hashable conformance ignoring cost/limit (non-Hashable)
@@ -196,6 +217,34 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         static func == (lhs: SelectableModel, rhs: SelectableModel) -> Bool {
             lhs.id == rhs.id
+        }
+
+        init(
+            providerID: String,
+            providerName: String,
+            modelID: String,
+            modelName: String,
+            reasoning: Bool,
+            attachment: Bool,
+            toolCall: Bool,
+            cost: OCModelCost?,
+            limit: OCModelLimit?,
+            variants: [SelectableVariant],
+            inputMedia: [String]? = nil,
+            costTiers: [OCModelCost] = []
+        ) {
+            self.providerID = providerID
+            self.providerName = providerName
+            self.modelID = modelID
+            self.modelName = modelName
+            self.reasoning = reasoning
+            self.attachment = attachment
+            self.toolCall = toolCall
+            self.cost = cost
+            self.limit = limit
+            self.variants = variants
+            self.inputMedia = inputMedia
+            self.costTiers = costTiers
         }
     }
 
@@ -306,7 +355,9 @@ final class ChatClient: SSEEventHandlerDelegate {
                     toolCall: model.toolCall ?? false,
                     cost: model.cost,
                     limit: model.limit,
-                    variants: sortedVariants(from: model.variants)
+                    variants: sortedVariants(from: model.variants),
+                    inputMedia: model.inputMedia,
+                    costTiers: model.costTiers ?? []
                 )
             }
         }
@@ -323,7 +374,13 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     var defaultModelSelection: (providerID: String, modelID: String)? {
         guard let activeConnectionID = savedConnectionsStore?.activeConnectionID else { return nil }
-        return savedConnectionsStore?.defaultModelSelection(connectionID: activeConnectionID)
+        guard let saved = savedConnectionsStore?.defaultModelSelection(connectionID: activeConnectionID) else { return nil }
+        return Self.resolveSavedModelSelection(
+            providerID: saved.providerID,
+            modelID: saved.modelID,
+            availableModels: availableModels,
+            legacyModelIDs: legacyModelIDs
+        ).map { (providerID: $0.providerID, modelID: $0.modelID) }
     }
 
     private func applyPreferredDefaultModelSelection() {
@@ -378,7 +435,32 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard let savedConnectionsStore, let connectionID = quickModelConnectionID else {
             return inMemoryRecentModelIDs
         }
-        return savedConnectionsStore.recentModelSelections(connectionID: connectionID).map(\.id)
+        return savedConnectionsStore.recentModelSelections(connectionID: connectionID).map { saved in
+            Self.resolveSavedModelSelection(
+                providerID: saved.providerID,
+                modelID: saved.modelID,
+                availableModels: availableModels,
+                legacyModelIDs: legacyModelIDs
+            )?.id ?? saved.id
+        }
+    }
+
+    private var legacyModelIDs: [String: String] {
+        Self.legacyModelIDMap(providers: providers)
+    }
+
+    /// Maps `provider/legacyModelID` to a v2 catalog model ID. Several catalog
+    /// aliases can share one upstream model, so collisions resolve to the
+    /// lexicographically smallest catalog ID to stay deterministic.
+    static func legacyModelIDMap(providers: [OCProvider]) -> [String: String] {
+        Dictionary(
+            providers.flatMap { provider in
+                provider.models.values.compactMap { model in
+                    model.legacyModelID.map { ("\(provider.id)/\($0)", model.id) }
+                }
+            },
+            uniquingKeysWith: { min($0, $1) }
+        )
     }
 
     /// Models assigned to the global Code and Review quick actions.
@@ -456,42 +538,28 @@ final class ChatClient: SSEEventHandlerDelegate {
         return true
     }
 
-    /// Removes assignments that no longer resolve after a successful provider
-    /// refresh. A missing variant resets to Default while retaining its model.
-    private func synchronizeQuickModelAssignments() {
-        var didChange = false
-
-        for action in ModelQuickAction.allCases {
-            guard let assignment = globalQuickModelAssignments[action] else { continue }
-
-            guard let model = availableModels.first(where: { $0.id == assignment.id }) else {
-                globalQuickModelAssignments.removeValue(forKey: action)
-                didChange = true
-                continue
-            }
-
-            guard let variant = assignment.variant else { continue }
-            let isAvailable = model.variants.contains {
-                $0.id == variant && $0.value.isThinkingEffortVariant
-            }
-            guard !isAvailable else { continue }
-
-            var updatedAssignment = assignment
-            updatedAssignment.variant = nil
-            globalQuickModelAssignments[action] = updatedAssignment
-            didChange = true
-        }
-
-        if didChange {
-            AppPreferences.saveQuickModelAssignments(globalQuickModelAssignments)
-            quickModelAssignmentsVersion &+= 1
-        }
-    }
-
     struct DefaultModelResolution: Equatable {
         let providerID: String?
         let modelID: String?
         let unavailableDefaultModelID: String?
+    }
+
+    static func resolveSavedModelSelection(
+        providerID: String,
+        modelID: String,
+        availableModels: [SelectableModel],
+        legacyModelIDs: [String: String]
+    ) -> SelectableModel? {
+        if let exactMatch = availableModels.first(where: {
+            $0.providerID == providerID && $0.modelID == modelID
+        }) {
+            return exactMatch
+        }
+
+        guard let catalogModelID = legacyModelIDs["\(providerID)/\(modelID)"] else { return nil }
+        return availableModels.first {
+            $0.providerID == providerID && $0.modelID == catalogModelID
+        }
     }
 
     static func resolveDefaultModelSelection(
@@ -687,16 +755,31 @@ final class ChatClient: SSEEventHandlerDelegate {
     @ObservationIgnored private let sseHandler: SSEEventHandler?
 
     /// Active question timeout task (auto-rejects if user doesn't respond).
-    @ObservationIgnored private var questionTimeoutTask: Task<Void, Never>?
+    @ObservationIgnored private var interactiveRequestTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var responseStartDate: Date?
     @ObservationIgnored private var streamRecorder: ChatStreamRecorder?
     @ObservationIgnored private var abortTask: Task<Void, Never>?
     @ObservationIgnored private var stoppedStateClearTask: Task<Void, Never>?
     @ObservationIgnored private var ignoredAssistantMessageIDs: Set<String> = []
+    /// User rows accepted optimistically by v2. The prompt endpoint accepts a
+    /// caller-provided ID, allowing the authoritative transcript to replace
+    /// the same row when its projector catches up.
+    @ObservationIgnored private var optimisticV2UserMessageIDs: Set<String> = []
+    /// The command endpoint does not accept a caller-provided message ID.
+    /// Preserve a local command row until a newly projected matching user
+    /// message confirms that the server transcript has caught up.
+    @ObservationIgnored private var optimisticV2CommandMessages: [String: OptimisticV2CommandMessage] = [:]
     @ObservationIgnored private var locallyStoppedSessionID: String?
+    /// A v2 stream has no resume cursor, so a transport or decoding gap must be
+    /// reconciled against the session and transcript endpoints. Coalesce gap
+    /// notifications while that authoritative refresh is in flight.
+    @ObservationIgnored private var streamSynchronizationTask: Task<Void, Never>?
+    @ObservationIgnored private var streamSynchronizationGeneration: UInt = 0
+    @ObservationIgnored private var streamSynchronizationToken: UUID?
+    private(set) var isStreamSynchronized = true
 
     /// Duration before a pending question is auto-rejected (5 minutes).
-    private static let questionTimeoutSeconds: UInt64 = 300
+    private static let interactiveRequestTimeoutSeconds: UInt64 = 300
     static let stoppedResponseDisplayDuration: Duration = .milliseconds(1500)
     private static let statusRefreshIdleGraceInterval: TimeInterval = 1.5
 
@@ -951,6 +1034,8 @@ final class ChatClient: SSEEventHandlerDelegate {
             liveActivityTracker.setPendingPermission(pendingPermission)
         } else if let pendingQuestion {
             liveActivityTracker.setPendingQuestion(pendingQuestion)
+        } else if let pendingForm {
+            liveActivityTracker.setPendingForm(pendingForm)
         } else {
             liveActivityTracker.clearPendingUserResponse()
         }
@@ -961,7 +1046,33 @@ final class ChatClient: SSEEventHandlerDelegate {
     var currentSessionID: String? { currentSession?.id }
 
     func questionDidPresent() {
-        startQuestionTimeout()
+        startInteractiveRequestTimeout()
+    }
+
+    @discardableResult
+    func presentForm(_ form: OCFormRequest) -> Bool {
+        guard pendingQuestion == nil else { return false }
+
+        if pendingForm?.id == form.id {
+            if !showFormSheet, !isResolvingForm {
+                showFormSheet = true
+            }
+            return true
+        }
+
+        guard pendingForm == nil else { return false }
+        pendingForm = form
+        showFormSheet = true
+        startInteractiveRequestTimeout()
+        return true
+    }
+
+    func formDidResolve(id: String) {
+        guard pendingForm?.id == id else { return }
+        cancelInteractiveRequestTimeout()
+        pendingForm = nil
+        showFormSheet = false
+        isResolvingForm = false
     }
 
     func messageLayoutDidChange() {
@@ -1011,10 +1122,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard locallyStoppedSessionID == sessionID else { return false }
 
         switch responseState {
-        case .stopping, .stopped:
+        case .stopping, .stopped, .idle:
             ignoredAssistantMessageIDs.insert(messageID)
             return true
-        case .idle, .generating, .failed:
+        case .generating, .failed:
             return false
         }
     }
@@ -1236,6 +1347,14 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
+        // Session-scoped API calls can be read without a location, but the chat
+        // toolbar and workspace-dependent controls use the connection's active
+        // project context. Switch it before loading the transcript so a session
+        // opened from another directory does not inherit the previously viewed
+        // project's name, branch, commands, or files.
+        await restoreProjectContext(for: session)
+        guard !Task.isCancelled else { return }
+
         // Drain any in-flight state from the previous session
         resetSessionState()
 
@@ -1246,19 +1365,33 @@ final class ChatClient: SSEEventHandlerDelegate {
             await loadProviders()
         }
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
-        await loadMessages()
+        let didLoadMessages = await loadMessages()
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
-        await recoverPendingPermission()
-        await recoverPendingQuestions()
+        let permissionRecovered = await recoverPendingPermission()
+        let questionRecovered = await recoverPendingQuestions()
+        let formRecovered = await recoverPendingForms()
+        guard !Task.isCancelled, currentSession?.id == session.id else { return }
+        isStreamSynchronized = didLoadMessages && permissionRecovered && questionRecovered && formRecovered
     }
 
-    func loadMessages() async {
-        guard !isOfflinePreviewMode, let session = currentSession else { return }
+    func restoreProjectContext(for session: OCSession) async {
+        guard let directory = session.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+              connection?.selectedProjectDirectory != directory else { return }
+        await connection?.setProjectContext(directory: directory)
+    }
+
+    @discardableResult
+    func loadMessages(syncModelSelection: Bool = true) async -> Bool {
+        guard !isOfflinePreviewMode, let session = currentSession else { return false }
 
         do {
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
-            guard !Task.isCancelled, currentSession?.id == session.id else { return }
-            let mergedMessages = mergeLoadedMessagesWithLocallyStoppedMessages(loaded)
+            guard !Task.isCancelled, currentSession?.id == session.id else { return false }
+            let loadedIDs = Set(loaded.map(\.id))
+            queuedPrompts.removeAll { prompt in
+                prompt.state == .queued && loadedIDs.contains(prompt.messageID)
+            }
+            let mergedMessages = mergeLoadedMessagesWithLocalMessages(loaded)
             let revert = currentSession?.id == session.id
                 ? currentSession?.revert
                 : session.revert
@@ -1266,23 +1399,25 @@ final class ChatClient: SSEEventHandlerDelegate {
             prepareTurnDiffRefresh(for: visibleMessages)
             preserveTurnFileChanges(in: visibleMessages)
             self.messages = visibleMessages
-            if Self.recentSessionModelSelection(from: visibleMessages) != nil {
+            if syncModelSelection, Self.recentSessionModelSelection(from: visibleMessages) != nil {
                 syncSessionModelSelection(from: visibleMessages)
-            } else {
+            } else if syncModelSelection {
                 applyPreferredDefaultModelSelection()
             }
             Logger.debug.info("messages count: \(visibleMessages.count)")
             self.contentVersion &+= 1
             self.scrollAnchor &+= 1
         } catch is CancellationError {
-            return
+            return false
         } catch {
-            guard currentSession?.id == session.id else { return }
+            guard currentSession?.id == session.id else { return false }
             self.errorMessage = "Failed to load messages: \(error.localizedDescription)"
+            return false
         }
 
-        await refreshCurrentSessionStatus()
+        let statusRecovered = await refreshCurrentSessionStatus()
         await loadTodos()
+        return statusRecovered && !Task.isCancelled && currentSession?.id == session.id
     }
 
     func unloadSession(ifMatching sessionID: String) {
@@ -1346,6 +1481,20 @@ final class ChatClient: SSEEventHandlerDelegate {
             await loadMessages()
         } catch {
             guard currentSession?.id == session.id else { return }
+
+            let didRefresh: Bool
+            if let revertError = error as? OpenCodeError,
+               case .incompleteRevert(let recoveredSession, _) = revertError {
+                currentSession = recoveredSession
+                didRefresh = await loadMessages()
+            } else {
+                didRefresh = await refreshCurrentSessionFromServer()
+            }
+
+            guard currentSession?.id == session.id else { return }
+            if !didRefresh {
+                discardStaleTranscriptAndDiffState()
+            }
             errorMessage = "Failed to undo message: \(error.localizedDescription)"
         }
     }
@@ -1368,17 +1517,148 @@ final class ChatClient: SSEEventHandlerDelegate {
         await undo(message)
     }
 
-    func refreshCurrentSessionStatus() async {
+    /// Reloads the active session projection and transcript after a user-driven
+    /// mutation whose server result may be incomplete or conflict with ongoing
+    /// work. The REST snapshot keeps the chat and turn-diff state recoverable.
+    @discardableResult
+    func refreshCurrentSessionFromServer() async -> Bool {
+        guard !isOfflinePreviewMode,
+              !isDemoMode,
+              !isRecordedReplayMode,
+              let sessionID = currentSession?.id,
+              let sessionsService
+        else { return false }
+
+        do {
+            let session = try await sessionsService.getSession(id: sessionID)
+            guard currentSession?.id == sessionID else { return false }
+            currentSession = session
+            let didRefresh = await loadMessages()
+            guard currentSession?.id == sessionID else { return false }
+            if !didRefresh {
+                discardStaleTranscriptAndDiffState()
+            }
+            return didRefresh
+        } catch is CancellationError {
+            return false
+        } catch {
+            guard currentSession?.id == sessionID else { return false }
+            discardStaleTranscriptAndDiffState()
+            errorMessage = "Failed to refresh the session: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func discardStaleTranscriptAndDiffState() {
+        turnDiffTasksByAssistantID.values.forEach { $0.cancel() }
+        turnDiffTasksByAssistantID.removeAll()
+        resolvedTurnDiffAssistantIDs.removeAll()
+        turnFileDetailCache.removeAll()
+        turnFileDetailCacheOrder.removeAll()
+        pendingAssistantMessage = nil
+        messages = []
+        contentVersion &+= 1
+        timelineVersion &+= 1
+        scrollAnchor &+= 1
+        isStreamSynchronized = false
+    }
+
+    @discardableResult
+    func refreshCurrentSessionStatus() async -> Bool {
         guard !isOfflinePreviewMode,
               let sessionsService,
-              let sessionID = currentSession?.id else { return }
+              let sessionID = currentSession?.id else { return false }
 
         do {
             let statuses = try await sessionsService.getSessionStatuses()
-            guard currentSession?.id == sessionID else { return }
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
             reconcileCurrentSessionStatus(statuses[sessionID])
+            return true
         } catch {
-            Logger.chat.warning("refreshCurrentSessionStatus failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to refresh session status: \(error.localizedDescription)" }
+            return false
+        }
+    }
+
+    /// Replaces any potentially incomplete incremental stream state with the
+    /// authoritative session and transcript. Calls arriving while a refresh is
+    /// in flight collapse into one follow-up pass, preserving the newest state
+    /// without concurrent requests racing to overwrite the chat.
+    func synchronizeCurrentSessionFromServer() {
+        guard !isOfflinePreviewMode,
+              !isDemoMode,
+              !isRecordedReplayMode,
+              currentSession != nil,
+              sessionsService != nil,
+              messagesService != nil
+        else { return }
+
+        streamSynchronizationGeneration &+= 1
+        isStreamSynchronized = false
+        guard streamSynchronizationTask == nil else { return }
+        let token = UUID()
+        streamSynchronizationToken = token
+
+        streamSynchronizationTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                guard self.streamSynchronizationToken == token else { break }
+                let generation = self.streamSynchronizationGeneration
+                let stream = self.connection?.sseClient
+                let gapGeneration = await stream?.synchronizationGeneration()
+                guard let sessionID = self.currentSession?.id,
+                      let sessionsService = self.sessionsService
+                else { break }
+
+                do {
+                    let session = try await sessionsService.getSession(id: sessionID)
+                    guard !Task.isCancelled,
+                          self.streamSynchronizationToken == token,
+                          self.currentSession?.id == sessionID
+                    else { break }
+                    self.currentSession = session
+
+                    guard await self.loadMessages(), self.currentSession?.id == sessionID else {
+                        break
+                    }
+                    guard await self.recoverPendingPermission(sessionID: sessionID),
+                          !Task.isCancelled, self.currentSession?.id == sessionID,
+                          self.streamSynchronizationToken == token else { break }
+                    guard await self.recoverPendingQuestions(),
+                          !Task.isCancelled, self.currentSession?.id == sessionID,
+                          self.streamSynchronizationToken == token else { break }
+                    guard await self.recoverPendingForms(),
+                          !Task.isCancelled, self.currentSession?.id == sessionID,
+                          self.streamSynchronizationToken == token else { break }
+                } catch is CancellationError {
+                    break
+                } catch {
+                    guard self.currentSession?.id == sessionID else { break }
+                    self.errorMessage = "Failed to synchronize chat: \(error.localizedDescription)"
+                    break
+                }
+
+                guard generation == self.streamSynchronizationGeneration else { continue }
+                if let stream, let gapGeneration {
+                    guard await stream.acknowledgeSynchronization(since: gapGeneration) else { continue }
+                }
+                guard !Task.isCancelled, self.currentSession?.id == sessionID,
+                      self.streamSynchronizationToken == token else { break }
+                guard generation == self.streamSynchronizationGeneration else { continue }
+                self.isStreamSynchronized = true
+                if let error = self.errorMessage, [
+                    "Failed to refresh session status:", "Failed to recover pending interactions:",
+                    "Failed to synchronize chat:", "Failed to load messages:"
+                ].contains(where: { error.hasPrefix($0) }) {
+                    self.errorMessage = nil
+                }
+                break
+            }
+
+            guard self.streamSynchronizationToken == token else { return }
+            self.streamSynchronizationTask = nil
+            self.streamSynchronizationToken = nil
         }
     }
 
@@ -1440,17 +1720,30 @@ final class ChatClient: SSEEventHandlerDelegate {
         return now.timeIntervalSince(responseStartDate) < Self.statusRefreshIdleGraceInterval
     }
 
-    private func mergeLoadedMessagesWithLocallyStoppedMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
-        guard !ignoredAssistantMessageIDs.isEmpty else { return loaded }
-
-        let localStoppedMessages = messages.filter { ignoredAssistantMessageIDs.contains($0.id) }
-        guard !localStoppedMessages.isEmpty else {
-            return loaded.filter { !ignoredAssistantMessageIDs.contains($0.id) }
+    private func mergeLoadedMessagesWithLocalMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
+        let loadedIDs = Set(loaded.map(\.id))
+        optimisticV2UserMessageIDs.subtract(loadedIDs)
+        let projectedCommandIDs = optimisticV2CommandMessages.compactMap { localID, command in
+            let commandWasProjected = loaded.contains { message in
+                message.role == .user &&
+                    message.content == command.text &&
+                    !command.knownTranscriptMessageIDs.contains(message.id)
+            }
+            return commandWasProjected ? localID : nil
         }
+        for localID in projectedCommandIDs {
+            optimisticV2CommandMessages.removeValue(forKey: localID)
+        }
+
+        let localMessageIDs = ignoredAssistantMessageIDs
+            .union(optimisticV2UserMessageIDs)
+            .union(optimisticV2CommandMessages.keys)
+        guard !localMessageIDs.isEmpty else { return loaded }
 
         var result = loaded.filter { !ignoredAssistantMessageIDs.contains($0.id) }
         let existingIDs = Set(result.map(\.id))
-        result.append(contentsOf: localStoppedMessages.filter { !existingIDs.contains($0.id) })
+        let preservedLocalMessages = messages.filter { localMessageIDs.contains($0.id) }
+        result.append(contentsOf: preservedLocalMessages.filter { !existingIDs.contains($0.id) })
         return result
     }
 
@@ -1598,6 +1891,12 @@ final class ChatClient: SSEEventHandlerDelegate {
             Logger.debug.info("[TODO] loadTodos skipped: no session or client")
             return
         }
+        guard connection?.serverCapabilities?.supports(.todos) != false else {
+            todos = []
+            hiddenTodoCount = 0
+            Logger.debug.info("[TODO] loadTodos skipped: unsupported by the active protocol")
+            return
+        }
         do {
             let loaded = try await client.listTodos(sessionID: session.id)
             self.todos = loaded.todos
@@ -1612,6 +1911,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard !isOfflinePreviewMode else { return }
 
         resetSessionState()
+        isStreamSynchronized = false
         currentSession = nil
         inputText = ""
 
@@ -1629,8 +1929,8 @@ final class ChatClient: SSEEventHandlerDelegate {
             return false
         }
 
-        guard pendingQuestion == nil else {
-            errorMessage = "Answer the current question before starting another workspace action."
+        guard pendingQuestion == nil, pendingForm == nil else {
+            errorMessage = "Complete the current question or form before starting another workspace action."
             return false
         }
 
@@ -1653,7 +1953,6 @@ final class ChatClient: SSEEventHandlerDelegate {
     func loadProviders() async {
         guard !isOfflinePreviewMode else { return }
         isLoadingProviders = true
-        var didLoadProvidersSuccessfully = false
         defer {
             isLoadingProviders = false
             quickModelAssignmentsVersion &+= 1
@@ -1667,6 +1966,9 @@ final class ChatClient: SSEEventHandlerDelegate {
         let savedDefault = savedConnectionsStore?.activeConnectionID.flatMap {
             savedConnectionsStore?.defaultModelSelection(connectionID: $0)
         }
+        let savedSelection = savedConnectionsStore?.activeConnectionID.flatMap {
+            savedConnectionsStore?.savedModelSelection(connectionID: $0)
+        }
         var serverDefault: (providerID: String, modelID: String)?
         let configDefault = configResult.defaultProviderID.flatMap { providerID in
             configResult.defaultModelID.map { (providerID: providerID, modelID: $0) }
@@ -1677,7 +1979,6 @@ final class ChatClient: SSEEventHandlerDelegate {
             let result = try await providersService!.loadProviders()
             self.providers = result.providers
             self.connectedProviderIDs = result.connectedProviderIDs
-            didLoadProvidersSuccessfully = true
             serverDefault = result.defaultProviderID.flatMap { providerID in
                 result.defaultModelID.map { (providerID: providerID, modelID: $0) }
             }
@@ -1686,14 +1987,36 @@ final class ChatClient: SSEEventHandlerDelegate {
             Logger.chat.error("loadProviders failed: \(error, privacy: .public)")
         }
 
+        let resolvedSavedDefault = savedDefault.flatMap { selection in
+            Self.resolveSavedModelSelection(
+                providerID: selection.providerID,
+                modelID: selection.modelID,
+                availableModels: availableModels,
+                legacyModelIDs: legacyModelIDs
+            ).map { (providerID: $0.providerID, modelID: $0.modelID) }
+        }
+        let resolvedSavedSelection = savedSelection.flatMap { selection in
+            Self.resolveSavedModelSelection(
+                providerID: selection.providerID,
+                modelID: selection.modelID,
+                availableModels: availableModels,
+                legacyModelIDs: legacyModelIDs
+            )
+        }
         let resolution = Self.resolveDefaultModelSelection(
-            savedDefault: savedDefault,
+            savedDefault: resolvedSavedDefault,
             serverDefault: serverDefault,
             configDefault: configDefault,
             availableModels: availableModels
         )
 
-        if let providerID = resolution.providerID,
+        if let resolvedSavedSelection {
+            preferredDefaultProviderID = resolution.providerID ?? ""
+            preferredDefaultModelID = resolution.modelID ?? ""
+            self.selectedProviderID = resolvedSavedSelection.providerID
+            self.selectedModelID = resolvedSavedSelection.modelID
+            self.selectedVariant = savedSelection?.variant
+        } else if let providerID = resolution.providerID,
            let modelID = resolution.modelID {
             preferredDefaultProviderID = providerID
             preferredDefaultModelID = modelID
@@ -1712,26 +2035,20 @@ final class ChatClient: SSEEventHandlerDelegate {
             errorMessage = AppText.defaultModelUnavailable(unavailableDefaultModelID)
         }
 
-        // Guard: if selected model's provider is filtered out, clear selection
-        // so the UI doesn't show a model the user can't actually use
+        // An unavailable saved selection is retained in the connection store so
+        // it can be restored when the server exposes it again. The current
+        // session instead falls back to a supported default where possible.
         if !selectedProviderID.isEmpty,
            !availableModels.contains(where: { $0.providerID == selectedProviderID && $0.modelID == selectedModelID }) {
-            Logger.chat.warning("Selected model \(self.selectedProviderID)/\(self.selectedModelID) is filtered out by config — clearing")
+            Logger.chat.warning("Selected model \(self.selectedProviderID)/\(self.selectedModelID) is unavailable — clearing current session selection")
             self.selectedProviderID = ""
             self.selectedModelID = ""
             self.selectedVariant = nil
-            if let connID = savedConnectionsStore?.activeConnectionID {
-                savedConnectionsStore?.clearModelSelection(connectionID: connID)
-            }
         } else if let selectedVariant,
                   !availableReasoningVariants.contains(where: { $0.id == selectedVariant }) {
             self.selectedVariant = nil
-            persistCurrentSelection()
         }
 
-        if didLoadProvidersSuccessfully {
-            synchronizeQuickModelAssignments()
-        }
     }
 
     static func recentSessionModelSelection(from messages: [ChatMessage]) -> (providerID: String, modelID: String)? {
@@ -1792,6 +2109,17 @@ final class ChatClient: SSEEventHandlerDelegate {
         availableSlashAgentMap = Dictionary(uniqueKeysWithValues: agents.map { ($0.lowercased(), $0) })
     }
 
+    func updateSkillCatalog(_ skills: [String]) {
+        availableSkillIDs = skills
+    }
+
+    /// v2 servers only load a skill the prompt attaches, so `@skill` mentions
+    /// in the text are sent alongside it the way the TUI sends them.
+    private func skillAttachments(in text: String) -> [OCV2SkillAttachment] {
+        guard usesV2SessionAPI else { return [] }
+        return SkillMention.attachments(in: text, skillIDs: availableSkillIDs)
+    }
+
     private func beginResponse() {
         abortTask?.cancel()
         abortTask = nil
@@ -1812,7 +2140,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         currentActivity = nil
         responseStartDate = nil
         sessionStatus = nil
-        liveActivityTracker?.end()
+        liveActivityTracker?.end(phase: .failed)
     }
 
     func dismissError() {
@@ -1845,7 +2173,6 @@ final class ChatClient: SSEEventHandlerDelegate {
             guard let self, self.responseState == .stopped else { return }
 
             self.responseState = .idle
-            self.locallyStoppedSessionID = nil
             self.stoppedStateClearTask = nil
         }
     }
@@ -1883,8 +2210,8 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         if let slashAction = parseSlashAction(text) {
             switch slashAction {
-            case .command(let command, let arguments):
-                sendCommand(text: text, command: command, arguments: arguments)
+            case .command:
+                submitCommandIfPresent(text, delivery: .steer)
             case .agent(let agent, let prompt):
                 sendAgentPrompt(text: text, agent: agent, prompt: prompt)
             }
@@ -1893,7 +2220,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         beginResponse()
 
-        let userMessage = ChatMessage(role: .user, content: text)
+        let userMessage = makeOptimisticUserMessage(text: text)
         messages.append(userMessage)
         inputText = ""
 
@@ -1901,15 +2228,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         currentActivity?.currentLabel = "Thinking..."
         responseStartDate = Date()
 
-        liveActivityTracker?.start(
-            agentName: currentSession?.title ?? "OpenCode",
-            userTask: String(text.prefix(80))
-        )
+        liveActivityTracker?.start(session: currentSession)
 
         contentVersion &+= 1
 
         Task {
-            await sendPromptAsync(text: text)
+            await sendPromptAsync(text: text, messageID: userMessage.id)
         }
     }
 
@@ -1927,12 +2251,21 @@ final class ChatClient: SSEEventHandlerDelegate {
               !isStoppingResponse,
               !isQueueingPrompt,
               pendingQuestion == nil,
+              pendingForm == nil,
               canCompose,
               currentSession != nil else {
             return
         }
 
-        let queuedPrompt = QueuedPrompt(text: text, state: isDemoMode ? .queued : .submitting)
+        if usesV2SessionAPI, submitCommandIfPresent(text, delivery: .queue) {
+            return
+        }
+
+        let queuedPrompt = QueuedPrompt(
+            messageID: usesV2SessionAPI ? "msg_\(UUID().uuidString)" : UUID().uuidString,
+            text: text,
+            state: isDemoMode ? .queued : .submitting
+        )
         inputText = ""
         queuedPrompts.append(queuedPrompt)
         contentVersion &+= 1
@@ -1965,9 +2298,19 @@ final class ChatClient: SSEEventHandlerDelegate {
             }
 
             do {
-                try await messagesService.queuePrompt(sessionID: session.id, text: text)
+                try await messagesService.queuePrompt(
+                    sessionID: session.id,
+                    text: text,
+                    model: selectedModelRef,
+                    variant: selectedVariant,
+                    messageID: usesV2SessionAPI ? queuedPrompt.messageID : nil,
+                    skills: skillAttachments(in: text)
+                )
                 guard currentSession?.id == session.id else { return }
                 acceptQueuedPrompt(id: queuedPrompt.id)
+                if usesV2SessionAPI {
+                    await loadMessages(syncModelSelection: false)
+                }
             } catch {
                 guard currentSession?.id == session.id else { return }
                 queuedPrompts.removeAll { $0.id == queuedPrompt.id }
@@ -1983,6 +2326,9 @@ final class ChatClient: SSEEventHandlerDelegate {
     private func acceptQueuedPrompt(id: UUID) {
         guard let index = queuedPrompts.firstIndex(where: { $0.id == id }) else { return }
         queuedPrompts[index].state = .queued
+        if usesV2SessionAPI {
+            optimisticV2UserMessageIDs.insert(queuedPrompts[index].messageID)
+        }
 
         // The active turn can finish while the admission request is in flight.
         // Promote immediately in that race; otherwise finishLoading() performs
@@ -1997,6 +2343,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let prompt = queuedPrompts.removeFirst()
         messages.append(
             ChatMessage(
+                id: prompt.messageID,
                 role: .user,
                 content: prompt.text,
                 createdAt: Date()
@@ -2006,34 +2353,46 @@ final class ChatClient: SSEEventHandlerDelegate {
         scrollAnchor &+= 1
     }
 
-    private func sendCommand(text: String, command: String, arguments: String) {
-        beginResponse()
+    private func sendCommand(
+        text: String,
+        command: String,
+        arguments: String,
+        delivery: OCV2PromptInput.Delivery
+    ) {
+        let startsNewResponse = !isLoading
+        if startsNewResponse {
+            beginResponse()
+        }
 
-        let userMessage = ChatMessage(role: .user, content: text)
+        let userMessage = makeOptimisticCommandUserMessage(text: text)
         messages.append(userMessage)
         inputText = ""
 
-        currentActivity = AgentActivity()
-        currentActivity?.currentLabel = "Running /\(command)..."
-        responseStartDate = Date()
+        if startsNewResponse {
+            currentActivity = AgentActivity()
+            currentActivity?.currentLabel = "Running /\(command)..."
+            responseStartDate = Date()
 
-        liveActivityTracker?.start(
-            agentName: currentSession?.title ?? "OpenCode",
-            userTask: "/\(command)"
-        )
+            liveActivityTracker?.start(session: currentSession)
+        }
 
         contentVersion &+= 1
         scrollAnchor &+= 1
 
         Task {
-            await sendCommandAsync(command: command, arguments: arguments)
+            await sendCommandAsync(
+                command: command,
+                arguments: arguments,
+                delivery: delivery,
+                messageID: userMessage.id
+            )
         }
     }
 
     private func sendAgentPrompt(text: String, agent: String, prompt: String) {
         beginResponse()
 
-        let userMessage = ChatMessage(role: .user, content: text)
+        let userMessage = makeOptimisticUserMessage(text: text)
         messages.append(userMessage)
         inputText = ""
 
@@ -2041,20 +2400,92 @@ final class ChatClient: SSEEventHandlerDelegate {
         currentActivity?.currentLabel = "Running /\(agent)..."
         responseStartDate = Date()
 
-        liveActivityTracker?.start(
-            agentName: agent,
-            userTask: prompt.isEmpty ? "/\(agent)" : prompt
-        )
+        liveActivityTracker?.start(session: currentSession)
 
         contentVersion &+= 1
         scrollAnchor &+= 1
 
         Task {
-            await sendPromptAsync(text: prompt, agent: agent)
+            await sendPromptAsync(text: prompt, agent: agent, messageID: userMessage.id)
         }
     }
 
-    private func sendPromptAsync(text: String, agent: String? = nil) async {
+    private func makeOptimisticUserMessage(text: String) -> ChatMessage {
+        let id = usesV2SessionAPI ? "msg_\(UUID().uuidString)" : UUID().uuidString
+        if usesV2SessionAPI {
+            optimisticV2UserMessageIDs.insert(id)
+        }
+        return ChatMessage(id: id, role: .user, content: text)
+    }
+
+    private func makeOptimisticCommandUserMessage(text: String) -> ChatMessage {
+        let id = usesV2SessionAPI ? "cmd_\(UUID().uuidString)" : UUID().uuidString
+        if usesV2SessionAPI {
+            optimisticV2CommandMessages[id] = .init(
+                text: text,
+                knownTranscriptMessageIDs: Set(messages.map(\.id))
+            )
+        }
+        return ChatMessage(id: id, role: .user, content: text)
+    }
+
+    @discardableResult
+    private func submitCommandIfPresent(
+        _ text: String,
+        delivery: OCV2PromptInput.Delivery
+    ) -> Bool {
+        guard let slashAction = parseSlashAction(text),
+              case let .command(command, arguments) = slashAction
+        else {
+            return false
+        }
+
+        sendCommand(
+            text: text,
+            command: command,
+            arguments: arguments,
+            delivery: delivery
+        )
+        return true
+    }
+
+    private var usesV2SessionAPI: Bool {
+        connection?.serverCapabilities?.protocolVersion == .v2
+    }
+
+    var canSteerPrompt: Bool {
+        usesV2SessionAPI
+            && isLoading
+            && !isStoppingResponse
+            && !isQueueingPrompt
+            && pendingQuestion == nil
+            && pendingForm == nil
+            && canCompose
+            && currentSession != nil
+    }
+
+    /// Sends a busy-session prompt as a v2 steering instruction rather than
+    /// appending it behind the active turn.
+    func steerPrompt() {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, canSteerPrompt else { return }
+
+        if submitCommandIfPresent(text, delivery: .steer) {
+            return
+        }
+
+        let userMessage = makeOptimisticUserMessage(text: text)
+        messages.append(userMessage)
+        inputText = ""
+        contentVersion &+= 1
+        scrollAnchor &+= 1
+
+        Task {
+            await sendPromptAsync(text: text, messageID: userMessage.id)
+        }
+    }
+
+    private func sendPromptAsync(text: String, agent: String? = nil, messageID: String? = nil) async {
         guard let session = currentSession else {
             markResponseFailed("Not connected.")
             return
@@ -2066,9 +2497,23 @@ final class ChatClient: SSEEventHandlerDelegate {
                 text: text,
                 model: selectedModelRef,
                 agent: agent,
-                variant: selectedVariant
+                variant: selectedVariant,
+                messageID: messageID,
+                skills: skillAttachments(in: text)
             )
+            guard currentSession?.id == session.id else { return }
+            if usesV2SessionAPI {
+                // Prompt admission is durable but projection is asynchronous.
+                // Reload now; the merge above keeps the local row visible until
+                // the transcript returns the same caller-provided message ID.
+                await loadMessages(syncModelSelection: false)
+            }
         } catch {
+            if usesV2SessionAPI, let messageID {
+                // Keep the failed row visible for immediate feedback, but do
+                // not preserve it over a later authoritative transcript load.
+                optimisticV2UserMessageIDs.remove(messageID)
+            }
             guard responseState == .generating else { return }
             if let agent, !agent.isEmpty {
                 markResponseFailed("Failed to run /\(agent): \(error.localizedDescription)")
@@ -2078,7 +2523,12 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
-    private func sendCommandAsync(command: String, arguments: String) async {
+    private func sendCommandAsync(
+        command: String,
+        arguments: String,
+        delivery: OCV2PromptInput.Delivery,
+        messageID: String
+    ) async {
         guard let session = currentSession else {
             markResponseFailed("Not connected.")
             return
@@ -2089,10 +2539,26 @@ final class ChatClient: SSEEventHandlerDelegate {
                 sessionID: session.id,
                 command: command,
                 arguments: arguments,
-                model: selectedModelCommandValue,
-                variant: selectedVariant
+                model: selectedModelRef,
+                variant: selectedVariant,
+                skills: skillAttachments(in: arguments),
+                delivery: delivery
             )
+            guard currentSession?.id == session.id else { return }
+            if usesV2SessionAPI {
+                // Commands are admitted asynchronously just like prompts, but
+                // their v2 endpoint does not accept a caller-provided message
+                // ID. Refresh the authoritative transcript after admission.
+                await loadMessages(syncModelSelection: false)
+            }
         } catch {
+            if usesV2SessionAPI {
+                optimisticV2CommandMessages.removeValue(forKey: messageID)
+            }
+            if delivery == .queue {
+                errorMessage = "Failed to queue /\(command): \(error.localizedDescription)"
+                return
+            }
             guard responseState == .generating else { return }
             markResponseFailed("Failed to run /\(command): \(error.localizedDescription)")
         }
@@ -2167,12 +2633,15 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard let session = currentSession else { return }
 
         beginStoppingResponse(sessionID: session.id)
-        finalizeLocalStoppedTurn()
 
         abortTask = Task { [weak self] in
             do {
-                try await self?.messagesService?.abort(sessionID: session.id)
-                self?.completeStoppedResponse()
+                let interrupted = try await self?.messagesService?.abort(sessionID: session.id)
+                if interrupted == true {
+                    self?.completeStoppedResponse()
+                } else {
+                    self?.completeUninterruptedStop()
+                }
             } catch {
                 self?.failStoppedResponse(error)
             }
@@ -2211,8 +2680,11 @@ final class ChatClient: SSEEventHandlerDelegate {
         showPermissionAlert = false
         pendingQuestion = nil
         showQuestionSheet = false
-        cancelQuestionTimeout()
-        liveActivityTracker?.end()
+        pendingForm = nil
+        showFormSheet = false
+        isResolvingForm = false
+        cancelInteractiveRequestTimeout()
+        liveActivityTracker?.end(phase: .stopped)
         contentVersion &+= 1
     }
 
@@ -2223,6 +2695,16 @@ final class ChatClient: SSEEventHandlerDelegate {
         finalizeLocalStoppedTurn()
         isLoading = false
         showStoppedResponseState()
+    }
+
+    private func completeUninterruptedStop() {
+        guard responseState == .stopping else { return }
+
+        abortTask = nil
+        isLoading = false
+        locallyStoppedSessionID = nil
+        responseState = .idle
+        synchronizeCurrentSessionFromServer()
     }
 
     private func failStoppedResponse(_ error: Error) {
@@ -2248,10 +2730,20 @@ final class ChatClient: SSEEventHandlerDelegate {
         sseClient.onEvent = nil
         sseClient.setRawEventRetentionEnabled(isRecordingStream)
         sseClient.onInboundEvent = { [weak self] inboundEvent in
+            if case .raw(let event) = inboundEvent, event.type == "session.reconcile" {
+                let sessionID = (event.properties?.value as? [String: Any])?["sessionID"] as? String
+                if sessionID == nil || sessionID == self?.currentSession?.id {
+                    self?.synchronizeCurrentSessionFromServer()
+                }
+                return
+            }
             if let rawEvent = inboundEvent.rawEvent {
                 self?.recordIncomingEvent(rawEvent)
             }
             self?.sseHandler?.handleInboundEvent(inboundEvent)
+        }
+        sseClient.onSynchronizationGap = { [weak self] _ in
+            self?.synchronizeCurrentSessionFromServer()
         }
     }
 
@@ -2346,13 +2838,14 @@ final class ChatClient: SSEEventHandlerDelegate {
             return false
         }
 
-        let recoverySessionID = pendingPermission?.sessionID ?? currentSession?.id
+        guard let permission = pendingPermission, permission.id == requestID else {
+            errorMessage = "Failed to respond to permission: The request is no longer pending."
+            return false
+        }
+        let recoverySessionID = permission.sessionID ?? currentSession?.id
 
         do {
-            try await questionService.respondToPermission(
-                requestID: requestID,
-                reply: reply
-            )
+            try await questionService.respondToPermission(permission, reply: reply)
 
             if pendingPermission?.id == requestID {
                 pendingPermission = nil
@@ -2367,14 +2860,22 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
+    /// Superseded recovery requests surface as task or URLSession cancellation; they are not user-facing failures.
+    private static func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
     /// Recover any pending permission from the server for the current session.
-    func recoverPendingPermission(sessionID preferredSessionID: String? = nil) async {
-        guard !isOfflinePreviewMode else { return }
+    @discardableResult
+    func recoverPendingPermission(sessionID preferredSessionID: String? = nil) async -> Bool {
+        guard !isOfflinePreviewMode else { return true }
 
         let sessionID = preferredSessionID ?? currentSession?.id
 
         do {
-            let permission = try await questionService?.recoverPendingPermission(sessionID: sessionID)
+            guard let questionService else { return false }
+            let permission = try await questionService.recoverPendingPermission(sessionID: sessionID)
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
 
             if let permission {
                 pendingPermission = permission
@@ -2383,33 +2884,78 @@ final class ChatClient: SSEEventHandlerDelegate {
                 pendingPermission = nil
                 showPermissionAlert = false
             }
+            return true
         } catch {
+            guard !Self.isCancellation(error) else { return false }
             Logger.chat.warning("recoverPendingPermission failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
+            return false
         }
     }
 
     // MARK: - Question Response
 
     /// Recover any pending questions from the server after reconnection.
-    func recoverPendingQuestions() async {
-        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return }
+    @discardableResult
+    func recoverPendingQuestions() async -> Bool {
+        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return false }
 
         do {
-            if let question = try await questionService?.recoverPendingQuestion(sessionID: sessionID) {
+            guard let questionService else { return false }
+            let question = try await questionService.recoverPendingQuestion(sessionID: sessionID)
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
+            if let question {
                 if self.pendingQuestion == nil {
                     self.pendingQuestion = question
                     self.showQuestionSheet = true
-                    self.startQuestionTimeout()
+                    self.startInteractiveRequestTimeout()
                 }
             }
+            return true
         } catch {
+            guard !Self.isCancellation(error) else { return false }
             Logger.chat.warning("recoverPendingQuestions failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
+            return false
+        }
+    }
+
+    /// Recover pending v2 forms after a stream gap or foreground return.
+    @discardableResult
+    func recoverPendingForms() async -> Bool {
+        guard !isOfflinePreviewMode, let sessionID = currentSession?.id else { return false }
+
+        do {
+            guard let questionService else { return false }
+            let form = try await questionService.recoverPendingForm(sessionID: sessionID)
+            guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
+            if let form {
+                guard pendingQuestion == nil else { return true }
+                if pendingForm?.id == form.id {
+                    if !showFormSheet, !isResolvingForm {
+                        showFormSheet = true
+                    }
+                    return true
+                }
+                guard pendingForm == nil else { return true }
+                _ = presentForm(form)
+            } else if pendingForm?.sessionID == sessionID {
+                cancelInteractiveRequestTimeout()
+                pendingForm = nil
+                showFormSheet = false
+            }
+            return true
+        } catch {
+            guard !Self.isCancellation(error) else { return false }
+            Logger.chat.warning("recoverPendingForms failed: \(error, privacy: .public)")
+            if currentSession?.id == sessionID { errorMessage = "Failed to recover pending interactions: \(error.localizedDescription)" }
+            return false
         }
     }
 
     /// Send selected answers back to the server.
     func respondToQuestion(answers: [[String]]) {
-        cancelQuestionTimeout()
+        cancelInteractiveRequestTimeout()
 
         guard let question = pendingQuestion else {
             pendingQuestion = nil
@@ -2430,7 +2976,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     /// Dismiss/reject the question without answering.
     func rejectQuestion() {
-        cancelQuestionTimeout()
+        cancelInteractiveRequestTimeout()
 
         guard let question = pendingQuestion else {
             pendingQuestion = nil
@@ -2446,27 +2992,80 @@ final class ChatClient: SSEEventHandlerDelegate {
         showQuestionSheet = false
     }
 
-    // MARK: - Question Timeout
+    /// Sends a v2 form reply. Unsupported fields never call this method
+    /// because `FormView` disables submission until OpenCode can handle them.
+    func respondToForm(answer: [String: OCFormValue]) {
+        resolvePendingForm(failureMessage: "Failed to submit form") { service, form in
+            try await service.respondToForm(form, answer: answer)
+        }
+    }
 
-    private func startQuestionTimeout() {
-        cancelQuestionTimeout()
-        questionTimeoutTask = Task { [weak self] in
+    func cancelForm() {
+        resolvePendingForm(failureMessage: "Failed to cancel form") { service, form in
+            try await service.cancelForm(form)
+        }
+    }
+
+    private func resolvePendingForm(
+        failureMessage: String,
+        operation: @escaping (QuestionService, OCFormRequest) async throws -> Void
+    ) {
+        guard !isResolvingForm else { return }
+        cancelInteractiveRequestTimeout()
+
+        guard let form = pendingForm else {
+            pendingForm = nil
+            showFormSheet = false
+            return
+        }
+        guard let questionService else {
+            errorMessage = "\(failureMessage): OpenLens is not connected."
+            showFormSheet = true
+            startInteractiveRequestTimeout()
+            return
+        }
+
+        isResolvingForm = true
+        Task {
+            defer { isResolvingForm = false }
             do {
-                try await Task.sleep(for: .seconds(Self.questionTimeoutSeconds))
+                try await operation(questionService, form)
+                guard pendingForm?.id == form.id else { return }
+                pendingForm = nil
+                showFormSheet = false
             } catch {
-                return // cancelled
-            }
-            guard let self, self.pendingQuestion != nil else { return }
-            await MainActor.run {
-                Logger.chat.info("Question timed out after \(Self.questionTimeoutSeconds)s, auto-rejecting")
-                self.rejectQuestion()
+                errorMessage = "\(failureMessage): \(error.localizedDescription)"
+                showFormSheet = true
+                startInteractiveRequestTimeout()
             }
         }
     }
 
-    private func cancelQuestionTimeout() {
-        questionTimeoutTask?.cancel()
-        questionTimeoutTask = nil
+    // MARK: - Interactive Request Timeout
+
+    private func startInteractiveRequestTimeout() {
+        cancelInteractiveRequestTimeout()
+        interactiveRequestTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(Self.interactiveRequestTimeoutSeconds))
+            } catch {
+                return // cancelled
+            }
+            guard let self, self.pendingQuestion != nil || self.pendingForm != nil else { return }
+            await MainActor.run {
+                Logger.chat.info("Interactive request timed out after \(Self.interactiveRequestTimeoutSeconds)s, auto-cancelling")
+                if self.pendingForm != nil {
+                    self.cancelForm()
+                } else {
+                    self.rejectQuestion()
+                }
+            }
+        }
+    }
+
+    private func cancelInteractiveRequestTimeout() {
+        interactiveRequestTimeoutTask?.cancel()
+        interactiveRequestTimeoutTask = nil
     }
 
     // MARK: - Streaming Text Buffer API
@@ -3075,6 +3674,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func resetSessionState() {
+        streamSynchronizationTask?.cancel()
+        streamSynchronizationTask = nil
+        streamSynchronizationToken = nil
+        streamSynchronizationGeneration &+= 1
+        isStreamSynchronized = true
         abortTask?.cancel()
         abortTask = nil
         streamingFinalizationTokens.removeAll()
@@ -3086,6 +3690,8 @@ final class ChatClient: SSEEventHandlerDelegate {
         turnFileDetailCacheOrder.removeAll()
         cancelStoppedStateClear()
         ignoredAssistantMessageIDs.removeAll()
+        optimisticV2UserMessageIDs.removeAll()
+        optimisticV2CommandMessages.removeAll()
         locallyStoppedSessionID = nil
         demoPlayer?.stop()
         recordedReplayPlayer?.stop()
@@ -3110,10 +3716,13 @@ final class ChatClient: SSEEventHandlerDelegate {
         showPermissionAlert = false
         pendingQuestion = nil
         showQuestionSheet = false
+        pendingForm = nil
+        showFormSheet = false
+        isResolvingForm = false
         sessionStatus = nil
         todos = []
         hiddenTodoCount = 0
-        cancelQuestionTimeout()
+        cancelInteractiveRequestTimeout()
         responseStartDate = nil
     }
 
@@ -3231,6 +3840,15 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     // MARK: - Finish Loading
 
+    /// A native v2 step ends one assistant message without ending the session turn.
+    func finishAssistantStep(messageID: String) {
+        guard let pending = pendingAssistantMessage, pending.id == messageID else { return }
+        let updates = detachBufferedStreamUpdates(for: messageID)
+        finalizePendingAssistantMessage(pending, appendsWhenEmpty: true, bufferedUpdates: updates)
+        continueStreamingFlushIfNeeded()
+        contentVersion &+= 1
+    }
+
     func finishLoading() {
         let completedActiveTurn = isLoading
             || pendingAssistantMessage != nil
@@ -3295,20 +3913,11 @@ extension ChatClient {
 private final class NoopLiveActivityProvider: LiveActivityProviding {
     var isActive: Bool { false }
 
-    func startActivity(agentName: String, userTask: String, subject: String?) {}
+    func startActivity(sessionID: String?, directory: String?) {}
 
-    func update(
-        subject: String?,
-        currentIntent: String,
-        currentIntentIcon: String?,
-        previousIntent: String?,
-        secondPreviousIntent: String?,
-        stepNumber: Int,
-        costTotal: String?,
-        pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
-    ) {}
+    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(completionSummary: String?) {}
+    func endActivity(phase: OpenLensActivityAttributes.Phase) {}
 
     func dismissImmediately() {}
 

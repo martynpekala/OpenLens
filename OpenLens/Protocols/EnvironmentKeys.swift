@@ -75,6 +75,10 @@ private struct SessionInsightsServiceKey: EnvironmentKey {
     static let defaultValue: SessionInsightsService = SessionInsightsService()
 }
 
+private struct GitHubStarsServiceKey: EnvironmentKey {
+    static let defaultValue: GitHubStarsService = GitHubStarsService()
+}
+
 private struct RecordedReplayStoreKey: EnvironmentKey {
     static let defaultValue: RecordedReplayStore = RecordedReplayStore()
 }
@@ -143,6 +147,11 @@ extension EnvironmentValues {
     var sessionInsightsService: SessionInsightsService {
         get { self[SessionInsightsServiceKey.self] }
         set { self[SessionInsightsServiceKey.self] = newValue }
+    }
+
+    var gitHubStarsService: GitHubStarsService {
+        get { self[GitHubStarsServiceKey.self] }
+        set { self[GitHubStarsServiceKey.self] = newValue }
     }
 
     var recordedReplayStore: RecordedReplayStore {

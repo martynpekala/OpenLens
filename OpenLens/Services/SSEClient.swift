@@ -18,6 +18,7 @@ nonisolated struct SSEMessageUpdate {
     let providerID: String?
     let finish: String?
     let parentID: String?
+    let completesStep: Bool
 
     init?(event: OCEvent) {
         guard let properties = event.properties?.value as? [String: Any],
@@ -39,6 +40,7 @@ nonisolated struct SSEMessageUpdate {
 
         self.sessionID = sessionID
         self.messageID = messageID
+        self.completesStep = info["v2StepCompleted"] as? Bool ?? false
         self.role = StreamDisplayValue.preview(info["role"] as? String, maximumBytes: 64)
         self.cost = decodedInfo?.cost ?? info["cost"] as? Double
         self.tokens = decodedInfo?.tokens
@@ -194,6 +196,65 @@ nonisolated struct SSEQuestionAsked {
     }
 }
 
+/// A v2 form creation event is decoded and safety-bounded before it reaches
+/// the MainActor. Unknown field types remain part of the form so the UI can
+/// show its explicit OpenCode fallback instead of guessing an answer.
+nonisolated struct SSEFormCreated {
+    let sessionID: String?
+    let form: OCFormRequest?
+    /// A structurally invalid form can be cancelled once its safe identifiers
+    /// are known. This mirrors the legacy question safety path without
+    /// rejecting a valid form that merely contains a future field type.
+    let rejectedFormID: String?
+
+    init?(event: OCEvent) {
+        guard let properties = event.properties?.value as? [String: Any] else {
+            return nil
+        }
+
+        let rawForm = properties["form"] ?? properties
+        let decodedForm = SSEPreparedPayload.decode(OCFormRequest.self, from: rawForm)
+        let candidateSessionID = decodedForm?.sessionID ?? (properties["sessionID"] as? String)
+        let candidateFormID = decodedForm?.id
+            ?? (properties["id"] as? String)
+            ?? (properties["formID"] as? String)
+
+        sessionID = candidateSessionID.flatMap {
+            InteractiveFormSafety.fitsIdentifier($0) ? $0 : nil
+        }
+
+        if let decodedForm,
+           let safeForm = InteractiveFormSafety.sanitize(decodedForm) {
+            form = safeForm
+            rejectedFormID = nil
+        } else {
+            form = nil
+            rejectedFormID = candidateFormID.flatMap {
+                InteractiveFormSafety.fitsIdentifier($0) ? $0 : nil
+            }
+        }
+    }
+}
+
+nonisolated struct SSEFormResolved {
+    let sessionID: String
+    let formID: String
+
+    init?(event: OCEvent) {
+        guard let properties = event.properties?.value as? [String: Any],
+              let sessionID = properties["sessionID"] as? String,
+              let formID = (properties["id"] as? String) ?? (properties["formID"] as? String),
+              InteractiveFormSafety.fitsIdentifier(sessionID),
+              InteractiveFormSafety.fitsIdentifier(formID)
+        else {
+            return nil
+        }
+
+        self.sessionID = sessionID
+        self.formID = formID
+    }
+}
+
 nonisolated struct SSETodoUpdated {
     let sessionID: String?
     let todos: [OCTodo]?
@@ -239,6 +300,8 @@ nonisolated enum SSEColdEvent {
     case sessionUpdated(SSESessionUpdate?)
     case permissionAsked(SSEPermissionAsked?)
     case questionAsked(SSEQuestionAsked?)
+    case formCreated(SSEFormCreated?)
+    case formResolved(SSEFormResolved?)
     case todoUpdated(SSETodoUpdated?)
 }
 
@@ -284,19 +347,32 @@ nonisolated enum SSEInboundEvent {
 
         switch event.type {
         case "session.status":
-            return .cold(.sessionStatus(SSESessionStatusUpdate(event: event)), rawEvent: rawEvent)
+            guard let update = SSESessionStatusUpdate(event: event) else { return nil }
+            return .cold(.sessionStatus(update), rawEvent: rawEvent)
 
         case "session.updated":
-            return .cold(.sessionUpdated(SSESessionUpdate(event: event)), rawEvent: rawEvent)
+            guard let update = SSESessionUpdate(event: event) else { return nil }
+            return .cold(.sessionUpdated(update), rawEvent: rawEvent)
 
         case "permission.asked", "permission.v2.asked":
-            return .cold(.permissionAsked(SSEPermissionAsked(event: event)), rawEvent: rawEvent)
+            guard let request = SSEPermissionAsked(event: event) else { return nil }
+            return .cold(.permissionAsked(request), rawEvent: rawEvent)
 
         case "question.asked":
-            return .cold(.questionAsked(SSEQuestionAsked(event: event)), rawEvent: rawEvent)
+            guard let request = SSEQuestionAsked(event: event) else { return nil }
+            return .cold(.questionAsked(request), rawEvent: rawEvent)
+
+        case "form.created", "form.asked":
+            guard let form = SSEFormCreated(event: event) else { return nil }
+            return .cold(.formCreated(form), rawEvent: rawEvent)
+
+        case "form.replied", "form.cancelled":
+            guard let form = SSEFormResolved(event: event) else { return nil }
+            return .cold(.formResolved(form), rawEvent: rawEvent)
 
         case "todo.updated":
-            return .cold(.todoUpdated(SSETodoUpdated(event: event)), rawEvent: rawEvent)
+            guard let update = SSETodoUpdated(event: event) else { return nil }
+            return .cold(.todoUpdated(update), rawEvent: rawEvent)
 
         case "message.updated":
             guard let update = SSEMessageUpdate(event: event) else { return nil }
@@ -430,6 +506,16 @@ private enum SSETextChunker {
 final class SSEClient: NSObject, URLSessionDataDelegate {
 
     // MARK: - Types
+
+    /// A condition where incremental stream delivery may have omitted state.
+    /// Consumers must reload their authoritative state before treating the
+    /// stream as synchronized again.
+    enum SynchronizationGap: Equatable {
+        case disconnected
+        case reconnected
+        case decodeFailure
+        case overflow
+    }
 
     enum ConnectionState {
         case disconnected
@@ -677,14 +763,30 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// Called when the SSE endpoint returns a terminal HTTP status that should not auto-reconnect.
     var onTerminalHTTPError: ((Int) -> Void)?
 
+    /// Called once per v2 connection when the incremental stream can no longer
+    /// be relied upon as a complete representation of server state.
+    var onSynchronizationGap: ((SynchronizationGap) -> Void)?
+
+    /// Called on the main queue (throttled) whenever the current stream
+    /// receives bytes. Keep-alives sent as SSE comments never become events,
+    /// so liveness must be derived from the transport, not from parsed records.
+    var onLiveness: (() -> Void)?
+
     // MARK: - Private state (protected by `queue`)
 
     private let queue = DispatchQueue(label: "com.opencode.SSEClient", qos: .userInitiated)
 
     private var baseURL: URL
     private var authHeader: String?
+    private var protocolVersion: OpenCodeProtocol
+    private var contextDirectory: String?
+    private var v2EventAdapter = V2EventAdapter()
     private var shouldReconnect = true
     private var reconnectDelay: TimeInterval = 2.0
+    /// System uptime of the last `onLiveness` delivery; nil forces the next
+    /// received chunk to report immediately.
+    private var lastLivenessReportUptime: TimeInterval?
+    private static let livenessReportInterval: TimeInterval = 5
     /// Recording opts into keeping the original decoded OCEvent alongside a
     /// prepared projection. The legacy `onEvent` callback opts in separately.
     private var rawEventRetentionEnabled = false
@@ -703,6 +805,9 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private var pendingTransportCompletion: PendingTransportCompletion?
     private let transport: any OpenCodeTransport
     private var eventStream: (any OpenCodeEventStream)?
+    /// Rejects callbacks from a stream cancelled during a v2 location switch
+    /// after its replacement stream has already started.
+    private var activeEventStreamID: UUID?
     // Retained only by DEBUG lifecycle tests that inject URLSession callbacks
     // directly; production connections are owned by `eventStream`.
     private var task: URLSessionDataTask?
@@ -749,6 +854,8 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     /// cascading one main-queue delivery per record.
     private var mainDeliverySelectionScheduled = false
     private var lastResponseStatusCode: Int?
+    private var hasReportedSynchronizationGap = false
+    private var synchronizationGapGeneration: UInt = 0
     private let stateDeliveryGate = StateDeliveryGate()
 #if DEBUG
     private var connectionStartHandlerForTesting: (() -> Void)?
@@ -804,18 +911,66 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     init(
         baseURL: URL,
         authHeader: String? = nil,
+        protocolVersion: OpenCodeProtocol = .v1,
+        contextDirectory: String? = nil,
         transport: (any OpenCodeTransport)? = nil
     ) {
         self.baseURL = baseURL
         self.authHeader = authHeader
+        self.protocolVersion = protocolVersion
+        self.contextDirectory = contextDirectory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         self.transport = transport ?? DirectOpenCodeTransport()
         super.init()
     }
 
-    func updateConnection(baseURL: URL, authHeader: String?) {
+    func updateConnection(
+        baseURL: URL,
+        authHeader: String?,
+        protocolVersion: OpenCodeProtocol? = nil
+    ) {
         queue.async { [self] in
             self.baseURL = baseURL
             self.authHeader = authHeader
+            if let protocolVersion {
+                self.protocolVersion = protocolVersion
+            }
+        }
+    }
+
+    func synchronizationGeneration() async -> UInt {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.synchronizationGapGeneration) }
+        }
+    }
+
+    func acknowledgeSynchronization(since generation: UInt) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let unchanged = generation == self.synchronizationGapGeneration
+                if unchanged { self.hasReportedSynchronizationGap = false }
+                continuation.resume(returning: unchanged)
+            }
+        }
+    }
+
+    /// Replaces the client-side location filter for the global native v2 stream.
+    /// Reconnect also invalidates queued deliveries from the previous location.
+    func updateContextDirectory(_ directory: String?) {
+        let normalizedDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        queue.async { [self] in
+            guard contextDirectory != normalizedDirectory else { return }
+            contextDirectory = normalizedDirectory
+
+            guard protocolVersion == .v2,
+                  shouldReconnect,
+                  (state != .disconnected || eventStream != nil || task != nil || session != nil)
+            else { return }
+
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
+            cleanupConnection()
+            shouldReconnect = true
+            startConnection()
         }
     }
 
@@ -899,7 +1054,10 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         }
 #endif
 
-        let url = baseURL.appending(path: "event")
+        let eventPath = protocolVersion.eventStreamPath
+        let eventURL = baseURL.appending(path: String(eventPath.dropFirst()))
+        let components = URLComponents(url: eventURL, resolvingAgainstBaseURL: false)
+        let url = components?.url ?? eventURL
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -912,19 +1070,26 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         isTransportPausedForMainBackpressure = false
         transportTaskSuspendedByBackpressure = false
         oversizedRecordCancellationPending = false
+        hasReportedSynchronizationGap = false
+        v2EventAdapter = V2EventAdapter()
         pendingTransportCompletion = nil
+        let eventStreamID = UUID()
+        activeEventStreamID = eventStreamID
         let stream = transport.makeEventStream(
             request: request,
             deliveryQueue: queue,
             callbacks: OpenCodeEventStreamCallbacks(
                 onResponse: { [weak self] response in
-                    self?.receiveTransportResponse(response) ?? false
+                    guard let self, self.activeEventStreamID == eventStreamID else { return false }
+                    return self.receiveTransportResponse(response)
                 },
                 onData: { [weak self] data in
-                    self?.receiveTransportData(data)
+                    guard let self, self.activeEventStreamID == eventStreamID else { return }
+                    self.receiveTransportData(data)
                 },
                 onComplete: { [weak self] error in
-                    self?.completeTransport(error: error)
+                    guard let self, self.activeEventStreamID == eventStreamID else { return }
+                    self.completeTransport(error: error)
                 }
             )
         )
@@ -953,6 +1118,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         bufferedDrainScheduled = false
         oversizedRecordCancellationPending = false
         pendingTransportCompletion = nil
+        activeEventStreamID = nil
         if discardPendingMainEvents {
             isConsumerBackpressured = false
             clearDeferredInboundDeliveries()
@@ -1006,7 +1172,9 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
             if http.statusCode == 200 {
                 reconnectDelay = Self.initialReconnectDelay
+                lastLivenessReportUptime = nil
                 updateState(.connected)
+                reportSynchronizationGap(.reconnected)
                 return true
             }
 
@@ -1027,6 +1195,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private func receiveTransportData(_ data: Data) {
         guard !oversizedRecordCancellationPending else { return }
         ChatStreamInstrumentation.recordSSEReceive(byteCount: data.count)
+        reportLivenessIfNeeded()
         buffer.append(data)
         if buffer.count - bufferedRecordStartOffset > Self.maximumBufferedTransportBytes {
             cancelOversizedIncompleteRecord()
@@ -1036,7 +1205,21 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         processBuffer()
     }
 
+    private func reportLivenessIfNeeded() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let lastLivenessReportUptime,
+           now - lastLivenessReportUptime < Self.livenessReportInterval {
+            return
+        }
+        lastLivenessReportUptime = now
+        guard let callback = onLiveness else { return }
+        DispatchQueue.main.async {
+            callback()
+        }
+    }
+
     private func completeTransport(error: Error?) {
+        reportSynchronizationGap(.disconnected)
         // A paused stream can still have complete records already received in
         // `buffer`. Drain those records through the same bounded mailbox before
         // tearing down the transport, otherwise a final tool/status/idle event
@@ -1253,6 +1436,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         oversizedRecordCancellationCountForTesting += 1
 #endif
         Logger.sse.error("Cancelling SSE stream after \(reason, privacy: .public)")
+        reportSynchronizationGap(.overflow)
         resetFramingBuffer()
         eventStream?.cancel()
         task?.cancel()
@@ -1283,6 +1467,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
     private func parseEvent(_ raw: Data, sourceByteCount: Int) -> Bool {
         guard let rawString = String(data: raw, encoding: .utf8) else {
             Logger.sse.error("Discarding malformed UTF-8 SSE record")
+            reportSynchronizationGap(.decodeFailure)
             return false
         }
 
@@ -1290,10 +1475,14 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         guard !trimmed.isEmpty else { return false }
 
         var dataLines: [String] = []
+        var eventName: String?
 
         for line in trimmed.components(separatedBy: "\n") {
-            guard let dataValue = extractDataField(from: line) else { continue }
-            dataLines.append(dataValue)
+            if let dataValue = extractDataField(from: line) {
+                dataLines.append(dataValue)
+            } else if let name = extractEventField(from: line) {
+                eventName = name
+            }
         }
 
         guard !dataLines.isEmpty else { return false }
@@ -1306,12 +1495,28 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         }
 
         do {
-            let event = try JSONDecoder().decode(OCEvent.self, from: jsonData)
+            guard let event = try decodeEvent(data: jsonData, eventName: eventName) else { return false }
             enqueueEvent(event, sourceByteCount: sourceByteCount)
             return true
         } catch {
             Logger.sse.error("Parse error: \(error, privacy: .public) for data: \(jsonString.prefix(200), privacy: .private)")
+            reportSynchronizationGap(.decodeFailure)
             return false
+        }
+    }
+
+    /// A v2 event stream has no replay cursor. Once a record was dropped or a
+    /// transport ended, the only safe way to close the resulting gap is to
+    /// reconcile from REST. Notifications coalesce, but every gap advances the
+    /// generation so a gap during REST recovery requires another complete pass.
+    private func reportSynchronizationGap(_ gap: SynchronizationGap) {
+        guard protocolVersion == .v2 else { return }
+        synchronizationGapGeneration &+= 1
+        guard !hasReportedSynchronizationGap else { return }
+        hasReportedSynchronizationGap = true
+        let callback = onSynchronizationGap
+        DispatchQueue.main.async {
+            callback?(gap)
         }
     }
 
@@ -1407,12 +1612,31 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return
         }
 
+        if eventRequiresPreparedPayload(event.type) {
+            // The name is known, but its payload was not valid enough to form
+            // the typed update consumed by chat. Unlike a future event, it
+            // cannot be safely ignored without reconciling authoritative state.
+            reportSynchronizationGap(.decodeFailure)
+            return
+        }
+
         // Cold events are ordering barriers: any buffered stream data must be
         // visible before status changes, removals, permissions, or completion.
         flushPendingTextDelta()
         flushPendingPartUpdate()
         clearTextSnapshotCache(for: event)
         deliverInboundEvent(.raw(event), byteCount: sourceByteCount)
+    }
+
+    private func eventRequiresPreparedPayload(_ type: String) -> Bool {
+        switch type {
+        case "session.status", "session.updated", "permission.asked", "permission.v2.asked",
+             "question.asked", "form.created", "form.asked", "form.replied", "form.cancelled",
+             "todo.updated", "message.updated", "message.part.updated", "message.part.delta":
+            true
+        default:
+            false
+        }
     }
 
     /// Converts a growing `message.part.updated` snapshot into a suffix delta
@@ -2208,6 +2432,53 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
             return String(afterPrefix.dropFirst())
         }
         return String(afterPrefix)
+    }
+
+    /// V1 embeds the event type and properties in the JSON data object. V2
+    /// follows standard SSE framing and carries the event type in `event:`;
+    /// its `data:` payload is the event properties object.
+    private func decodeEvent(data: Data, eventName: String?) throws -> OCEvent? {
+        if protocolVersion == .v2 {
+            var value = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+            if let encoded = value as? String {
+                value = try JSONSerialization.jsonObject(with: Data(encoded.utf8))
+            }
+            if let envelope = value as? [String: Any], envelope["type"] != nil, envelope["data"] != nil {
+                return try v2EventAdapter.event(envelope, directory: contextDirectory)
+            }
+        }
+        if let legacyEvent = try? JSONDecoder().decode(OCEvent.self, from: data) {
+            return legacyEvent
+        }
+
+        guard protocolVersion == .v2,
+              let eventName,
+              !eventName.isEmpty,
+              var payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw OpenCodeError.invalidPayload("Unsupported SSE event payload.")
+        }
+
+        // Some v2 fixtures/servers serialize the stream data member as a JSON
+        // string. Decode that nested object without changing the public event
+        // model used by the existing chat pipeline.
+        if payload.count == 1,
+           let encodedPayload = payload["data"] as? String,
+           let nestedData = encodedPayload.data(using: .utf8),
+           let nestedPayload = try? JSONSerialization.jsonObject(with: nestedData) as? [String: Any] {
+            payload = nestedPayload
+        }
+
+        return OCEvent(type: eventName, properties: AnyCodable(payload))
+    }
+
+    private func extractEventField(from line: String) -> String? {
+        guard line.hasPrefix("event:") else { return nil }
+        let afterPrefix = line.dropFirst(6)
+        if afterPrefix.first == " " {
+            return String(afterPrefix.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return String(afterPrefix).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Reconnect (called on `queue`)

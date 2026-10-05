@@ -85,6 +85,24 @@ This will:
 
 That's it. You're chatting with your AI coding assistant from your phone.
 
+### Pair with OpenCode v2
+
+Run `opencode pair` on your computer. Paste the resulting
+pairing link into OpenLens's server address field and tap **Connect**, or scan
+its QR code. OpenLens accepts the current
+`http://<host>:<port>/connect#<credentials>` format and legacy
+`http://<host>:<port>/auth/connect/<code>` links.
+
+OpenLens resolves the pairing credentials and saves them in Keychain for
+subsequent connections. You do not need to enter a password.
+Links expire after five minutes and work once; run `opencode pair` again if
+the link has expired or was already opened in a browser. If the connection
+fails after pairing succeeds, **Try Again** uses the saved token.
+
+Your iPhone must be able to reach the host in the link. A private LAN address
+requires access to that network (directly or through a VPN). OpenCode pairing
+is separate from the OpenLens Remote gateway described below.
+
 
 ## Remote Access Outside Your LAN
 
@@ -108,8 +126,10 @@ backend for Remote connections.
 - revoke one device, revoke all devices, or stop Remote Access from the Mac
 - keep existing LAN profiles unchanged and separate from Remote profiles
 
-Remote v1 does not provide background push notifications or Live Activity
-updates while the iOS app is closed.
+Remote connections do not provide background push notifications or Live Activity
+updates while the iOS app is closed. The paired relay supports the negotiated
+v1 and v2 OpenCode HTTP protocols, but protocol support does not change this
+iOS background-execution limitation.
 
 ### How it works
 
@@ -374,6 +394,14 @@ openlens://connect?url=192.168.1.50:4096&user=opencode&pass=optional&sessionID=a
 The `openlens-qr` tool encodes this into the QR code automatically.
 
 If `sessionID` is present, OpenLens connects first and then opens that session automatically.
+
+To promote OpenCode v2 support without any server details (for example as an App Store in-app event deep link), use:
+
+```
+openlens://setup
+```
+
+Without a connection, OpenLens shows connection setup. When it is connected, or reconnecting to the saved server, it shows the OpenCode v2 support screen with the server's detected version instead.
 
 
 ## License

@@ -29,7 +29,54 @@ final class SessionsService {
         }
 
         let sessions = try await client.listSessions()
-        return visibleSessions(from: sessions)
+        return visibleSessions(
+            from: resolvingProjectDirectories(in: sessions)
+        )
+    }
+
+    /// Fetch one page of root sessions for the current directory, newest first.
+    ///
+    /// Child sessions are hidden, so a server page can become empty after
+    /// filtering. Such pages are skipped until at least one visible session is
+    /// found or the list ends, so callers never receive an empty page while
+    /// more sessions remain.
+    func listSessionsPage(cursor: String? = nil, pageSize: Int = 30) async throws -> OCSessionPage {
+        if ScreenshotFixtures.isEnabled {
+            guard cursor == nil else { return OCSessionPage(sessions: [], nextCursor: nil) }
+            return OCSessionPage(sessions: ScreenshotFixtures.sessions, nextCursor: nil)
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        var cursor = cursor
+        var seenCursors = Set(cursor.map { [$0] } ?? [])
+        while true {
+            let page = try await client.listSessionsPage(cursor: cursor, limit: pageSize)
+            let sessions = Self.rootSessions(in: resolvingProjectDirectories(in: page.sessions))
+            guard sessions.isEmpty, let next = page.nextCursor else {
+                return OCSessionPage(sessions: sessions, nextCursor: page.nextCursor)
+            }
+            guard seenCursors.insert(next).inserted else {
+                throw OpenCodeError.invalidPayload("The v2 response repeated a pagination cursor.")
+            }
+            cursor = next
+        }
+    }
+
+    /// Fetch the session catalog for the Sessions screen, across directories.
+    func listAllSessions() async throws -> [OCSession] {
+        if ScreenshotFixtures.isEnabled {
+            return ScreenshotFixtures.sessions
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        let sessions = try await client.listAllSessions()
+        return visibleSessions(from: resolvingProjectDirectories(in: sessions))
     }
 
     func getSession(id: String) async throws -> OCSession {
@@ -41,7 +88,8 @@ final class SessionsService {
             throw OpenCodeError.notConnected
         }
 
-        return try await client.getSession(id: id)
+        let session = try await client.getSession(id: id)
+        return resolvingProjectDirectory(for: session)
     }
 
     // MARK: - Create
@@ -72,7 +120,8 @@ final class SessionsService {
             await connection.setProjectContext(directory: workspaceDirectory)
         }
 
-        return try await client.createSession(title: title)
+        let session = try await client.createSession(title: title)
+        return resolvingProjectDirectory(for: session)
     }
 
     // MARK: - Delete
@@ -111,7 +160,8 @@ final class SessionsService {
             throw OpenCodeError.notConnected
         }
 
-        return try await client.updateSession(id: session.id, title: newTitle)
+        let updatedSession = try await client.updateSession(id: session.id, title: newTitle)
+        return resolvingProjectDirectory(for: updatedSession)
     }
 
     // MARK: - Ensure Session
@@ -122,16 +172,21 @@ final class SessionsService {
             return ScreenshotFixtures.defaultSession
         }
 
-        guard let client = connection.client else {
+        guard connection.client != nil else {
             throw OpenCodeError.notConnected
         }
 
-        let sessions = try await client.listSessions()
-        let sorted = visibleSessions(from: sessions)
+        let sorted = try await listSessions()
         if let latest = sorted.first {
             return latest
         }
-        return try await client.createSession()
+        return try await createSession()
+    }
+
+    static func rootSessions(in sessions: [OCSession]) -> [OCSession] {
+        sessions.filter { session in
+            session.parentID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+        }
     }
 
     private func visibleSessions(from sessions: [OCSession]) -> [OCSession] {
@@ -141,6 +196,51 @@ final class SessionsService {
 
         let source = rootSessions.isEmpty ? sessions : rootSessions
         return source.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    static func applyingProjectDirectories(
+        _ sessions: [OCSession],
+        projects: [OCProject]
+    ) -> [OCSession] {
+        var directoriesByProjectID: [String: String] = [:]
+        for project in projects {
+            guard let directory = project.worktree?.nilIfBlank,
+                  directoriesByProjectID[project.id] == nil else {
+                continue
+            }
+            directoriesByProjectID[project.id] = directory
+        }
+
+        return sessions.map { session in
+            guard session.directory?.nilIfBlank == nil,
+                  let projectID = session.projectID?.nilIfBlank,
+                  let directory = directoriesByProjectID[projectID] else {
+                return session
+            }
+
+            return OCSession(
+                id: session.id,
+                projectID: session.projectID,
+                directory: directory,
+                parentID: session.parentID,
+                title: session.title,
+                version: session.version,
+                time: session.time,
+                share: session.share,
+                revert: session.revert
+            )
+        }
+    }
+
+    private func resolvingProjectDirectories(in sessions: [OCSession]) -> [OCSession] {
+        Self.applyingProjectDirectories(
+            sessions,
+            projects: connection.currentProject.map { [$0] } ?? []
+        )
+    }
+
+    private func resolvingProjectDirectory(for session: OCSession) -> OCSession {
+        resolvingProjectDirectories(in: [session])[0]
     }
 
     // MARK: - Abort

@@ -22,6 +22,7 @@ protocol SSEEventHandlerDelegate: AnyObject {
     var hiddenTodoCount: Int { get set }
 
     func finishLoading()
+    func finishAssistantStep(messageID: String)
     func beginExternalResponse()
     /// Applies an explicit server-side message deletion. Implementations can
     /// cancel deferred finalization before mutating their visible history.
@@ -84,9 +85,19 @@ protocol SSEEventHandlerDelegate: AnyObject {
 
     /// Called when a new question is presented so the VM can start a timeout timer.
     func questionDidPresent()
+
+    /// Presents a v2 form when it belongs to the active conversation. Returning
+    /// false lets the handler cancel an overlapping form instead of leaving it
+    /// pending with no UI owner.
+    @discardableResult
+    func presentForm(_ form: OCFormRequest) -> Bool
+
+    /// Clears a form that the server has answered or cancelled elsewhere.
+    func formDidResolve(id: String)
 }
 
 extension SSEEventHandlerDelegate {
+    func finishAssistantStep(messageID: String) {}
     func removeAssistantMessage(messageID: String) {
         if pendingAssistantMessage?.id == messageID {
             pendingAssistantMessage = nil
@@ -108,6 +119,8 @@ extension SSEEventHandlerDelegate {
     func clearStreamingReasoningBuffer(messageID: String, partID: String) {}
     func remapStreamingMessageID(from oldID: String, to newID: String) -> Bool { false }
     func waitForStreamingRenderCapacity() async -> Bool { !Task.isCancelled }
+    func presentForm(_ form: OCFormRequest) -> Bool { false }
+    func formDidResolve(id: String) {}
 }
 
 // MARK: - SSEEventHandler
@@ -197,6 +210,16 @@ final class SSEEventHandler {
                 handleQuestionAsked(request)
             }
 
+        case .formCreated(let form):
+            if let form {
+                handleFormCreated(form)
+            }
+
+        case .formResolved(let form):
+            if let form {
+                handleFormResolved(form)
+            }
+
         case .todoUpdated(let update):
             if let update {
                 handleTodoUpdated(update)
@@ -231,6 +254,16 @@ final class SSEEventHandler {
             // These confirm the question was answered/dismissed; clear UI if still showing
             handleQuestionDismissed(event)
 
+        case "form.created", "form.asked":
+            if let form = SSEFormCreated(event: event) {
+                handleFormCreated(form)
+            }
+
+        case "form.replied", "form.cancelled":
+            if let form = SSEFormResolved(event: event) {
+                handleFormResolved(form)
+            }
+
         default:
             Logger.debug.debug("[SSE] unhandled event: \(event.type, privacy: .public)")
             break
@@ -262,17 +295,8 @@ final class SSEEventHandler {
                 // sent from desktop). When the user sends from iOS, ChatClient.send()
                 // already calls start() before this event arrives, so the tracker
                 // will end the previous activity and create a fresh one — which is fine.
-                let userTask = delegate.messages.last(where: { $0.role == .user })?.content ?? ""
-                liveActivityTracker.start(
-                    agentName: delegate.currentSession?.title ?? "OpenCode",
-                    userTask: String(userTask.prefix(80))
-                )
-
-                if let permission = delegate.pendingPermission {
-                    liveActivityTracker.setPendingPermission(permission)
-                } else if let question = delegate.pendingQuestion {
-                    liveActivityTracker.setPendingQuestion(question)
-                }
+                // A prompt that is already pending carries over into the new activity.
+                liveActivityTracker.start(session: delegate.currentSession)
             }
         }
     }
@@ -334,11 +358,6 @@ final class SSEEventHandler {
                 if let pid = serverProviderID { existing.providerID = pid }
                 existing.finish = finish
                 existing.setParentUserMessageID(update.parentID)
-
-                // Update Live Activity cost
-                if let cost {
-                    liveActivityTracker.updateCost(String(format: "$%.3f", cost))
-                }
             } else if !delegate.messages.contains(where: { $0.id == messageID }) {
                 // New assistant message — create as pending (hidden from chat).
                 delegate.pendingAssistantMessage = ChatMessage(
@@ -356,6 +375,9 @@ final class SSEEventHandler {
                 if !delegate.isLoading {
                     delegate.beginExternalResponse()
                 }
+            }
+            if update.completesStep {
+                delegate.finishAssistantStep(messageID: messageID)
             }
         }
     }
@@ -558,10 +580,6 @@ final class SSEEventHandler {
         // bounded preview avoids copying/layouting a growing reasoning transcript.
         let preview = String(text.prefix(280))
         delegate.currentActivity?.thinkingText = preview
-        if liveActivityTracker.subject == nil, !preview.isEmpty {
-            let firstLine = preview.split(separator: "\n", maxSplits: 1).first ?? ""
-            liveActivityTracker.updateSubject(String(firstLine.prefix(60)))
-        }
     }
 
     private func handlePartRemoved(_ event: OCEvent) {
@@ -614,10 +632,6 @@ final class SSEEventHandler {
                 into: currentSession,
                 fields: incoming.presentFields
             )
-        }
-
-        if let title = incoming.title {
-            liveActivityTracker.updateSubject(title)
         }
     }
 
@@ -691,6 +705,58 @@ final class SSEEventHandler {
         }
     }
 
+    private func handleFormCreated(_ incoming: SSEFormCreated) {
+        guard let delegate else { return }
+
+        let sessionID = incoming.sessionID ?? incoming.form?.sessionID
+        guard sessionBelongsToCurrentConversation(sessionID, delegate: delegate) else {
+            return
+        }
+
+        if let requestID = incoming.rejectedFormID {
+            Logger.sseHandler.warning("Cancelling unsafe interactive form \(requestID, privacy: .public)")
+            cancelForm(sessionID: sessionID, formID: requestID)
+            return
+        }
+
+        guard let form = incoming.form,
+              let formSessionID = sessionID,
+              form.sessionID == formSessionID
+        else {
+            return
+        }
+
+        guard delegate.presentForm(form) else {
+            Logger.sseHandler.warning("Cancelling overlapping form \(form.id, privacy: .public)")
+            cancelForm(sessionID: form.sessionID, formID: form.id)
+            return
+        }
+
+        haptics.playWarning()
+    }
+
+    private func handleFormResolved(_ incoming: SSEFormResolved) {
+        guard let delegate,
+              sessionBelongsToCurrentConversation(incoming.sessionID, delegate: delegate)
+        else {
+            return
+        }
+
+        delegate.formDidResolve(id: incoming.formID)
+    }
+
+    private func cancelForm(sessionID: String?, formID: String) {
+        guard let client = connectionClient,
+              let sessionID,
+              InteractiveFormSafety.fitsIdentifier(sessionID),
+              InteractiveFormSafety.fitsIdentifier(formID)
+        else { return }
+
+        Task {
+            let _ = try? await client.cancelForm(sessionID: sessionID, formID: formID)
+        }
+    }
+
     private func handleQuestionDismissed(_ event: OCEvent) {
         guard let delegate else { return }
         guard let props = event.properties?.value as? [String: Any],
@@ -751,14 +817,11 @@ final class SSEEventHandler {
             let label = ToolLabelFormatter.label(toolName: toolName, state: state)
             delegate.currentActivity?.currentLabel = label
 
-            if let activity = delegate.currentActivity,
-               activity.recordToolCallIfNeeded(
-                   label: label,
-                   detail: ToolLabelFormatter.detail(state: state),
-                   toolCategory: category
-               ) {
-                liveActivityTracker.pushIntent(label, icon: category.iconName)
-            }
+            delegate.currentActivity?.recordToolCallIfNeeded(
+                label: label,
+                detail: ToolLabelFormatter.detail(state: state),
+                toolCategory: category
+            )
 
         case .completed:
             if let activity = delegate.currentActivity {
@@ -771,13 +834,6 @@ final class SSEEventHandler {
                 }
                 activity.currentLabel = "Thinking..."
                 haptics.playStepCompletion()
-            }
-
-            // Update Live Activity cost if available
-            let lastAssistant = delegate.pendingAssistantMessage
-                ?? delegate.messages.last(where: { $0.role == .assistant })
-            if let cost = lastAssistant?.cost {
-                liveActivityTracker.updateCost(String(format: "$%.3f", cost))
             }
 
         case .error:

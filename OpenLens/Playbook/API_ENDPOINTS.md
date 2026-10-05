@@ -3,7 +3,79 @@
 All endpoints are relative to the server base URL (e.g. `http://192.168.1.50:4096`).
 Authentication uses HTTP Basic Auth via the `Authorization` header when a password is configured.
 
-## Health
+## Runtime protocol negotiation
+
+OpenLens does not infer compatibility from a version threshold. At connection
+time it first requests `GET /api/info`:
+
+| Result | Selected protocol | Follow-up |
+|---|---|---|
+| Valid v2 server-info document | v2 | Use `/api/*` routes and `/api/event` |
+| `404` or `405` | v1 | Probe `GET /global/health`, then use legacy routes and `/event` |
+| Any other transport, auth, or payload failure | None | Surface the failure; do not silently downgrade |
+
+Both direct and Remote Access connections follow the same negotiation. The
+Remote relay forwards only its explicit allowlist, including both
+`/api/info` and `/api/session/active`.
+
+### v2 conventions
+
+- Location-scoped routes use `location[directory]`. Session lists instead use
+  `directory`, and session creation sends `{location:{directory}}` in its JSON
+  body. Session-owned routes do not take a location query.
+- The relay validates and injects the approved location into session creation.
+  Session-owned requests require a fresh canonical ownership lookup. Global
+  snapshots and bounded native event frames are filtered against the current
+  workspace registry. `/api/event` receives no directory query; the app also
+  filters native events to the selected directory. See
+  [the v2 audit](../../.scratch/api-v2-regressions/AUDIT.md).
+- Most v2 projections use `{ "data": ... }`; location-aware projections also
+  include `{ "location": ..., "data": ... }`.
+- Non-2xx v2 responses with an OpenCode error document are surfaced as a typed
+  `OpenCodeError.apiError`, preserving `_tag`, `message`, `kind`, `field`,
+  `resource`, `service`, and `ref`.
+- The v2 active snapshot is sparse: `GET /api/session/active` returns only
+  running sessions. OpenLens maps every returned entry to its `busy` UI state;
+  an omitted session is not busy.
+
+| Capability | v1 | v2 |
+|---|---:|---:|
+| Todo list | `GET /session/:id/todo` | Unavailable; OpenLens shows no todo control and never calls the v1 route |
+| Session sharing | `POST /session/:id/share` | Unavailable; OpenLens returns a clear unavailable-feature error and never calls the v1 route |
+| Synchronous prompt | `POST /session/:id/message` | Unavailable; v2 uses asynchronous prompt admission |
+
+## v2 session and chat routes
+
+| Method | Path | Response | Description |
+|---|---|---|---|
+| GET | `/api/session` | cursor page `{ data, cursor }` | List sessions; filter with `directory` |
+| GET | `/api/session/:id` | `{ data: OCSession }` | Get a session |
+| POST | `/api/session` | `{ data: OCSession }` or acknowledgement | Create in body `location.directory` |
+| PATCH | `/api/session/:id` | acknowledgement | Update a session title |
+| DELETE | `/api/session/:id` | acknowledgement | Delete a session |
+| GET | `/api/session/active` | `{ data: Record<sessionID, { type: "running" }> }` | Running-session snapshot |
+| GET | `/api/session/:id/message` | cursor page `{ data, cursor }` | List messages |
+| GET | `/api/session/:id/message/:messageID` | `{ data: OCMessageWithParts }` | Get message detail |
+| POST | `/api/session/:id/prompt` | acknowledgement | Admit a `steer` or `queue` prompt |
+| POST | `/api/session/:id/interrupt` | interruption result | Stop a running session |
+
+| GET | `/api/session/:id/diff?from=:messageID&to=:messageID` | `{ data: [FileDiff] }` | Turn of `from`; omit `from` for newest turn; `to` (a later message) extends the range through its turn, so first→newest user message is the whole session; ranges spanning a location change are rejected |
+| DELETE | `/api/session/:id/revert` | 204 | Clear staged revert |
+| POST | `/api/session/:id/revert/stage` | `{ data: Revert }` | Stage `{messageID,files:true}` |
+| POST | `/api/session/:id/revert/commit` | 204 | Commit staged revert |
+| POST | `/api/session/:id/permission/:requestID/reply` | 204 | `{decision:"once"\|"always"\|"reject"}` |
+| GET | `/api/vcs/diff?mode=working` | `{ location, data: [FileDiff] }` | Working-copy patches |
+
+V2 command attachment arrays contain objects (`{uri}`, `{name}`, `{id}` for
+files, agents, and skills respectively). Model cost tiers use
+`{type:"context",size:...}`. Assistant execution errors use `{type,message,status?}`.
+
+## Legacy v1 endpoints
+
+V1 remains supported for paired legacy servers. The following tables document
+that compatibility surface; v2 connections must not use these routes.
+
+### Health
 
 | Method | Path | Request | Response | Description |
 |--------|------|---------|----------|-------------|

@@ -95,7 +95,7 @@ struct OpenLensAppConnectionStateTests {
         #expect(!shouldAttemptAutoReconnect(
             isEnabled: true,
             isConnected: false,
-            isConnectionSheetPresented: false,
+            isConnectionStatusPresented: false,
             isQRScannerPresented: false,
             didManuallyDisconnect: false,
             savedConnection: nil
@@ -104,7 +104,7 @@ struct OpenLensAppConnectionStateTests {
         #expect(!shouldAttemptAutoReconnect(
             isEnabled: true,
             isConnected: false,
-            isConnectionSheetPresented: false,
+            isConnectionStatusPresented: false,
             isQRScannerPresented: false,
             didManuallyDisconnect: false,
             savedConnection: SavedConnection(
@@ -118,7 +118,7 @@ struct OpenLensAppConnectionStateTests {
         #expect(shouldAttemptAutoReconnect(
             isEnabled: true,
             isConnected: false,
-            isConnectionSheetPresented: false,
+            isConnectionStatusPresented: false,
             isQRScannerPresented: false,
             didManuallyDisconnect: false,
             savedConnection: SavedConnection(
@@ -138,6 +138,23 @@ struct OpenLensAppConnectionStateTests {
         ) == "HTTP error 401.")
     }
 
+    @Test func returningToActiveSetupDoesNotReconnectToThePreviousComputer() {
+        #expect(!shouldAttemptAutoReconnect(
+            isEnabled: true,
+            isConnected: false,
+            isConnectionStatusPresented: false,
+            isQRScannerPresented: false,
+            didManuallyDisconnect: false,
+            savedConnection: SavedConnection(
+                id: "previous-computer",
+                serverURL: "http://192.168.1.50:4096",
+                username: "opencode",
+                password: ""
+            ),
+            isConnectionSetupInProgress: true
+        ))
+    }
+
     @Test func autoReconnectFailureUsesGenericCopyWhenNoErrorIsAvailable() {
         #expect(connectionFailureMessage(
             localNetworkAccessRequired: false,
@@ -154,6 +171,24 @@ struct OpenLensAppConnectionStateTests {
         ) == AppText.localNetworkAccessRequiredBody)
     }
 
+    @Test(arguments: [
+        ("192.168.1.5:4096", "192.168.1.5:4096"),
+        ("http://macbook.local:4096/", "macbook.local:4096"),
+        ("  https://example.com  ", "example.com"),
+        ("http://[fe80::1]:4096", "[fe80::1]:4096"),
+    ])
+    func connectionStatusNamesTheServerByHostAndPort(serverURL: String, expected: String) {
+        #expect(connectionServerDisplayName(serverURL) == expected)
+    }
+
+    @Test func connectionStatusNeverShowsCredentialsOrTokensFromTheServerURL() {
+        #expect(connectionServerDisplayName("https://user:secret@example.com/pair?token=abc") == "example.com")
+    }
+
+    @Test func connectionStatusShowsNoServerForABlankURL() {
+        #expect(connectionServerDisplayName("   ") == nil)
+    }
+
     @Test @MainActor func localNetworkProbeStopsConnectionBeforeHTTPWhenAccessIsRequired() async {
         let probe = LocalNetworkAccessProbeStub(result: .accessRequired)
         let connection = ConnectionManager(localNetworkAccessProbe: probe)
@@ -168,6 +203,17 @@ struct OpenLensAppConnectionStateTests {
         #expect(connection.state == .error(AppText.localNetworkAccessRequiredBody))
         #expect(connection.client == nil)
         #expect(probe.urls == [URL(string: "http://192.168.1.50:4096")!])
+    }
+
+    @Test @MainActor func openingTheAppCanReconnectOnlyBeforeAnyConnectionAttempt() async {
+        let connection = ConnectionManager(localNetworkAccessProbe: LocalNetworkAccessProbeStub(result: .accessRequired))
+
+        #expect(!connection.hasAttemptedConnection)
+
+        await connection.connect(url: "192.168.1.50:4096", username: "opencode", password: "")
+        connection.disconnect()
+
+        #expect(connection.hasAttemptedConnection)
     }
 
     @Test func bonjourPolicyDeniedCodeRequiresLocalNetworkAccess() {

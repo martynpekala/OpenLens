@@ -247,6 +247,8 @@ struct ReviewChangeSet: Identifiable, Hashable, Sendable {
 struct SessionReviewSnapshot: Sendable {
     let sessionID: String
     let changeSets: [ReviewChangeSet]
+    /// Everything the session changed, from its first update to its latest.
+    /// Not the git working tree despite the name.
     let workingTree: [ReviewFileChange]
 
     var latestChangeSet: ReviewChangeSet? {

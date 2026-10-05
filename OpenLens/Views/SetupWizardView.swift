@@ -240,17 +240,17 @@ struct SetupWizardView: View {
             HStack(spacing: 14) {
                 Image(systemName: icon)
                     .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(isPrimary ? Color.appOnAccent : Color.appPrimary)
+                    .foregroundStyle(isPrimary ? Color.appOnNeutralAction : Color.appPrimary)
                     .frame(width: 24)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .foregroundStyle(isPrimary ? Color.appOnAccent : Color.appPrimary)
+                        .foregroundStyle(isPrimary ? Color.appOnNeutralAction : Color.appPrimary)
                     if let subtitle {
                         Text(subtitle)
                             .font(.system(size: 13, design: .rounded))
-                            .foregroundStyle(isPrimary ? Color.appOnAccent.opacity(0.7) : Color.appSecondary)
+                            .foregroundStyle(isPrimary ? Color.appOnNeutralAction.opacity(0.7) : Color.appSecondary)
                     }
                 }
 
@@ -258,13 +258,13 @@ struct SetupWizardView: View {
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(isPrimary ? Color.appOnAccent.opacity(0.5) : Color.appSecondary.opacity(0.4))
+                    .foregroundStyle(isPrimary ? Color.appOnNeutralAction.opacity(0.5) : Color.appSecondary.opacity(0.4))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(isPrimary ? Color.appAccent : Color.appSurface)
+                    .fill(isPrimary ? Color.appNeutralAction : Color.appSurface)
             )
             .surfaceShadow()
         }

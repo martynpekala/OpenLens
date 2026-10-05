@@ -42,10 +42,18 @@ struct ConnectedRootView: View {
                     } label: {
                         tabLabel(for: .workspace, selectedTab: router.selectedTab)
                     }
-                    Tab(value: AppTab.settings, role: .search) {
-                        tabNavigationView(for: .settings)
-                    } label: {
-                        tabLabel(for: .settings, selectedTab: router.selectedTab)
+                    if #available(anyAppleOS 27.0, *) {
+                        Tab(value: AppTab.settings, role: .prominent) {
+                            tabNavigationView(for: .settings)
+                        } label: {
+                            tabLabel(for: .settings, selectedTab: router.selectedTab)
+                        }
+                    } else {
+                        Tab(value: AppTab.settings, role: .search) {
+                            tabNavigationView(for: .settings)
+                        } label: {
+                            tabLabel(for: .settings, selectedTab: router.selectedTab)
+                        }
                     }
                 }
             }
@@ -337,7 +345,7 @@ private struct SessionChatDestinationView: View {
     var body: some View {
         Group {
             if isReady {
-                ChatView(chatClient: chatClient)
+                ChatView(chatClient: chatClient, initialSession: session)
                     .id(session.id)
             } else {
                 ProgressView()
@@ -351,6 +359,8 @@ private struct SessionChatDestinationView: View {
             isReady = false
             if chatClient.currentSession?.id != session.id {
                 await chatClient.loadSession(session)
+            } else {
+                await chatClient.restoreProjectContext(for: session)
             }
             guard !Task.isCancelled, chatClient.currentSession?.id == session.id else { return }
             isReady = true

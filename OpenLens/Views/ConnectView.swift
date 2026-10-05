@@ -4,15 +4,17 @@ import UIKit
 func shouldAttemptAutoReconnect(
     isEnabled: Bool,
     isConnected: Bool,
-    isConnectionSheetPresented: Bool,
+    isConnectionStatusPresented: Bool,
     isQRScannerPresented: Bool,
     didManuallyDisconnect: Bool,
-    savedConnection: SavedConnection?
+    savedConnection: SavedConnection?,
+    isConnectionSetupInProgress: Bool = false
 ) -> Bool {
     guard isEnabled,
           !isConnected,
-          !isConnectionSheetPresented,
+          !isConnectionStatusPresented,
           !isQRScannerPresented,
+          !isConnectionSetupInProgress,
           !didManuallyDisconnect,
           savedConnection?.isConfigured == true
     else {
@@ -43,13 +45,31 @@ func connectionFailureMessage(
         : AppText.manualConnectErrorBody
 }
 
+/// Host and port of a server address for the connection status, e.g. `192.168.1.5:4096`. Leaves
+/// out credentials, paths and queries, which can carry pairing secrets.
+func connectionServerDisplayName(_ serverURL: String) -> String? {
+    let trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          let components = URLComponents(string: trimmed.contains("://") ? trimmed : "http://\(trimmed)"),
+          let host = components.host?
+              .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+              .nilIfBlank
+    else {
+        return nil
+    }
+
+    let displayHost = host.contains(":") ? "[\(host)]" : host
+    guard let port = components.port else { return displayHost }
+    return "\(displayHost):\(port)"
+}
+
 private enum ManualConnectionField: Hashable {
     case serverURL
     case username
     case password
 }
 
-/// Initial connection screen with manual entry, QR scanning, mDNS discovery, and last-connection prefill.
+/// Guided computer pairing with a manual connection form as a fallback.
 struct ConnectView: View {
     /// Callback to start demo mode — provided by the parent (OpenLensApp).
     var onStartDemo: (() -> Void)?
@@ -61,127 +81,72 @@ struct ConnectView: View {
     /// Deep link received from `openlens://connect` URL or QR scan.
     @Binding var pendingDeepLink: DeepLinkConnection?
     @Binding var pendingSessionNavigationID: String?
+    /// True while a fresh connection shows its connected moment; the app waits for it to clear
+    /// before swapping in the main interface.
+    @Binding var isFinishingConnection: Bool
 
     @State private var discovery = BonjourDiscovery()
     @State private var manualURL: String = ""
     @State private var username: String = "opencode"
     @State private var password: String = ""
 
-    @State private var showOnboarding: Bool = false
-    @State private var showConnectionSheet: Bool = false
-    @State private var connectionFailed: Bool = false
+    /// The attempt shown in place of the setup step; nil while the user is setting up.
+    @State private var connectionStatus: ConnectionSetupStatus?
     @State private var connectionError: String?
     @State private var connectionTask: Task<Void, Never>?
     @State private var isAutoReconnect: Bool = false
     @State private var currentConnectionMethod: ConnectionMethod = .manual
     @State private var pendingRemoteOffer: RemotePairingOffer?
     @State private var pendingRemoteCredential: RemoteDeviceCredential?
+    @State private var pendingOpenCodePairingLink: OpenCodePairingLink?
 
-    @State private var showQRScanner: Bool = false
+    @State private var setupStep: ConnectionSetupStep = .welcome
     @FocusState private var focusedManualField: ManualConnectionField?
 
     @Environment(\.connection) private var connection
     @Environment(\.savedConnections) private var savedConnections
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
-    @AppStorage("autoReconnect") private var autoReconnect: Bool = true
+    @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnect: Bool = true
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 22) {
-                    manualConnectionSection
-
-                    connectionChoiceSeparator
-                    qrScanSection
-
-                    discoveredServersSection
-
-                    if showsPreviewModesSection {
-                        previewModesSection
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 24)
-            }
-            .background(Color.appBackground)
-            .background {
-                KeyboardDismissTapInstaller {
-                    focusedManualField = nil
-                }
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        startNearbyDiscovery()
-                    } label: {
-                        Image(systemName: "antenna.radiowaves.left.and.right")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(discovery.isSearching ? Color.appAccent : Color.appPrimary)
-                            .symbolEffect(.breathe, isActive: discovery.isSearching)
-                    }
-                    .accessibilityLabel(discovery.isSearching ? AppText.searchingServers : AppText.scanPrompt)
-                    .accessibilityHint("Searches for nearby OpenCode servers on your local network")
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showOnboarding = true
-                    } label: {
-                        Text(AppText.help)
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                    }
-                }
+            ConnectionWelcomeView(
+                step: $setupStep,
+                status: connectionStatus,
+                isCameraActive: connectionStatus == nil,
+                canConnectManually: !manualURL.isEmpty,
+                onScanned: handleScannedCode,
+                onConnectManually: connectManual,
+                onRetry: retryConnection,
+                onCancel: dismissConnectionStatus,
+                onOpenSettings: openAppSettings
+            ) {
+                manualConnectionFields
+            } manualAccessories: {
+                manualConnectionAccessories
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active, shouldAttemptAutoReconnect(
-                isEnabled: autoReconnect,
-                isConnected: connection.isConnected,
-                isConnectionSheetPresented: showConnectionSheet,
-                isQRScannerPresented: showQRScanner,
-                didManuallyDisconnect: connection.didManuallyDisconnect,
-                savedConnection: savedConnections.mostRecent
-            ) {
-                startConnect(auto: true)
+            if newPhase == .active {
+                autoReconnectIfNeeded()
             }
         }
-        .sheet(isPresented: $showConnectionSheet, onDismiss: cancelConnection) {
-            connectionSheetContent
-                .presentationDetents(connectionFailed ? [.fraction(0.5), .medium] : [.fraction(0.35)])
-                .presentationDragIndicator(.hidden)
-                .interactiveDismissDisabled(false)
-                .presentationBackground(Color.appBackground)
-        }
-        .sheet(isPresented: $showOnboarding) {
-            OnboardingView(onDone: { showOnboarding = false })
-                .presentationBackground(Color.appBackground)
-        }
-        .fullScreenCover(isPresented: $showQRScanner) {
-            QRScannerView(
-                onScanned: { code in
-                    showQRScanner = false
-                    currentConnectionMethod = .qr
-                    switch code {
-                    case .direct(let deepLink):
-                        applyDeepLink(deepLink)
-                    case .remote(let offer):
-                        startRemotePairing(offer)
-                    }
-                },
-                onDismiss: { showQRScanner = false }
-            )
+        .onChange(of: connection.state) { _, newState in
+            connectionStateChanged(to: newState)
         }
         .onAppear {
             guard !consumePendingDeepLinkIfNeeded() else { return }
             prefillFromMostRecentConnectionIfNeeded()
+            // Opening the app lands here already active, so the scene phase change never fires.
+            if !connection.hasAttemptedConnection, scenePhase == .active {
+                autoReconnectIfNeeded()
+            }
         }
         .onDisappear {
             discovery.stopBrowsing()
+            isFinishingConnection = false
         }
         .onChange(of: pendingDeepLink) { _, deepLink in
             guard let deepLink else { return }
@@ -191,66 +156,16 @@ struct ConnectView: View {
         }
     }
 
-    // MARK: - QR Scan Section
-
-    private var qrScanSection: some View {
-        Button {
-            showQRScanner = true
-        } label: {
-            VStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(Color.appAccent)
-                        .frame(width: 56, height: 56)
-                    Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(Color.appOnAccent)
-                }
-
-                VStack(spacing: 3) {
-                    Text(AppText.qrScan)
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
-                    Text(AppText.qrScanSubtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 22)
-            .background {
-                connectionSectionBackground(cornerRadius: 20)
-            }
-            .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
+    private func handleScannedCode(_ code: ScannedOpenLensCode) {
+        currentConnectionMethod = .qr
+        switch code {
+        case .direct(let deepLink):
+            applyDeepLink(deepLink)
+        case .remote(let offer):
+            startRemotePairing(offer)
+        case .openCodePairing(let link):
+            startOpenCodePairing(link)
         }
-        .buttonStyle(.plain)
-        .frame(maxWidth: 300)
-        .frame(maxWidth: .infinity)
-    }
-
-    // MARK: - Connection Choice Separator
-
-    private var connectionChoiceSeparator: some View {
-        HStack(spacing: 12) {
-            Color.appSeparator
-                .frame(height: 0.5)
-            Text("OR")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
-                .padding(.horizontal, 2)
-            Color.appSeparator
-                .frame(height: 0.5)
-        }
-        .padding(.horizontal, 8)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Or")
     }
 
     // MARK: - Discovered Servers Section
@@ -338,10 +253,10 @@ struct ConnectView: View {
                 } label: {
                     Text(AppText.openSettings)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appOnAccent)
+                        .foregroundStyle(Color.appOnNeutralAction)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
-                        .background(Capsule().fill(Color.appAccent))
+                        .background(Capsule().fill(Color.appNeutralAction))
                 }
 
                 Button {
@@ -370,141 +285,77 @@ struct ConnectView: View {
         .accessibilityElement(children: .contain)
     }
 
-    // MARK: - Manual Connection Section
+    // MARK: - Manual Connection Form
 
-    private var manualConnectionSection: some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 10) {
-                VStack(spacing: 6) {
-                    manualGlassField(systemImage: "link") {
-                        TextField(
-                            "",
-                            text: $manualURL,
-                            prompt: Text("192.168.1.50:4096")
-                                .foregroundStyle(Color.appSecondary.opacity(0.55))
-                        )
-                            .font(.system(size: 15, design: .monospaced))
-                            .foregroundStyle(Color.appPrimary)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .textContentType(.URL)
-                            .focused($focusedManualField, equals: .serverURL)
-                            .frame(maxWidth: .infinity)
-                    }
+    private var manualConnectionFields: some View {
+        VStack(spacing: 0) {
+            manualField(systemImage: "link") {
+                TextField(
+                    AppText.server,
+                    text: $manualURL,
+                    prompt: Text("192.168.1.50:4096")
+                        .foregroundStyle(Color.appSecondary.opacity(0.55))
+                )
+                    .font(.system(size: 15, design: .monospaced))
+                    .foregroundStyle(Color.appPrimary)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .textContentType(.URL)
+                    .focused($focusedManualField, equals: .serverURL)
+            }
 
-                    savedServerSuggestions
-                }
-                .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingServerAddressSuggestions)
-                .animation(.spring(response: 0.22, dampingFraction: 0.9), value: serverAddressSuggestionIDs)
+            savedServerSuggestions
 
-                manualGlassField(systemImage: "person.fill") {
-                    TextField("opencode", text: $username)
-                        .font(.system(size: 15))
-                        .foregroundStyle(Color.appPrimary)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .focused($focusedManualField, equals: .username)
-                }
+            manualFieldDivider
 
-                manualGlassField(systemImage: "lock.fill") {
-                    SecureField(
-                        "",
-                        text: $password,
-                        prompt: Text(AppText.optional)
-                            .foregroundStyle(Color.appSecondary.opacity(0.55))
-                    )
-                        .font(.system(size: 15))
-                        .foregroundStyle(Color.appPrimary)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .focused($focusedManualField, equals: .password)
-                }
+            manualField(systemImage: "person.fill") {
+                TextField(
+                    AppText.user,
+                    text: $username,
+                    prompt: Text("opencode")
+                        .foregroundStyle(Color.appSecondary.opacity(0.55))
+                )
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.appPrimary)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($focusedManualField, equals: .username)
+            }
 
-                HStack(spacing: 16) {
-                    Text(AppText.autoReconnect)
-                        .font(.system(size: 19, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
+            manualFieldDivider
 
-                    Spacer()
-
-                    Toggle(AppText.autoReconnect, isOn: $autoReconnect)
-                        .labelsHidden()
-                        .tint(Color.appAccent)
-                }
-                .padding(.top, 4)
-
-                Button {
-                    connectManual()
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text(AppText.connect)
-                    }
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .foregroundStyle(manualURL.isEmpty ? Color.appSecondary.opacity(0.52) : Color.appOnAccent)
-                    .background(
-                        Capsule()
-                            .fill(manualURL.isEmpty ? Color.appTertiary.opacity(0.48) : Color.appAccent)
-                    )
-                    .overlay {
-                        Capsule()
-                            .stroke(Color.appSeparator.opacity(manualURL.isEmpty ? 0.70 : 0.22), lineWidth: 1.1)
-                    }
-                }
-                .disabled(manualURL.isEmpty)
+            manualField(systemImage: "lock.fill") {
+                SecureField(
+                    AppText.password,
+                    text: $password,
+                    prompt: Text(AppText.optional)
+                        .foregroundStyle(Color.appSecondary.opacity(0.55))
+                )
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.appPrimary)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($focusedManualField, equals: .password)
             }
         }
-        .padding(20)
+        .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingServerAddressSuggestions)
+        .animation(.spring(response: 0.22, dampingFraction: 0.9), value: serverAddressSuggestionIDs)
         .background {
-            connectionSectionBackground(cornerRadius: 36)
+            KeyboardDismissTapInstaller {
+                focusedManualField = nil
+            }
         }
-        .glassEffect(.clear.tint(Color.appSurface.opacity(0.08)), in: RoundedRectangle(cornerRadius: 36, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
-                .stroke(Color.appSeparator.opacity(0.18), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.018), radius: 10, x: 0, y: 4)
     }
 
-    private func connectionSectionBackground(cornerRadius: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [
-                        Color.appSurface.opacity(0.20),
-                        Color.appTertiary.opacity(0.08),
-                        Color.appSurface.opacity(0.16)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .overlay(alignment: .topTrailing) {
-                LinearGradient(
-                    colors: [
-                        Color.cyan.opacity(0.010),
-                        Color.blue.opacity(0.006),
-                        Color.clear
-                    ],
-                    startPoint: .topTrailing,
-                    endPoint: .bottomLeading
-                )
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    private var manualConnectionAccessories: some View {
+        VStack(spacing: 20) {
+            discoveredServersSection
+
+            if showsPreviewModesSection {
+                previewModesSection
+                    .padding(.top, 8)
             }
-            .overlay(alignment: .bottomLeading) {
-                LinearGradient(
-                    colors: [
-                        Color.purple.opacity(0.007),
-                        Color.clear
-                    ],
-                    startPoint: .bottomLeading,
-                    endPoint: .center
-                )
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            }
+        }
     }
 
     @ViewBuilder
@@ -527,7 +378,8 @@ struct ConnectView: View {
                     }
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 4)
             .transition(
                 .asymmetric(
                     insertion: .opacity
@@ -590,28 +442,27 @@ struct ConnectView: View {
         .contentShape(Rectangle())
     }
 
-    private func manualGlassField<Content: View>(
+    private func manualField<Content: View>(
         systemImage: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Color.appSecondary)
                 .frame(width: 22)
+                .accessibilityHidden(true)
 
             content()
         }
-        .padding(.horizontal, 14)
-        .frame(height: 50)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.appSurface.opacity(0.24))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.appSeparator.opacity(0.38), lineWidth: 1)
-        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 54)
+    }
+
+    private var manualFieldDivider: some View {
+        Divider()
+            .overlay(Color.appSeparator.opacity(0.5))
+            .padding(.leading, 50)
     }
 
     // MARK: - Preview Buttons
@@ -727,151 +578,48 @@ struct ConnectView: View {
         }
     }
 
-    // MARK: - Connection Sheet
+    // MARK: - Connection Status
 
-    @ViewBuilder
-    private var connectionSheetContent: some View {
-        if connectionFailed {
-            errorStateContent
+    private func showConnectionStatus(_ phase: ConnectionSetupStatus.Phase, serverURL: String?) {
+        connectionStatus = ConnectionSetupStatus(
+            phase: phase,
+            serverName: serverURL.flatMap(connectionServerDisplayName)
+        )
+    }
+
+    /// Settles a finished connect call. A fresh connection holds its connected moment briefly
+    /// before the app swaps in the main interface.
+    private func finishConnectionAttempt() async {
+        guard connection.isConnected else {
+            if case .error(let message) = connection.state {
+                connectionError = message
+            }
+            showConnectionFailure()
+            return
+        }
+
+        connectionStatus?.phase = .connected
+        guard !isAutoReconnect else { return }
+        isFinishingConnection = true
+        try? await Task.sleep(for: .seconds(1.1))
+        isFinishingConnection = false
+    }
+
+    private func showConnectionFailure(whilePairing: Bool = false) {
+        let needsLocalNetworkAccess = connection.localNetworkAccessRequired
+        let title = if needsLocalNetworkAccess {
+            AppText.localNetworkAccessRequiredTitle
+        } else if whilePairing {
+            AppText.connectionPairingErrorTitle
+        } else if isAutoReconnect {
+            AppText.autoReconnectErrorTitle
         } else {
-            connectingStateContent
+            AppText.manualConnectErrorTitle
         }
-    }
-
-    // MARK: - Connecting State
-
-    private var connectingStateContent: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            ZStack {
-                Circle()
-                    .stroke(Color.appSeparator, lineWidth: 1.5)
-                    .frame(width: 64, height: 64)
-                ProgressView()
-                    .tint(Color.appAccent)
-                    .scaleEffect(1.4)
-            }
-
-            VStack(spacing: 8) {
-                Text(isAutoReconnect
-                    ? AppText.reconnecting
-                    : AppText.connecting)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color.appPrimary)
-
-                Text(isAutoReconnect
-                    ? AppText.reconnectingSubtitle
-                    : AppText.connectingSubtitle)
-                    .font(.body)
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            Spacer()
-
-            Button {
-                showConnectionSheet = false
-            } label: {
-                Text(AppText.cancel)
-                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(Color.appPrimary)
-                    .background(Color.appTertiary)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .padding(.horizontal, 16)
-        }
-    }
-
-    // MARK: - Error State
-
-    private var errorStateContent: some View {
-        VStack(spacing: 24) {
-            Spacer()
-
-            ZStack {
-                Circle()
-                    .stroke(Color.appSeparator, lineWidth: 1.5)
-                    .frame(width: 64, height: 64)
-                Image(systemName: "wifi.exclamationmark")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Color.appSecondary)
-            }
-
-            VStack(spacing: 8) {
-                Text(failureTitle)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color.appPrimary)
-
-                Text(failureMessage)
-                    .lineLimit(3)
-                    .font(.footnote)
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, 16)
-
-            Spacer()
-
-            VStack(spacing: 10) {
-                if connection.localNetworkAccessRequired {
-                    Button {
-                        openAppSettings()
-                    } label: {
-                        Text(AppText.openSettings)
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .foregroundStyle(Color.appOnAccent)
-                            .background(Color.appAccent)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                }
-
-                Button {
-                    retryConnection()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text(AppText.tryAgain)
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(connection.localNetworkAccessRequired ? Color.appPrimary : Color.appOnAccent)
-                    .background(connection.localNetworkAccessRequired ? Color.appTertiary : Color.appAccent)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-
-                Button {
-                    showConnectionSheet = false
-                } label: {
-                    Text(AppText.cancel)
-                        .font(.system(size: 16, weight: .medium, design: .rounded))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .foregroundStyle(Color.appPrimary)
-                        .background(Color.appTertiary)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-    }
-
-    // MARK: - Failure Copy
-
-    private var failureTitle: String {
-        if connection.localNetworkAccessRequired {
-            return AppText.localNetworkAccessRequiredTitle
-        }
-        return isAutoReconnect
-            ? AppText.autoReconnectErrorTitle
-            : AppText.manualConnectErrorTitle
+        connectionStatus = ConnectionSetupStatus(
+            phase: .failed(title: title, message: failureMessage, needsLocalNetworkAccess: needsLocalNetworkAccess),
+            serverName: connectionStatus?.serverName
+        )
     }
 
     private var failureMessage: String {
@@ -882,9 +630,31 @@ struct ConnectView: View {
         )
     }
 
+    /// Turns the connected moment into a failure if the link drops before the app takes over.
+    private func connectionStateChanged(to state: ConnectionManager.State) {
+        guard connectionStatus?.phase == .connected else { return }
+        switch state {
+        case .connected, .reconnecting:
+            return
+        case .error(let message):
+            connectionError = message
+        case .disconnected, .connecting:
+            connectionError = nil
+        }
+        isFinishingConnection = false
+        showConnectionFailure()
+    }
+
     // MARK: - Connection Actions
 
     private func startConnect(auto: Bool) {
+        if !auto,
+           let url = URL(string: manualURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+           let link = OpenCodePairingLink(url: url) {
+            startOpenCodePairing(link)
+            return
+        }
+        pendingOpenCodePairingLink = nil
         pendingRemoteOffer = nil
         pendingRemoteCredential = nil
         if auto {
@@ -896,9 +666,9 @@ struct ConnectView: View {
 
         connectionTask?.cancel()
         isAutoReconnect = auto
-        connectionFailed = false
         connectionError = nil
-        showConnectionSheet = true
+        focusedManualField = nil
+        showConnectionStatus(auto ? .reconnecting : .connecting, serverURL: manualURL)
 
         let method: ConnectionMethod = auto ? .autoReconnect : currentConnectionMethod
 
@@ -910,26 +680,66 @@ struct ConnectView: View {
             }
 
             guard !Task.isCancelled else { return }
+            await finishConnectionAttempt()
+        }
+    }
 
-            if connection.isConnected {
-                showConnectionSheet = false
-            } else {
-                if case .error(let msg) = connection.state {
-                    connectionError = msg
-                }
-                connectionFailed = true
+    private func startOpenCodePairing(_ link: OpenCodePairingLink) {
+        connectionTask?.cancel()
+        pendingRemoteOffer = nil
+        pendingRemoteCredential = nil
+        pendingOpenCodePairingLink = link
+        pendingSessionNavigationID = nil
+        manualURL = link.serverURL.absoluteString
+        username = "opencode"
+        password = ""
+        isAutoReconnect = false
+        connectionError = nil
+        focusedManualField = nil
+        // Links that already carry credentials skip the pairing exchange.
+        showConnectionStatus(link.credentials == nil ? .pairing : .connecting, serverURL: manualURL)
+
+        connectionTask = Task {
+            do {
+                let credential = try await OpenCodePairingClient().pair(using: link)
+                // Persist before connecting: the link is already consumed, even if
+                // the subsequent connection fails or this task is cancelled.
+                savedConnections.saveConnection(
+                    serverURL: credential.serverURL,
+                    username: credential.username,
+                    password: credential.password
+                )
+                guard !Task.isCancelled else { return }
+                pendingOpenCodePairingLink = nil
+                manualURL = credential.serverURL
+                username = credential.username
+                password = credential.password
+                connectionStatus?.phase = .connecting
+                await connection.connect(
+                    url: credential.serverURL,
+                    username: credential.username,
+                    password: credential.password,
+                    method: currentConnectionMethod
+                )
+                guard !Task.isCancelled else { return }
+                await finishConnectionAttempt()
+            } catch {
+                guard !Task.isCancelled else { return }
+                connectionError = error.localizedDescription
+                showConnectionFailure(whilePairing: true)
             }
         }
     }
 
     private func startRemotePairing(_ offer: RemotePairingOffer) {
+        pendingOpenCodePairingLink = nil
         pendingRemoteOffer = offer
         pendingRemoteCredential = nil
         connectionTask?.cancel()
         isAutoReconnect = false
-        connectionFailed = false
         connectionError = nil
-        showConnectionSheet = true
+        focusedManualField = nil
+        showConnectionStatus(.pairing, serverURL: nil)
 
         connectionTask = Task {
             do {
@@ -941,14 +751,17 @@ struct ConnectView: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 connectionError = error.localizedDescription
-                connectionFailed = true
+                showConnectionFailure(whilePairing: true)
             }
         }
     }
 
     private func retryConnection() {
-        connectionFailed = false
         connectionError = nil
+        if let pendingOpenCodePairingLink {
+            startOpenCodePairing(pendingOpenCodePairingLink)
+            return
+        }
         if let pendingRemoteCredential {
             connectionTask?.cancel()
             connectionTask = Task {
@@ -978,12 +791,20 @@ struct ConnectView: View {
         connectionTask = nil
         pendingRemoteOffer = nil
         pendingRemoteCredential = nil
+        pendingOpenCodePairingLink = nil
         if case .connecting = connection.state {
             connection.disconnect()
         }
     }
 
+    /// Stops the attempt and brings back the setup step it started from.
+    private func dismissConnectionStatus() {
+        cancelConnection()
+        connectionStatus = nil
+    }
+
     private func completeRemoteConnection(_ credential: RemoteDeviceCredential) async {
+        connectionStatus?.phase = .connecting
         do {
             guard RemoteConnectionSecretStore.save(credential) else {
                 throw RemoteProtocolError.remoteError("keychain_write_failed")
@@ -994,17 +815,12 @@ struct ConnectView: View {
 
             if connection.isConnected {
                 pendingRemoteCredential = nil
-                showConnectionSheet = false
-            } else {
-                if case .error(let message) = connection.state {
-                    connectionError = message
-                }
-                connectionFailed = true
             }
+            await finishConnectionAttempt()
         } catch {
             guard !Task.isCancelled else { return }
             connectionError = error.localizedDescription
-            connectionFailed = true
+            showConnectionFailure()
         }
     }
 
@@ -1029,6 +845,19 @@ struct ConnectView: View {
             password = saved.password
             focusedManualField = nil
         }
+    }
+
+    private func autoReconnectIfNeeded() {
+        guard shouldAttemptAutoReconnect(
+            isEnabled: autoReconnect,
+            isConnected: connection.isConnected,
+            isConnectionStatusPresented: connectionStatus != nil,
+            isQRScannerPresented: setupStep == .scanner,
+            didManuallyDisconnect: connection.didManuallyDisconnect,
+            savedConnection: savedConnections.mostRecent,
+            isConnectionSetupInProgress: setupStep == .manual
+        ) else { return }
+        startConnect(auto: true)
     }
 
     private func connectManual() {
@@ -1181,7 +1010,8 @@ private struct ConnectViewPreviewHost: View {
         ConnectView(
             onStartDemo: {},
             pendingDeepLink: $pendingDeepLink,
-            pendingSessionNavigationID: $pendingSessionNavigationID
+            pendingSessionNavigationID: $pendingSessionNavigationID,
+            isFinishingConnection: .constant(false)
         )
         .environment(\.connection, connection)
         .environment(\.savedConnections, savedConnections)

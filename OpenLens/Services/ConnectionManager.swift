@@ -15,15 +15,21 @@ final class ConnectionManager: ConnectionProviding {
 
     private(set) var state: State = .disconnected
     private(set) var serverVersion: String?
+    private(set) var serverCapabilities: OpenCodeServerCapabilities?
+    private(set) var currentProject: OCProject?
     private(set) var projectName: String?
     private(set) var branch: String?
     private(set) var selectedProjectDirectory: String?
     private(set) var connectionMethod: ConnectionMethod?
+    private(set) var serverURL: URL?
     private(set) var localNetworkAccessRequired: Bool = false
 
     /// Set to `true` when the user explicitly disconnects via Settings.
     /// Prevents auto-reconnect from firing until the user manually connects again.
     private(set) var didManuallyDisconnect: Bool = false
+
+    /// Set on the first connection attempt of this app run, so opening the app reconnects only once.
+    private(set) var hasAttemptedConnection: Bool = false
 
     /// Reference to the shared saved connections store, set from the composition root.
     @ObservationIgnored var savedConnectionsStore: SavedConnectionsStore?
@@ -36,7 +42,7 @@ final class ConnectionManager: ConnectionProviding {
     /// Resumed once when SSE reports `.connected` or fails to connect.
     private var sseConnectionContinuation: CheckedContinuation<Void, Never>?
 
-    /// Timestamp of the last received `server.heartbeat` or `server.connected` event.
+    /// Timestamp of the last liveness signal: stream bytes or a heartbeat event.
     /// Used by the heartbeat watchdog to detect silently dead connections.
     private var lastHeartbeat: Date = .distantPast
     private var heartbeatWatchdog: Timer?
@@ -53,6 +59,23 @@ final class ConnectionManager: ConnectionProviding {
 
     init(localNetworkAccessProbe: any LocalNetworkAccessProbing) {
         self.localNetworkAccessProbe = localNetworkAccessProbe
+    }
+
+#if DEBUG
+    /// Installs a negotiated client without opening a live network connection.
+    init(testClient: OpenCodeClient, capabilities: OpenCodeServerCapabilities) {
+        self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+        self.client = testClient
+        self.serverCapabilities = capabilities
+        self.state = .connected
+    }
+#endif
+
+    /// Host (with a non-default port) of the connected server, for compact display.
+    var serverHostDisplay: String? {
+        guard let host = serverURL?.host(percentEncoded: false)?.nilIfBlank else { return nil }
+        if let port = serverURL?.port { return "\(host):\(port)" }
+        return host
     }
 
     var isConnected: Bool {
@@ -79,8 +102,11 @@ final class ConnectionManager: ConnectionProviding {
         method: ConnectionMethod = .manual
     ) async {
         didManuallyDisconnect = false
+        hasAttemptedConnection = true
         connectionMethod = method
         localNetworkAccessRequired = false
+        serverCapabilities = nil
+        currentProject = nil
 
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -125,21 +151,23 @@ final class ConnectionManager: ConnectionProviding {
             authHeader: authHeader,
             contextDirectory: restoredProjectDirectory
         )
-        let sse = SSEClient(baseURL: baseURL, authHeader: authHeader)
-
         do {
-            let health = try await apiClient.checkHealth()
-            guard health.healthy else {
+            let capabilities = try await apiClient.probeCapabilities()
+            guard capabilities.isHealthy else {
                 state = .error("Server is not healthy.")
                 return
             }
-            serverVersion = health.version
+            serverCapabilities = capabilities
+            serverVersion = capabilities.serverVersion
 
             self.client = apiClient
-            self.sseClient = sse
+            self.serverURL = baseURL
             self.selectedProjectDirectory = restoredProjectDirectory?.nilIfBlank
 
-            SharedConnectionStore.save(baseURL: baseURL.absoluteString, authHeader: authHeader)
+            SharedConnectionStore.save(
+                baseURL: baseURL.absoluteString, authHeader: authHeader,
+                protocolVersion: capabilities.protocolVersion.rawValue
+            )
 
             await refreshProjectMetadata()
 
@@ -155,6 +183,13 @@ final class ConnectionManager: ConnectionProviding {
                 )
             }
 
+            let sse = SSEClient(
+                baseURL: baseURL,
+                authHeader: authHeader,
+                protocolVersion: capabilities.protocolVersion,
+                contextDirectory: selectedProjectDirectory
+            )
+            self.sseClient = sse
             configureSSECallbacks(sse, isRemote: false)
             await connectSSEAndWait(sse)
         } catch {
@@ -187,36 +222,36 @@ final class ConnectionManager: ConnectionProviding {
         method: ConnectionMethod = .qr
     ) async {
         didManuallyDisconnect = false
+        hasAttemptedConnection = true
         connectionMethod = method
         localNetworkAccessRequired = false
+        serverCapabilities = nil
+        currentProject = nil
         state = .connecting
 
         let restoredProjectDirectory = savedConnectionsStore?.connections
             .first(where: { $0.id == credential.connectionID })?
             .selectedProjectDirectory?
             .nilIfBlank
+        Logger.connection.debug("Connecting to remote OpenCode with restored project directory \(restoredProjectDirectory ?? "nil", privacy: .public)")
         let transport = RemoteOpenCodeTransport(credential: credential)
         let apiClient = OpenCodeClient(
             baseURL: credential.endpoint,
             contextDirectory: restoredProjectDirectory,
             transport: transport
         )
-        let sse = SSEClient(
-            baseURL: credential.endpoint,
-            transport: transport
-        )
-
         do {
-            let health = try await apiClient.checkHealth()
-            guard health.healthy else {
+            let capabilities = try await apiClient.probeCapabilities()
+            guard capabilities.isHealthy else {
                 transport.disconnect()
                 state = .error("Remote OpenCode server is not healthy.")
                 return
             }
 
-            serverVersion = health.version
+            serverCapabilities = capabilities
+            serverVersion = capabilities.serverVersion
             client = apiClient
-            sseClient = sse
+            serverURL = credential.endpoint
             remoteTransport = transport
             selectedProjectDirectory = restoredProjectDirectory
             SharedConnectionStore.clear()
@@ -230,6 +265,13 @@ final class ConnectionManager: ConnectionProviding {
                 )
             }
 
+            let sse = SSEClient(
+                baseURL: credential.endpoint,
+                protocolVersion: capabilities.protocolVersion,
+                contextDirectory: selectedProjectDirectory,
+                transport: transport
+            )
+            sseClient = sse
             configureSSECallbacks(sse, isRemote: true)
             await connectSSEAndWait(sse)
         } catch {
@@ -250,8 +292,11 @@ final class ConnectionManager: ConnectionProviding {
         remoteTransport?.disconnect()
         remoteTransport = nil
         client = nil
+        serverURL = nil
         state = .disconnected
         serverVersion = nil
+        serverCapabilities = nil
+        currentProject = nil
         projectName = nil
         branch = nil
         selectedProjectDirectory = nil
@@ -281,6 +326,12 @@ final class ConnectionManager: ConnectionProviding {
             }
         }
 
+        // Any bytes on the stream (including v2 comment keep-alives) prove
+        // liveness, independently of whether a chat has attached its handler.
+        sse.onLiveness = { [weak self] in
+            self?.receivedHeartbeat()
+        }
+
         sse.onTerminalHTTPError = { [weak self] statusCode in
             guard let self else { return }
             self.stopHeartbeatWatchdog()
@@ -307,7 +358,7 @@ final class ConnectionManager: ConnectionProviding {
 
     func setProjectContext(directory: String?) async {
         let normalizedDirectory = directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-        Logger.connection.debug("Setting project context to \(normalizedDirectory ?? "nil", privacy: .public)")
+        Logger.connection.debug("OpenLens changing active project directory from \(self.selectedProjectDirectory ?? "nil", privacy: .public) to \(normalizedDirectory ?? "nil", privacy: .public)")
         guard let client else {
             selectedProjectDirectory = normalizedDirectory
             return
@@ -315,6 +366,8 @@ final class ConnectionManager: ConnectionProviding {
 
         await client.updateContextDirectory(normalizedDirectory)
         selectedProjectDirectory = normalizedDirectory
+        sseClient?.updateContextDirectory(normalizedDirectory)
+        currentProject = nil
 
         if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
             savedConnectionsStore?.updateProjectSelection(
@@ -332,34 +385,37 @@ final class ConnectionManager: ConnectionProviding {
 
     private func refreshProjectMetadata() async {
         guard let client else {
+            currentProject = nil
             projectName = nil
             branch = nil
             return
         }
 
-        if let project = try? await client.getCurrentProject() {
+        let pathInfo = try? await client.getPath()
+        let project = try? await client.getCurrentProject()
+
+        Logger.connection.debug("OpenCode reported directory \(pathInfo?.directory ?? "nil", privacy: .public), worktree \(pathInfo?.worktree ?? "nil", privacy: .public), and project worktree \(project?.worktree ?? "nil", privacy: .public)")
+
+        if let project {
+            currentProject = project
             projectName = project.displayName ?? project.worktree
         } else {
+            currentProject = nil
             projectName = nil
             Logger.connection.warning("Failed to fetch project info")
         }
 
-        do {
-            let vcs = try await client.getVCS()
-            branch = vcs.branch
-        } catch {
-            branch = nil
-            Logger.connection.warning("Failed to fetch VCS info: \(error, privacy: .public)")
-        }
-
-        if selectedProjectDirectory == nil,
-           let pathInfo = try? await client.getPath() {
-            let inferredDirectory = pathInfo.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-            Logger.connection.debug("Inferred project context from /path as \(inferredDirectory ?? "nil", privacy: .public)")
+        if selectedProjectDirectory == nil {
+            let serverDirectory = pathInfo?.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            let projectWorktree = project?.worktree?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            let inferredDirectory = serverDirectory ?? projectWorktree
+            let source = serverDirectory == nil ? "project worktree fallback" : "server directory"
+            Logger.connection.debug("OpenLens initialized active project directory to \(inferredDirectory ?? "nil", privacy: .public) from \(source, privacy: .public)")
             selectedProjectDirectory = inferredDirectory
 
-            if inferredDirectory != nil {
+            if let inferredDirectory {
                 await client.updateContextDirectory(inferredDirectory)
+                sseClient?.updateContextDirectory(inferredDirectory)
 
                 if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
                     savedConnectionsStore?.updateProjectSelection(
@@ -368,6 +424,16 @@ final class ConnectionManager: ConnectionProviding {
                     )
                 }
             }
+        } else {
+            Logger.connection.debug("OpenLens kept restored/selected project directory \(self.selectedProjectDirectory ?? "nil", privacy: .public)")
+        }
+
+        do {
+            let vcs = try await client.getVCS()
+            branch = vcs.branch
+        } catch {
+            branch = nil
+            Logger.connection.warning("Failed to fetch VCS info: \(error, privacy: .public)")
         }
     }
 
@@ -473,5 +539,7 @@ final class ConnectionManager: ConnectionProviding {
         self.projectName = projectName
         self.branch = branch
         self.serverVersion = "demo"
+        self.serverURL = URL(string: "http://macbook-pro.local:4096")
+        self.serverCapabilities = nil
     }
 }

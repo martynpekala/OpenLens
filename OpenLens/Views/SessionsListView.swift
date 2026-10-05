@@ -83,6 +83,7 @@ struct SessionsListView: View {
     var onDelete: (OCSession) -> Void
 
     @Environment(\.sessionsService) private var sessionsService
+    @Environment(\.connection) private var connection
 
     init(
         initialState: InitialState,
@@ -155,6 +156,7 @@ struct SessionsListView: View {
 
     var body: some View {
         presentationContent
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
         .background(isSidebar ? Color.clear : Color.appBackground)
         .sheet(item: $newSessionRequest) { _ in
             NewSessionSheet { session in
@@ -190,20 +192,36 @@ struct SessionsListView: View {
             }
         } else {
             sessionStateContent
+                .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
+                    newSessionButton
+                        .padding(.trailing, 24)
+                        .padding(.top, 12)
+                        .padding(.bottom, 32)
+                }
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationTitle(AppText.sessions)
                 .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            presentNewSessionSheet()
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 16))
-                                .foregroundStyle(Color.appPrimary)
+                    if let host = connection.serverHostDisplay {
+                        ToolbarItem(placement: .principal) {
+                            ConnectedHostCapsule(host: host, isReconnecting: connection.isReconnecting)
                         }
+                        .sharedBackgroundVisibility(.hidden)
                     }
                 }
         }
+    }
+
+    private var newSessionButton: some View {
+        Button(action: presentNewSessionSheet) {
+            Image(systemName: "plus")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Color.appOnNeutralAction)
+        }
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.circle)
+        .controlSize(.large)
+        .tint(Color.appNeutralAction)
+        .accessibilityLabel(AppText.newSession)
     }
 
     @ViewBuilder
@@ -335,18 +353,6 @@ struct SessionsListView: View {
                         .font(.system(size: 14, design: .rounded))
                         .foregroundStyle(Color.appSecondary)
                 }
-
-                if let workspaceName = session.workspaceDisplayName {
-                    HStack(spacing: 5) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 10, weight: .medium))
-                        Text(workspaceName)
-                            .lineLimit(1)
-                    }
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Color.appSecondary.opacity(0.86))
-                    .accessibilityLabel("\(AppText.workspace): \(workspaceName)")
-                }
             }
 
             Spacer()
@@ -415,7 +421,7 @@ struct SessionsListView: View {
         guard !Task.isCancelled else { return }
         viewState = .loading
         do {
-            async let sessionList = sessionsService.listSessions()
+            async let sessionList = sessionsService.listAllSessions()
             async let statuses = (try? sessionsService.getSessionStatuses()) ?? [:]
             let (result, statusMap) = try await (sessionList, statuses)
             guard !Task.isCancelled else { return }
@@ -581,6 +587,11 @@ private struct SessionsLoadErrorView: View {
 }
 
 private struct NewSessionSheet: View {
+    private struct FolderBrowserRequest: Identifiable {
+        let id = UUID()
+        let directory: String
+    }
+
     enum WorkspaceLoadState {
         case idle
         case loading
@@ -604,6 +615,7 @@ private struct NewSessionSheet: View {
     @State private var unavailablePreferredDirectory: String?
     @State private var createErrorMessage: String?
     @State private var isCreating = false
+    @State private var folderBrowserRequest: FolderBrowserRequest?
 
     private var selectedWorkspace: WorkspaceSelectionOption? {
         workspaceOptions.first { $0.id == selectedWorkspaceID }
@@ -644,9 +656,13 @@ private struct NewSessionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(AppText.cancel) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold))
                     }
+                    .accessibilityLabel(AppText.dismiss)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
@@ -657,14 +673,22 @@ private struct NewSessionSheet: View {
                             ProgressView()
                                 .tint(Color.appAccent)
                         } else {
-                            Text(AppText.create)
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .semibold))
                         }
                     }
+                    .accessibilityLabel(AppText.create)
                     .disabled(!canCreate)
                 }
             }
             .task {
                 await loadWorkspaceOptions()
+            }
+            .sheet(item: $folderBrowserRequest) { request in
+                WorkspaceFolderBrowser(initialDirectory: request.directory, onSelect: selectBrowsedDirectory)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(Color.appBackground)
             }
         }
     }
@@ -752,6 +776,22 @@ private struct NewSessionSheet: View {
                     .tint(Color.appAccent)
                 }
             }
+
+            Button {
+                folderBrowserRequest = FolderBrowserRequest(
+                    directory: selectedWorkspace?.directory ?? connection.selectedProjectDirectory ?? "/"
+                )
+            } label: {
+                Label(AppText.browseFolders, systemImage: "folder.badge.plus")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.appAccent)
+            .disabled(isCreating || isLoadingWorkspaces)
+            .accessibilityIdentifier("newSession.browseFolders")
         }
     }
 
@@ -899,19 +939,41 @@ private struct NewSessionSheet: View {
         }
     }
 
+    private func selectBrowsedDirectory(_ directory: String) {
+        let option = WorkspaceSelectionOption(
+            id: "directory:\(directory)",
+            directory: directory,
+            projectID: nil,
+            title: WorkspaceSelectionBuilder.displayName(for: directory),
+            subtitle: directory,
+            availability: .available,
+            isCurrent: directory == connection.selectedProjectDirectory,
+            isRecent: false
+        )
+        workspaceOptions.removeAll { $0.id == option.id }
+        workspaceOptions.insert(option, at: 0)
+        selectedWorkspaceID = option.id
+        unavailablePreferredDirectory = nil
+        createErrorMessage = nil
+        workspaceState = .loaded
+    }
+
     private func loadWorkspaceOptions() async {
         workspaceState = .loading
         createErrorMessage = nil
 
+        let activeConnectionID = savedConnections.activeConnectionID
+        let recentDirectories = activeConnectionID
+            .map { savedConnections.recentProjectSelections(connectionID: $0) }
+            ?? []
+        let preferredDirectory = activeConnectionID
+            .flatMap { savedConnections.savedProjectSelection(connectionID: $0) }
+            ?? connection.selectedProjectDirectory
+
         do {
-            let snapshot = try await workspaceService.loadWorkspaceSelection()
-            let activeConnectionID = savedConnections.activeConnectionID
-            let recentDirectories = activeConnectionID
-                .map { savedConnections.recentProjectSelections(connectionID: $0) }
-                ?? []
-            let preferredDirectory = activeConnectionID
-                .flatMap { savedConnections.savedProjectSelection(connectionID: $0) }
-                ?? connection.selectedProjectDirectory
+            let snapshot = try await workspaceService.loadWorkspaceSelection(
+                verifying: recentDirectories + [preferredDirectory].compactMap { $0 }
+            )
 
             let result = WorkspaceSelectionBuilder.makeOptions(
                 snapshot: snapshot,
@@ -953,5 +1015,30 @@ private struct NewSessionSheet: View {
         } catch {
             createErrorMessage = error.localizedDescription
         }
+    }
+}
+
+// MARK: - Connected Host Capsule
+
+private struct ConnectedHostCapsule: View {
+    let host: String
+    let isReconnecting: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(isReconnecting ? Color.appWarning : Color.appSuccess)
+                .frame(width: 7, height: 7)
+            Text(host)
+                .font(.subheadline.weight(.medium).monospaced())
+                .foregroundStyle(Color.appPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(AppText.sessions), \(host)")
     }
 }

@@ -149,12 +149,12 @@ struct OnboardingView: View {
                 } label: {
                     Text(AppText.onboardingNext)
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appOnAccent)
+                        .foregroundStyle(Color.appOnNeutralAction)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 15)
                         .background(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(Color.appAccent)
+                                .fill(Color.appNeutralAction)
                         )
                 }
             } else {
@@ -163,12 +163,12 @@ struct OnboardingView: View {
                 }) {
                     Text(AppText.onboardingStart)
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appOnAccent)
+                        .foregroundStyle(Color.appOnNeutralAction)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 15)
                         .background(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(Color.appAccent)
+                                .fill(Color.appNeutralAction)
                         )
                 }
             }

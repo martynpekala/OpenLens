@@ -578,9 +578,12 @@ fileprivate final class GatewayConnection: @unchecked Sendable {
                         self?.sendEncrypted(RemoteMessage(kind: .response, id: message.id, response: response))
                     }
                 } catch {
+                    let errorCode = (error as? RemoteProtocolError) == .invalidRequest
+                        ? "invalid_request"
+                        : "request_failed"
                     queue.async { [weak self] in
                         self?.requestTasks.removeValue(forKey: message.id)
-                        self?.sendError(id: message.id, code: "request_failed")
+                        self?.sendError(id: message.id, code: errorCode)
                     }
                 }
             }

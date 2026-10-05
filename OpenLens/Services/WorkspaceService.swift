@@ -15,6 +15,15 @@ struct WorkspaceAgentItem: Identifiable, Hashable, Sendable {
     let prompt: String
 }
 
+struct WorkspaceSkillItem: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let description: String
+
+    /// The token typed in the composer, matching the TUI's `@skill` list.
+    var mention: String { "@\(id)" }
+}
+
 struct WorkspaceSlashActionItem: Identifiable, Hashable, Sendable {
     enum Kind: String, Sendable {
         case command
@@ -63,6 +72,11 @@ struct WorkspaceSnapshot: Sendable {
     let workingTreeSource: WorkspaceWorkingTreeSource
 }
 
+struct WorkspaceFolderSnapshot: Sendable {
+    let directory: String
+    let folders: [WorkspaceFileItem]
+}
+
 final class WorkspaceService {
 
     private struct WorkingTreeSnapshot: Sendable {
@@ -85,9 +99,9 @@ final class WorkspaceService {
             throw OpenCodeError.notConnected
         }
 
+        let pathInfo = await tryPathInfo(client)
         async let currentProjectTask = tryCurrentProject(client)
         async let projectsTask = tryProjects(client)
-        async let pathInfoTask = tryPathInfo(client)
         async let vcsTask = tryVCS(client)
         async let commandsTask = tryCommands(client)
         async let filesTask = tryFiles(client, path: path)
@@ -95,7 +109,6 @@ final class WorkspaceService {
 
         let currentProject = await currentProjectTask
         let projects = await projectsTask
-        let pathInfo = await pathInfoTask
         let vcsInfo = await vcsTask
         let commands = await commandsTask
         let fileItems = await filesTask
@@ -114,7 +127,11 @@ final class WorkspaceService {
         )
     }
 
-    func loadWorkspaceSelection() async throws -> WorkspaceSelectionSnapshot {
+    /// Loads what the server reports about its workspaces. `rememberedDirectories`
+    /// are folders chosen earlier; those the server did not report itself are
+    /// checked by asking it to open them, because the project list only names
+    /// project roots and says nothing about other folders it can open.
+    func loadWorkspaceSelection(verifying rememberedDirectories: [String] = []) async throws -> WorkspaceSelectionSnapshot {
         if ScreenshotFixtures.isEnabled {
             let snapshot = ScreenshotFixtures.workspaceSnapshot(path: nil)
             return WorkspaceSelectionSnapshot(
@@ -128,19 +145,110 @@ final class WorkspaceService {
             throw OpenCodeError.notConnected
         }
 
+        let pathInfo = await tryPathInfo(client)
         async let currentProjectTask = tryCurrentProject(client)
         async let projectsTask = tryProjects(client)
-        async let pathInfoTask = tryPathInfo(client)
 
         let currentProject = await currentProjectTask
         let projects = await projectsTask
-        let pathInfo = await pathInfoTask
 
-        return WorkspaceSelectionSnapshot(
+        var snapshot = WorkspaceSelectionSnapshot(
             currentProject: currentProject,
             projects: projects,
             pathInfo: pathInfo
         )
+        let unreported = WorkspaceSelectionBuilder.directoriesNeedingVerification(rememberedDirectories, in: snapshot)
+        snapshot.inaccessibleDirectories = await refusedDirectories(among: unreported, client: client)
+        return snapshot
+    }
+
+    /// Asks the server to open each folder the way the folder browser does, in a
+    /// per-request context that leaves the active project untouched. Only an
+    /// explicit refusal counts; a dropped connection says nothing about the folder.
+    private func refusedDirectories(among directories: [String], client: OpenCodeClient) async -> Set<String> {
+        await withTaskGroup(of: String?.self) { group in
+            for directory in directories {
+                group.addTask {
+                    do {
+                        _ = try await client.listFiles(path: ".", directory: directory)
+                        return nil
+                    } catch {
+                        return Self.isFolderRefusal(error) ? directory : nil
+                    }
+                }
+            }
+
+            var refused = Set<String>()
+            for await directory in group {
+                if let directory { refused.insert(directory) }
+            }
+            return refused
+        }
+    }
+
+    /// The server answered about the folder itself, not about authentication,
+    /// rate limits or its own health.
+    nonisolated static func isFolderRefusal(_ error: Error) -> Bool {
+        let statusCode: Int
+        switch error as? OpenCodeError {
+        case .httpError(let code):
+            statusCode = code
+        case .apiError(let code, _):
+            statusCode = code
+        default:
+            return false
+        }
+        return (400..<500).contains(statusCode) && ![401, 407, 408, 429].contains(statusCode)
+    }
+
+    func loadFolders(in directory: String) async throws -> WorkspaceFolderSnapshot {
+        guard directory.hasPrefix("/"),
+              let directory = WorkspaceSelectionBuilder.normalizedDirectory(directory) else {
+            throw OpenCodeError.invalidPayload("Choose an absolute folder path on the connected computer.")
+        }
+
+        if ScreenshotFixtures.isEnabled {
+            return ScreenshotFixtures.folderSnapshot(directory: directory)
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        // Listing "." in a per-request context also supports servers that
+        // only accept workspace-relative file paths.
+        let entries = try await client.listFiles(path: ".", directory: directory)
+        return WorkspaceFolderSnapshot(
+            directory: directory,
+            folders: Self.folderItems(from: entries, directory: directory)
+        )
+    }
+
+    static func folderItems(from entries: [OCWorkspaceFileEntry], directory: String) -> [WorkspaceFileItem] {
+        var seen = Set<String>()
+        return entries.compactMap { entry in
+            guard entry.type?.lowercased() == "directory" else { return nil }
+            let rawPath: String
+            if let absolute = entry.absolute, absolute.hasPrefix("/") {
+                rawPath = absolute
+            } else {
+                rawPath = entry.path
+            }
+            let absolutePath = rawPath.hasPrefix("/")
+                ? rawPath
+                : URL(fileURLWithPath: directory).appendingPathComponent(rawPath).path
+            guard let path = WorkspaceSelectionBuilder.normalizedDirectory(absolutePath),
+                  path != directory,
+                  !WorkspaceSelectionBuilder.displayName(for: path).hasPrefix("."),
+                  seen.insert(path).inserted else { return nil }
+            return WorkspaceFileItem(
+                path: path,
+                name: WorkspaceSelectionBuilder.displayName(for: path),
+                absolutePath: path,
+                kind: .directory
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     func loadCommands() async -> [WorkspaceCommandItem] {
@@ -163,8 +271,14 @@ final class WorkspaceService {
 
         let contextDirectory = await client.currentContextDirectory() ?? "nil"
         do {
+            let diffs = (try? await client.getWorkingTreeDiff()) ?? []
+            let matchingDiff = diffs.first(where: { $0.resolvedPath == summary.path })
+                .map(ReviewFileChange.init(diff:))
+            if let matchingDiff, matchingDiff.hasReadableDiff {
+                return matchingDiff
+            }
             let content = try await client.readFileContent(path: summary.path)
-            return summary.applying(content: content)
+            return (matchingDiff ?? summary).applying(content: content)
         } catch {
             Logger.api.warning("WorkspaceService failed to load file diff detail for \(summary.path, privacy: .public) in context directory \(contextDirectory, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return summary
@@ -216,6 +330,30 @@ final class WorkspaceService {
                 }
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
+    }
+
+    func loadSkills() async -> [WorkspaceSkillItem] {
+        if ScreenshotFixtures.isEnabled {
+            return []
+        }
+
+        guard let client = connection.client else { return [] }
+
+        let contextDirectory = await client.currentContextDirectory() ?? "nil"
+        do {
+            return try await client.listSkills()
+                .map { skill in
+                    WorkspaceSkillItem(
+                        id: skill.id,
+                        name: skill.name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? skill.id,
+                        description: skill.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    )
+                }
+                .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        } catch {
+            Logger.api.error("WorkspaceService failed to load skills for context directory \(contextDirectory, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return []
+        }
     }
 
     private func tryCurrentProject(_ client: OpenCodeClient) async -> OCProject? {

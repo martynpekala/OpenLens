@@ -2,7 +2,7 @@ import ActivityKit
 import Foundation
 import os
 
-/// Manages the Live Activity that shows agent thinking steps on the Lock Screen and Dynamic Island.
+/// Manages the Live Activity that shows the agent's progress on the Lock Screen and Dynamic Island.
 @MainActor
 final class LiveActivityManager: LiveActivityProviding {
     private var currentActivity: Activity<OpenLensActivityAttributes>?
@@ -12,8 +12,6 @@ final class LiveActivityManager: LiveActivityProviding {
     private var debounceTimer: Timer?
     private let debounceInterval: TimeInterval = 0.25
     private var lastUpdateTime: Date = .distantPast
-    private var lastStepNumber: Int = 0
-    private var lastCostTotal: String?
     private var previewTask: Task<Void, Never>?
 
     init() {}
@@ -21,14 +19,12 @@ final class LiveActivityManager: LiveActivityProviding {
     // MARK: - Public API
 
     /// Start a new Live Activity when the user sends a message.
-    func startActivity(agentName: String, userTask: String, subject: String? = nil) {
+    func startActivity(sessionID: String?, directory: String?) {
         if currentActivity != nil {
-            endActivity()
+            endActivity(phase: .finished)
         }
 
         activityStartDate = Date()
-        lastStepNumber = 0
-        lastCostTotal = nil
         lastUpdateTime = .distantPast
 
         guard AppPreferences.liveActivitiesEnabled else {
@@ -39,19 +35,8 @@ final class LiveActivityManager: LiveActivityProviding {
             return
         }
 
-        let attributes = OpenLensActivityAttributes(
-            agentName: agentName,
-            userTask: userTask
-        )
-        let initialState = OpenLensActivityAttributes.ContentState(
-            subject: subject,
-            currentIntent: "Thinking",
-            previousIntent: nil,
-            secondPreviousIntent: nil,
-            intentStartDate: activityStartDate,
-            stepNumber: 1,
-            costTotal: nil
-        )
+        let attributes = OpenLensActivityAttributes(sessionID: sessionID, directory: directory)
+        let initialState = OpenLensActivityAttributes.ContentState(phase: .working, startDate: activityStartDate)
         let content = ActivityContent(state: initialState, staleDate: nil)
 
         do {
@@ -65,33 +50,15 @@ final class LiveActivityManager: LiveActivityProviding {
         }
     }
 
-    /// Update the Live Activity with full state.
+    /// Update the prompt the Live Activity shows.
     /// Uses a throttle+debounce hybrid: fires immediately if enough time has passed
     /// since the last update; otherwise debounces to avoid overwhelming ActivityKit.
-    func update(
-        subject: String?,
-        currentIntent: String,
-        currentIntentIcon: String? = nil,
-        previousIntent: String?,
-        secondPreviousIntent: String?,
-        stepNumber: Int,
-        costTotal: String?,
-        pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
-    ) {
+    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {
         guard currentActivity != nil else { return }
 
-        lastStepNumber = stepNumber
-        lastCostTotal = costTotal
-
         let state = OpenLensActivityAttributes.ContentState(
-            subject: subject,
-            currentIntent: currentIntent,
-            currentIntentIcon: currentIntentIcon,
-            previousIntent: previousIntent,
-            secondPreviousIntent: secondPreviousIntent,
-            intentStartDate: activityStartDate,
-            stepNumber: stepNumber,
-            costTotal: costTotal,
+            phase: .working,
+            startDate: activityStartDate,
             pendingUserResponse: pendingUserResponse
         )
         pendingContent = ActivityContent(state: state, staleDate: nil)
@@ -126,18 +93,18 @@ final class LiveActivityManager: LiveActivityProviding {
         }
     }
 
-    /// End the Live Activity. Shows a brief "Done" state before dismissing.
-    func endActivity(completionSummary: String? = nil) {
-        finishActivity(completionSummary: completionSummary, dismissalPolicy: .after(.now + 8))
+    /// End the Live Activity. Shows how the turn ended briefly before dismissing.
+    func endActivity(phase: OpenLensActivityAttributes.Phase) {
+        finishActivity(phase: phase, dismissalPolicy: .after(.now + 8))
     }
 
     /// Dismiss the Live Activity immediately when its server context is gone.
     func dismissImmediately() {
-        finishActivity(completionSummary: nil, dismissalPolicy: .immediate)
+        finishActivity(phase: .stopped, dismissalPolicy: .immediate)
     }
 
     private func finishActivity(
-        completionSummary: String?,
+        phase: OpenLensActivityAttributes.Phase,
         dismissalPolicy: ActivityUIDismissalPolicy
     ) {
         previewTask?.cancel()
@@ -152,14 +119,9 @@ final class LiveActivityManager: LiveActivityProviding {
         currentActivity = nil
 
         let finalState = OpenLensActivityAttributes.ContentState(
-            subject: completionSummary,
-            currentIntent: "Complete",
-            previousIntent: nil,
-            secondPreviousIntent: nil,
-            intentStartDate: activityStartDate,
-            intentEndDate: .now,
-            stepNumber: lastStepNumber,
-            costTotal: lastCostTotal
+            phase: phase == .working ? .finished : phase,
+            startDate: activityStartDate,
+            endDate: .now
         )
         let content = ActivityContent(state: finalState, staleDate: nil)
 
@@ -175,12 +137,13 @@ final class LiveActivityManager: LiveActivityProviding {
 
     // MARK: - Preview Live Activity
 
-    /// Starts a preview Live Activity that cycles through all sample steps.
+    /// Starts a preview Live Activity that cycles through working, both prompts, and finished.
+    /// Its buttons clear the prompt locally without calling the server.
     func previewLiveActivity() {
         previewTask?.cancel()
 
         if currentActivity != nil {
-            endActivity()
+            endActivity(phase: .finished)
         }
 
         guard AppPreferences.liveActivitiesEnabled else {
@@ -193,7 +156,7 @@ final class LiveActivityManager: LiveActivityProviding {
 
         let attributes = OpenLensActivityAttributes.preview
         let initialContent = ActivityContent(
-            state: OpenLensActivityAttributes.ContentState.step1,
+            state: OpenLensActivityAttributes.ContentState.working,
             staleDate: nil
         )
 
@@ -212,11 +175,11 @@ final class LiveActivityManager: LiveActivityProviding {
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
 
-            let steps: [OpenLensActivityAttributes.ContentState] = [.step2, .step3, .step4, .step5]
+            let steps: [OpenLensActivityAttributes.ContentState] = [.waitingForPermission, .working, .waitingForAnswer, .working]
             for step in steps {
                 guard let activity = self?.currentActivity, !Task.isCancelled else { return }
                 await activity.update(ActivityContent(state: step, staleDate: nil))
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: .seconds(step.pendingUserResponse == nil ? 3 : 6))
                 guard !Task.isCancelled else { return }
             }
 

@@ -58,6 +58,60 @@ struct SSEColdPayloadTests {
         #expect(prepared.rejectedRequestID == "question-request")
     }
 
+    @Test func preparesV2FormCreatedEventWithoutGuessingUnknownFields() {
+        let event = OCEvent(
+            type: "form.created",
+            properties: AnyCodable([
+                "form": [
+                    "id": "frm_request",
+                    "sessionID": "ses_session",
+                    "title": "Release settings",
+                    "fields": [
+                        ["key": "name", "type": "string", "required": true],
+                        ["key": "future", "type": "new-server-control"],
+                    ],
+                ],
+            ])
+        )
+
+        guard case .cold(.formCreated(let prepared), _) = SSEInboundEvent.prepare(event),
+              let prepared,
+              let form = prepared.form
+        else {
+            Issue.record("Expected prepared cold form")
+            return
+        }
+
+        #expect(form.id == "frm_request")
+        #expect(form.sessionID == "ses_session")
+        #expect(form.hasUnsupportedFields)
+        #expect(prepared.rejectedFormID == nil)
+    }
+
+    @Test func malformedV2FormCreatedEventRetainsOnlySafeCancellationIdentity() {
+        let event = OCEvent(
+            type: "form.created",
+            properties: AnyCodable([
+                "form": [
+                    "id": "frm_unsafe",
+                    "sessionID": "ses_session",
+                    "title": String(repeating: "x", count: InteractiveFormSafety.maximumTitleBytes + 1),
+                    "fields": [["key": "name", "type": "string"]],
+                ],
+            ])
+        )
+
+        guard case .cold(.formCreated(let prepared), _) = SSEInboundEvent.prepare(event),
+              let prepared
+        else {
+            Issue.record("Expected prepared cold form")
+            return
+        }
+
+        #expect(prepared.form == nil)
+        #expect(prepared.rejectedFormID == "frm_unsafe")
+    }
+
     @Test func boundsPermissionPayloadBeforeMainDelivery() {
         let oversized = String(repeating: "untrusted scope ", count: 200)
         let event = OCEvent(

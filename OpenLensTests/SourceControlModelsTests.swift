@@ -125,6 +125,32 @@ struct SourceControlModelsTests {
         #expect(change.patchHunks.isEmpty)
     }
 
+    @Test func appliesContentFallbackToPatchlessWorkingTreeDiff() {
+        let patchlessDiff = ReviewFileChange(
+            diff: OCFileDiff(
+                path: "README.md",
+                status: "modified",
+                additions: 1,
+                deletions: 1
+            )
+        )
+
+        let detail = patchlessDiff.applying(
+            content: OCFileContent(
+                type: "text",
+                content: "# Updated title\n",
+                diff: nil,
+                patch: nil,
+                encoding: nil,
+                mimeType: "text/markdown"
+            )
+        )
+
+        #expect(!patchlessDiff.hasReadableDiff)
+        #expect(detail.afterText == "# Updated title\n")
+        #expect(detail.hasReadableDiff)
+    }
+
     @Test func appliesWorkspaceFileContentPatchToReviewFileChange() {
         let summary = ReviewFileChange(
             fileStatus: OCWorkspaceFileStatus(

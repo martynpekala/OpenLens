@@ -21,7 +21,9 @@ ChatClient.send() -> ChatClient.messages: append user message
 ChatClient.send() -> ChatClient.messages: append assistant placeholder
 ChatClient.send() -> LiveActivityTracker.start()
 ChatClient.send() -> MessagesService.sendPromptAsync()
-MessagesService.sendPromptAsync() -> OpenCodeClient: POST /session/:id/prompt_async
+MessagesService.sendPromptAsync() -> OpenCodeClient: negotiated route
+OpenCodeClient (v1) -> server: POST /session/:id/prompt_async
+OpenCodeClient (v2) -> server: POST /api/session/:id/prompt (delivery: steer)
 
 SSEClient -> SSEEventHandler: session.status = busy
 SSEEventHandler -> ChatClient: isLoading = true, currentActivity = AgentActivity

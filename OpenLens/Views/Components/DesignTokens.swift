@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 import UIKit
 
@@ -189,7 +190,7 @@ extension OpenLensTheme {
             secondary: .init(light: .openLens(107, 107, 107), dark: .openLens(171, 168, 161)),
             tertiary: .init(light: .openLens(239, 237, 233), dark: .openLens(44, 46, 51)),
             separator: .init(light: .openLens(224, 222, 221), dark: .openLens(64, 66, 71)),
-            accent: .init(light: .openLens(26, 26, 26), dark: .openLens(239, 237, 233)),
+            accent: .init(light: .openLens(26, 26, 26), dark: .openLens(167, 139, 250)),
             onAccent: .init(light: .white, dark: .openLens(26, 26, 26)),
             success: .init(light: .openLens(31, 145, 84), dark: .openLens(77, 199, 130)),
             warning: .init(light: .openLens(194, 117, 35), dark: .openLens(235, 166, 78)),
@@ -294,6 +295,120 @@ enum OpenLensDesignSystem {
     }
 }
 
+// MARK: - Accent Color Preference
+
+/// Global, persisted user accent color.
+///
+/// Stored in `UserDefaults` under `AppPreferenceKeys.accentColor` as a 6-digit hex string
+/// (empty = use the theme accent). Because this is `@Observable`, any SwiftUI view that reads
+/// `Color.appUserAccent` / `Color.appUserOnAccent` in its `body` is automatically re-rendered when
+/// the user picks a new color. Scoped to the Settings screen, the chat bubble background, and the
+/// message send button — everywhere else uses the fixed theme accent (`Color.appAccent`).
+@Observable
+final class AccentColorPreference {
+    static let shared = AccentColorPreference()
+
+    @ObservationIgnored private let userDefaults: UserDefaults
+
+    /// Normalized `RRGGBB` hex, or empty when the theme default is used.
+    private(set) var hex: String
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+        self.hex = Self.normalizedHex(userDefaults.string(forKey: AppPreferenceKeys.accentColor)) ?? ""
+    }
+
+    var hasCustomColor: Bool { !hex.isEmpty }
+
+    /// The accent color used across the app.
+    var color: Color {
+        guard let custom = Self.uiColor(fromHex: hex) else {
+            return OpenLensDesignSystem.currentTheme.colors.accent.color
+        }
+        return Color(uiColor: custom)
+    }
+
+    /// Foreground color that stays readable on top of `color`.
+    var onAccentColor: Color {
+        guard let custom = Self.uiColor(fromHex: hex) else {
+            return OpenLensDesignSystem.currentTheme.colors.onAccent.color
+        }
+        return Self.isLight(custom) ? Color(red: 26 / 255, green: 26 / 255, blue: 26 / 255) : .white
+    }
+
+    /// Two-way binding for `ColorPicker`.
+    var binding: Binding<Color> {
+        Binding(
+            get: { self.color },
+            set: { self.setColor($0) }
+        )
+    }
+
+    func setColor(_ color: Color) {
+        guard let newHex = Self.hex(from: UIColor(color)) else { return }
+        guard newHex != hex else { return }
+        hex = newHex
+        userDefaults.set(newHex, forKey: AppPreferenceKeys.accentColor)
+    }
+
+    func reset() {
+        guard hasCustomColor else { return }
+        hex = ""
+        userDefaults.removeObject(forKey: AppPreferenceKeys.accentColor)
+    }
+
+    // MARK: Helpers
+
+    static func normalizedHex(_ value: String?) -> String? {
+        guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() else {
+            return nil
+        }
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.count == 6, UInt32(value, radix: 16) != nil else { return nil }
+        return value
+    }
+
+    static func uiColor(fromHex hex: String) -> UIColor? {
+        guard let normalized = normalizedHex(hex), let value = UInt32(normalized, radix: 16) else {
+            return nil
+        }
+        return UIColor(
+            red: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    static func hex(from color: UIColor) -> String? {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
+        func component(_ value: CGFloat) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
+        return String(format: "%02X%02X%02X", component(red), component(green), component(blue))
+    }
+
+    private static func isLight(_ color: UIColor) -> Bool {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return false }
+        func linear(_ c: CGFloat) -> CGFloat {
+            c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+        return luminance > lightColorLuminanceThreshold
+    }
+
+    /// Relative luminance above which the accent counts as light enough for a dark foreground.
+    /// Deliberately above the 0.179 black/white contrast crossover so mid-tones such as iOS blue,
+    /// orange, and green keep a white arrow/text; only genuinely pale colors switch to dark.
+    private static let lightColorLuminanceThreshold: CGFloat = 0.5
+}
+
 private struct OpenLensThemeKey: EnvironmentKey {
     static let defaultValue: OpenLensTheme = OpenLensDesignSystem.currentTheme
 }
@@ -305,10 +420,21 @@ extension EnvironmentValues {
     }
 }
 
+private struct OpenLensThemeModifier: ViewModifier {
+    let theme: OpenLensTheme
+    private let accent = AccentColorPreference.shared
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.openLensTheme, theme)
+            .environment(accent)
+            .tint(theme.colors.accent.color)
+    }
+}
+
 extension View {
     func openLensTheme(_ theme: OpenLensTheme) -> some View {
-        environment(\.openLensTheme, theme)
-            .tint(theme.colors.accent.color)
+        modifier(OpenLensThemeModifier(theme: theme))
     }
 }
 
@@ -321,6 +447,16 @@ extension Color {
     static var appSeparator: Color { OpenLensDesignSystem.currentTheme.colors.separator.color }
     static var appAccent: Color { OpenLensDesignSystem.currentTheme.colors.accent.color }
     static var appOnAccent: Color { OpenLensDesignSystem.currentTheme.colors.onAccent.color }
+    /// User-selected accent (Settings → Appearance) or the theme accent, scoped to the Settings
+    /// screen, the chat bubble background, and the message send button. Observable: views reading
+    /// this in `body` refresh automatically when the preference changes.
+    static var appUserAccent: Color { AccentColorPreference.shared.color }
+    static var appUserOnAccent: Color { AccentColorPreference.shared.onAccentColor }
+    /// Fixed primary-button colors for the connection flow (onboarding, setup, connect) and the
+    /// new-session FAB. Ignore both the theme accent and the user accent: near-black with white
+    /// text in light mode, white with black text in dark mode.
+    static let appNeutralAction = OpenLensSemanticColor(light: .openLens(26, 26, 26), dark: .white).color
+    static let appOnNeutralAction = OpenLensSemanticColor(light: .white, dark: .black).color
     static var appSuccess: Color { OpenLensDesignSystem.currentTheme.colors.success.color }
     static var appWarning: Color { OpenLensDesignSystem.currentTheme.colors.warning.color }
     static var appDanger: Color { OpenLensDesignSystem.currentTheme.colors.danger.color }
