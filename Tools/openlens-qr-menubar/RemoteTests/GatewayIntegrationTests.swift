@@ -404,6 +404,55 @@ struct GatewayIntegrationTests {
         #expect(Set(forwardedPrompts.compactMap(\.httpBody)) == [try #require(prompt.body)])
     }
 
+    @Test func anImagePromptAtTheBodyLimitIsForwardedIntactAndLargerOnesAreRefused() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+        let entry = #"{"id":"msg_img","sessionID":"ses_1","time":{"created":1},"type":"user","payload":{"text":"Look"},"delivery":"steer"}"#
+        ForwarderURLProtocol.setRoutes([
+            "/api/session/ses_1": Data(#"{"data":{"id":"ses_1","location":{"directory":"\#(root.path)"}}}"#.utf8),
+            "/api/session/ses_1/prompt": Data(#"{"data":\#(entry)}"#.utf8),
+        ])
+
+        func promptBody(totalBytes: Int) -> Data {
+            let prefix = #"{"id":"msg_img","text":"Look","delivery":"steer","files":[{"name":"image.jpg","uri":"data:image\/jpeg;base64,"#
+            let suffix = #""}]}"#
+            let base64 = String(repeating: "A", count: totalBytes - prefix.utf8.count - suffix.utf8.count)
+            return Data((prefix + base64 + suffix).utf8)
+        }
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:4096/api/session/ses_1/prompt")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = promptBody(totalBytes: RemoteProtocolVersion.maximumHTTPBodyBytes)
+        let atLimit = try RemoteHTTPRequest(request: request)
+
+        // The encrypted request frame must still fit the WebSocket message limit.
+        let frame = try RemoteMessage(kind: .request, request: atLimit).encoded()
+        _ = try RemoteWireEnvelope(kind: .encrypted, sequence: 0, ciphertext: frame + Data(count: 16)).encoded()
+
+        let response = try await forwarder.perform(atLimit)
+        #expect(response.statusCode == 200)
+        let forwarded = ForwarderURLProtocol.recordedRequests()
+            .filter { $0.url?.path == "/api/session/ses_1/prompt" }
+        #expect(forwarded.compactMap(\.httpBody) == [try #require(request.httpBody)])
+
+        request.httpBody = promptBody(totalBytes: RemoteProtocolVersion.maximumHTTPBodyBytes + 1)
+        #expect(throws: RemoteProtocolError.messageTooLarge) { try RemoteHTTPRequest(request: request) }
+        let oversized = RemoteHTTPRequest(
+            method: "POST",
+            pathAndQuery: "/api/session/ses_1/prompt",
+            headers: ["Content-Type": "application/json"],
+            body: request.httpBody
+        )
+        await #expect(throws: RemoteProtocolError.invalidRequest) { _ = try await forwarder.perform(oversized) }
+    }
+
     @Test func v2ActiveSnapshotFiltersForeignSessionsAndRechecksRegistry() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

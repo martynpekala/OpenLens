@@ -335,7 +335,8 @@ actor OpenCodeClient {
     /// `switchSessionModel` / `switchSessionAgent` for explicit changes.
     ///
     /// On v2 the returned admission identifies the durable inbox entry. Pass
-    /// the same `messageID` and text to retry without creating duplicate work.
+    /// the same `messageID`, text, and images to retry without creating
+    /// duplicate work. Images are v2-only.
     @discardableResult
     func sendPromptAsync(
         sessionID: String,
@@ -344,7 +345,8 @@ actor OpenCodeClient {
         agent: String? = nil,
         variant: String? = nil,
         messageID: String? = nil,
-        skills: [OCV2SkillAttachment] = []
+        skills: [OCV2SkillAttachment] = [],
+        images: [PromptImageAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         if usesV2 {
             return try await admitV2Prompt(
@@ -352,10 +354,12 @@ actor OpenCodeClient {
                 text: text,
                 messageID: messageID,
                 skills: skills,
+                images: images,
                 delivery: .steer
             )
         }
 
+        guard images.isEmpty else { throw PromptAttachmentError.imagesRequireV2 }
         let part = OCPromptPart(type: "text", text: text)
         let input = OCPromptInput(parts: [part], model: model, agent: agent, messageID: nil, variant: variant)
         let _: EmptyResponse = try await postCodable("/session/\(sessionID)/prompt_async", body: input, expect204: true)
@@ -372,7 +376,8 @@ actor OpenCodeClient {
         agent: String? = nil,
         variant: String? = nil,
         messageID: String? = nil,
-        skills: [OCV2SkillAttachment] = []
+        skills: [OCV2SkillAttachment] = [],
+        images: [PromptImageAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         if usesV2 {
             return try await admitV2Prompt(
@@ -380,16 +385,53 @@ actor OpenCodeClient {
                 text: text,
                 messageID: messageID,
                 skills: skills,
+                images: images,
                 delivery: .queue
             )
         }
 
+        guard images.isEmpty else { throw PromptAttachmentError.imagesRequireV2 }
         let input = OCQueuedPromptInput(
             prompt: .init(text: text),
             delivery: .queue
         )
         try await postDiscardingResponse("/api/session/\(sessionID)/prompt", body: input)
         return nil
+    }
+
+    /// OpenLens Remote forwards at most this many request body bytes. Direct
+    /// connections use the same limit so a prompt behaves the same on both.
+    nonisolated static let maximumPromptBodyBytes = RemoteProtocolVersion.maximumHTTPBodyBytes
+
+    /// The exact size of the JSON body sent for `input`, including base64
+    /// and JSON escaping overhead.
+    nonisolated static func encodedPromptBodySize(_ input: OCV2PromptInput) throws -> Int {
+        try JSONEncoder().encode(input).count
+    }
+
+    nonisolated static func makePromptInput(
+        messageID: String?,
+        text: String,
+        skills: [OCV2SkillAttachment],
+        images: [PromptImageAttachment],
+        delivery: OCV2PromptInput.Delivery
+    ) -> OCV2PromptInput {
+        OCV2PromptInput(
+            id: messageID,
+            text: text,
+            skills: skills.isEmpty ? nil : skills,
+            files: images.isEmpty ? nil : images.map(\.promptFile),
+            delivery: delivery
+        )
+    }
+
+    /// Throws `promptTooLarge` when the complete request would exceed the
+    /// body limit, before anything is sent.
+    nonisolated static func validatePromptBodySize(_ input: OCV2PromptInput) throws {
+        guard input.files?.isEmpty == false else { return }
+        if try encodedPromptBodySize(input) > maximumPromptBodyBytes {
+            throw PromptAttachmentError.promptTooLarge
+        }
     }
 
     /// A 2xx response proves admission even if its body cannot be decoded, so
@@ -399,17 +441,21 @@ actor OpenCodeClient {
         text: String,
         messageID: String?,
         skills: [OCV2SkillAttachment],
+        images: [PromptImageAttachment],
         delivery: OCV2PromptInput.Delivery
     ) async throws -> OCV2PromptAdmission? {
+        let input = Self.makePromptInput(
+            messageID: messageID,
+            text: text,
+            skills: skills,
+            images: images,
+            delivery: delivery
+        )
+        try Self.validatePromptBodySize(input)
         let data = try await sendV2RequestData(
             method: "POST",
             path: "/api/session/\(sessionID)/prompt",
-            body: OCV2PromptInput(
-                id: messageID,
-                text: text,
-                skills: skills.isEmpty ? nil : skills,
-                delivery: delivery
-            ),
+            body: input,
             includesLocation: false
         )
         do {

@@ -117,27 +117,32 @@ struct MessageBubbleView: View {
 
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            SkillMentionText(text: message.content, chipStyle: isRetroChat ? .retro : .standard(.appUserOnAccent))
-                .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
-                .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appUserOnAccent)
-                .padding(.horizontal, isRetroChat ? 14 : 16)
-                .padding(.vertical, isRetroChat ? 10 : 11)
-                .background {
-                    if isRetroChat {
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(RetroChatStyle.playerFill)
-                            .shadow(color: RetroChatStyle.shadow, radius: 0, x: 3, y: 3)
-                    } else {
-                        bubbleFill(Color.appUserAccent)
+            if !message.imageAttachments.isEmpty || !message.fileAttachments.isEmpty {
+                MessageAttachmentsRow(images: message.imageAttachments, files: message.fileAttachments)
+            }
+            if !message.content.isEmpty || (message.imageAttachments.isEmpty && message.fileAttachments.isEmpty) {
+                SkillMentionText(text: message.content, chipStyle: isRetroChat ? .retro : .standard(.appUserOnAccent))
+                    .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
+                    .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appUserOnAccent)
+                    .padding(.horizontal, isRetroChat ? 14 : 16)
+                    .padding(.vertical, isRetroChat ? 10 : 11)
+                    .background {
+                        if isRetroChat {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(RetroChatStyle.playerFill)
+                                .shadow(color: RetroChatStyle.shadow, radius: 0, x: 3, y: 3)
+                        } else {
+                            bubbleFill(Color.appUserAccent)
+                        }
                     }
-                }
-                .overlay {
-                    if isRetroChat {
-                        RetroChatDoubleBorder(cornerRadius: 7)
-                    } else {
-                        bubbleStroke(theme.components.controlBorder)
+                    .overlay {
+                        if isRetroChat {
+                            RetroChatDoubleBorder(cornerRadius: 7)
+                        } else {
+                            bubbleStroke(theme.components.controlBorder)
+                        }
                     }
-                }
+            }
             submissionStatus
         }
     }

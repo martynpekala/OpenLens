@@ -623,6 +623,17 @@ final class ChatMessage: Identifiable {
         return modelID
     }
 
+    /// Image files carried inline as data URLs, from the phone or the desktop.
+    var imageAttachments: [OCPart] {
+        parts.filter { $0.isInlineImageFile }
+    }
+
+    /// Other files on a user prompt, shown by name only.
+    var fileAttachments: [OCPart] {
+        guard role == .user else { return [] }
+        return parts.filter { $0.type == .file && !$0.isInlineImageFile }
+    }
+
     /// Extract all tool call parts from this message.
     var toolParts: [OCPart] {
         parts.filter { $0.type == .tool }

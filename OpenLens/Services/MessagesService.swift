@@ -33,7 +33,8 @@ final class MessagesService {
         agent: String? = nil,
         variant: String? = nil,
         messageID: String? = nil,
-        skills: [OCV2SkillAttachment] = []
+        skills: [OCV2SkillAttachment] = [],
+        images: [PromptImageAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
@@ -46,7 +47,8 @@ final class MessagesService {
             agent: agent,
             variant: variant,
             messageID: messageID,
-            skills: skills
+            skills: skills,
+            images: images
         )
     }
 
@@ -59,7 +61,8 @@ final class MessagesService {
         agent: String? = nil,
         variant: String? = nil,
         messageID: String? = nil,
-        skills: [OCV2SkillAttachment] = []
+        skills: [OCV2SkillAttachment] = [],
+        images: [PromptImageAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
@@ -72,7 +75,8 @@ final class MessagesService {
             agent: agent,
             variant: variant,
             messageID: messageID,
-            skills: skills
+            skills: skills,
+            images: images
         )
     }
 
@@ -158,6 +162,10 @@ final class MessagesService {
 
     /// Convert a server message (with parts) to the local ChatMessage model.
     func convertToChatMessage(_ msg: OCMessageWithParts) -> ChatMessage {
+        Self.convert(msg)
+    }
+
+    static func convert(_ msg: OCMessageWithParts) -> ChatMessage {
         let textContent = msg.parts
             .compactMap(\.renderableText)
             .joined()

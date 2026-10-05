@@ -572,6 +572,12 @@ nonisolated struct OCPart: Codable, Identifiable, Sendable {
         guard isRenderableText else { return nil }
         return text
     }
+
+    var isInlineImageFile: Bool {
+        type == .file
+            && mime?.lowercased().hasPrefix("image/") == true
+            && url?.hasPrefix("data:") == true
+    }
 }
 
 nonisolated struct OCToolState: Codable, Sendable {
@@ -2024,10 +2030,28 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
         }
     }
 
+    /// A file on a user prompt (`Prompt.FileAttachment`): base64 `data` with
+    /// its detected `mime`, whether it was sent inline or read from a URI.
+    nonisolated struct File: Decodable, Sendable {
+        let data: String
+        let mime: String
+        let name: String?
+    }
+
+    /// One malformed file must not hide the rest of the prompt.
+    private nonisolated struct OptionalFile: Decodable, Sendable {
+        let value: File?
+
+        init(from decoder: Decoder) throws {
+            value = try? File(from: decoder)
+        }
+    }
+
     let id: String
     let type: String
     let time: OCMessageTime?
     let text: String?
+    let files: [File]
     let agent: String?
     let model: Model?
     let content: [Content]
@@ -2037,7 +2061,7 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
     let error: OCAPIError?
 
     enum CodingKeys: String, CodingKey {
-        case id, type, time, text, agent, model, content, cost, tokens, finish, error
+        case id, type, time, text, files, agent, model, content, cost, tokens, finish, error
     }
 
     init(from decoder: Decoder) throws {
@@ -2046,6 +2070,8 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
         type = try container.decode(String.self, forKey: .type)
         time = try? container.decodeIfPresent(OCMessageTime.self, forKey: .time)
         text = try container.decodeIfPresent(String.self, forKey: .text)
+        files = (try? container.decodeIfPresent([OptionalFile].self, forKey: .files))?
+            .compactMap(\.value) ?? []
         agent = try container.decodeIfPresent(String.self, forKey: .agent)
         model = try? container.decodeIfPresent(Model.self, forKey: .model)
         content = (try? container.decodeIfPresent([Content].self, forKey: .content)) ?? []
@@ -2081,7 +2107,7 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
         )
         let parts: [OCPart]
         if role == .user {
-            parts = text.map {
+            let textParts = text.map {
                 [
                     OCPart(
                         id: "\(id)-text",
@@ -2092,6 +2118,19 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
                     ),
                 ]
             } ?? []
+            // Files use the same data-URL file part shape as v1 messages.
+            let fileParts = files.enumerated().map { index, file in
+                OCPart(
+                    id: "\(id)-file-\(index)",
+                    sessionID: sessionID,
+                    messageID: id,
+                    type: .file,
+                    mime: file.mime,
+                    filename: file.name,
+                    url: "data:\(file.mime);base64,\(file.data)"
+                )
+            }
+            parts = textParts + fileParts
         } else {
             parts = content.enumerated().map { index, item in
                 OCPart(
@@ -2540,12 +2579,34 @@ nonisolated struct OCV2PromptInput: Codable, Sendable {
     let id: String?
     let text: String
     let skills: [OCV2SkillAttachment]?
+    let files: [OCV2PromptFile]?
     let delivery: Delivery
+
+    init(
+        id: String?,
+        text: String,
+        skills: [OCV2SkillAttachment]?,
+        files: [OCV2PromptFile]? = nil,
+        delivery: Delivery
+    ) {
+        self.id = id
+        self.text = text
+        self.skills = skills
+        self.files = files
+        self.delivery = delivery
+    }
 
     nonisolated enum Delivery: String, Codable, Sendable {
         case steer
         case queue
     }
+}
+
+/// A file attached to a v2 prompt (`PromptInput.FileAttachment`). Files from
+/// the phone use a `data:` URI; the server reads `file:` URIs from its disk.
+nonisolated struct OCV2PromptFile: Codable, Equatable, Sendable {
+    let uri: String
+    let name: String?
 }
 
 /// Durable admission returned by `POST /api/session/:id/prompt`

@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// Main chat interface.
@@ -35,6 +36,7 @@ struct ChatView: View {
     @State private var isLoadingSkills = false
     @State private var displayedResponseState: ChatResponseState = .idle
     @State private var isComposerExpanded = false
+    @State private var pickedPhotos: [PhotosPickerItem] = []
 
     init(chatClient: ChatClient, initialSession: OCSession? = nil) {
         self._chatClient = Bindable(wrappedValue: chatClient)
@@ -618,8 +620,21 @@ struct ChatView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            if !chatClient.composerImages.isEmpty || chatClient.isPreparingComposerImage {
+                ComposerImageStrip(
+                    images: chatClient.composerImages,
+                    isPreparing: chatClient.isPreparingComposerImage,
+                    onRemove: chatClient.removeComposerImage(id:)
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .center, spacing: 8) {
+                    if chatClient.canAttachImages {
+                        composerPhotoPicker
+                    }
+
                     ComposerTokenLayout(spacing: 6, minimumFieldWidth: 120, lineHeight: 32) {
                         if let selectedSlashAction {
                             selectedSlashActionChip(selectedSlashAction)
@@ -648,13 +663,39 @@ struct ChatView: View {
                     composerActionButton
                         .padding(4)
                 }
-                .padding(.leading, 16)
+                .padding(.leading, chatClient.canAttachImages ? 6 : 16)
                 .padding(.trailing, 4)
                 .padding(.vertical, 4)
                 .chatComposerFieldChrome(visualMode)
             }
         }
         .padding(.horizontal, 16)
+    }
+
+    private var composerPhotoPicker: some View {
+        PhotosPicker(
+            selection: $pickedPhotos,
+            maxSelectionCount: 4,
+            matching: .images,
+            preferredItemEncoding: .compatible
+        ) {
+            Image(systemName: "photo.badge.plus")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(secondaryTextColor)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .disabled(chatClient.isPreparingComposerImage)
+        .accessibilityLabel(AppText.attachImages)
+        .onChange(of: pickedPhotos) { _, items in
+            guard !items.isEmpty else { return }
+            pickedPhotos = []
+            Task {
+                for item in items {
+                    await chatClient.attachComposerImage(data: try? await item.loadTransferable(type: Data.self))
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -2718,6 +2759,14 @@ private struct QueuedPromptBubbleView: View {
             Spacer(minLength: isRetroChat ? 42 : 64)
 
             VStack(alignment: .trailing, spacing: 6) {
+                if !prompt.images.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(prompt.images) { image in
+                            PromptImageThumbnail(cacheKey: image.id, source: .data(image.data), side: 56)
+                        }
+                    }
+                }
+
                 SkillMentionText(text: prompt.text, chipStyle: isRetroChat ? .retro : .standard(.appAccent))
                     .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                     .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)
