@@ -1,0 +1,92 @@
+name: 🍎 iOS Verification Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  ios-app-tests:
+    name: 🧪 iOS App Tests
+    runs-on: macos-15
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v5
+      
+    - name: 🎯 Select Xcode version
+      run: |
+        # Use the latest Xcode available (should be Xcode 26 for iOS 26)
+        XCODE_PATH=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+        if [ -z "$XCODE_PATH" ]; then
+          XCODE_PATH="/Applications/Xcode.app"
+        fi
+        echo "Using Xcode: $XCODE_PATH"
+        sudo xcode-select -s "$XCODE_PATH"
+      
+    - name: 📦 Cache SPM dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages/
+        key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+        restore-keys: |
+          ${{ runner.os }}-spm-
+      
+    - name: 🔧 Install xcodegen
+      run: brew install xcodegen
+      
+    - name: 🏗️ Generate Xcode project
+      run: xcodegen generate
+      
+    - name: 🧪 Build and run tests
+      run: |
+        xcodebuild -project OpenLens.xcodeproj \
+          -scheme OpenLens \
+          -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+          CODE_SIGNING_ALLOWED=NO \
+          test
+
+  qr-helper-build:
+    name: 🔧 QR Helper Build Check
+    runs-on: macos-15
+    if: github.event_name == 'pull_request' || contains(github.event.head_commit.modified, 'Tools/openlens-qr/')
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v5
+      
+    - name: 🎯 Select Xcode version
+      run: |
+        XCODE_PATH=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+        if [ -z "$XCODE_PATH" ]; then
+          XCODE_PATH="/Applications/Xcode.app"
+        fi
+        sudo xcode-select -s "$XCODE_PATH"
+      
+    - name: 🏗️ Build QR helper CLI
+      run: xcrun swift build --package-path Tools/openlens-qr
+
+  appstore-shot-studio-check:
+    name: 📸 App Store Shot Studio Validation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || contains(github.event.head_commit.modified, 'Tools/appstore-shot-studio/')
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v5
+      
+    - name: 🌐 Validate HTML files
+      run: |
+        echo "🔍 Checking HTML syntax in Tools/appstore-shot-studio/"
+        # Basic HTML validation - check for common issues
+        find Tools/appstore-shot-studio -name "*.html" -exec grep -l "<html" {} \; | while read file; do
+          echo "✅ Validating: $file"
+          # Check for basic HTML structure
+          if ! grep -q "</html>" "$file"; then
+            echo "❌ Missing closing </html> tag in $file"
+            exit 1
+          fi
+        done
+        echo "✅ All HTML files have valid structure"
