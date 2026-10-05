@@ -29,6 +29,31 @@ struct QueuedPrompt: Identifiable, Equatable {
     }
 }
 
+/// A v2 prompt admission attempt, keyed by its caller-provided message ID.
+/// `uncertain` means the request may have reached the server but admission
+/// could not be confirmed; resending the same text reuses the same ID so the
+/// server's first-admission-wins reconciliation prevents duplicate work.
+struct PromptSubmission: Identifiable, Equatable {
+    enum State: Equatable {
+        case sending
+        case accepted(admissionID: String)
+        case uncertain
+        case failed
+    }
+
+    let id: String
+    let sessionID: String
+    /// Raw composer text, used to match retries and to restore the composer.
+    let text: String
+    var state: State
+}
+
+private enum PromptAdmissionOutcome: Equatable {
+    case admitted(admissionID: String)
+    case uncertain
+    case failed
+}
+
 private struct OptimisticV2CommandMessage {
     let text: String
     let knownTranscriptMessageIDs: Set<String>
@@ -61,6 +86,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Follow-ups that were admitted behind the active turn but have not been
     /// promoted into the visible transcript yet.
     var queuedPrompts: [QueuedPrompt] = []
+    private(set) var promptSubmissions: [PromptSubmission] = []
     /// True while OpenCode is reverting a selected user message.
     var isUndoingMessage: Bool = false
     var responseState: ChatResponseState = .idle
@@ -1761,6 +1787,18 @@ final class ChatClient: SSEEventHandlerDelegate {
     private func mergeLoadedMessagesWithLocalMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
         let loadedIDs = Set(loaded.map(\.id))
         optimisticV2UserMessageIDs.subtract(loadedIDs)
+        for index in promptSubmissions.indices
+        where promptSubmissions[index].state == .uncertain && loadedIDs.contains(promptSubmissions[index].id) {
+            promptSubmissions[index].state = .accepted(admissionID: promptSubmissions[index].id)
+            // The restored text invited a retry; once the transcript proves
+            // admission, resending would create new work, so withdraw it.
+            if inputText == promptSubmissions[index].text {
+                inputText = ""
+            }
+            if errorMessage == AppText.promptAdmissionUncertain {
+                dismissError()
+            }
+        }
         let projectedCommandIDs = optimisticV2CommandMessages.compactMap { localID, command in
             let commandWasProjected = loaded.contains { message in
                 message.role == .user &&
@@ -2463,8 +2501,9 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
+        let tracksAdmission = usesV2SessionAPI && !isDemoMode && !isRecordedReplayMode
         let queuedPrompt = QueuedPrompt(
-            messageID: usesV2SessionAPI ? "msg_\(UUID().uuidString)" : UUID().uuidString,
+            messageID: tracksAdmission ? beginPromptSubmission(text: text) : UUID().uuidString,
             text: text,
             state: isDemoMode ? .queued : .submitting
         )
@@ -2499,28 +2538,49 @@ final class ChatClient: SSEEventHandlerDelegate {
                 }
             }
 
+            var requestStarted = false
             do {
                 try await awaitSessionSettingsChanges(for: session.id)
-                try await messagesService.queuePrompt(
+                requestStarted = true
+                let admission = try await messagesService.queuePrompt(
                     sessionID: session.id,
                     text: text,
                     model: selectedModelRef,
                     variant: selectedVariant,
-                    messageID: usesV2SessionAPI ? queuedPrompt.messageID : nil,
+                    messageID: tracksAdmission ? queuedPrompt.messageID : nil,
                     skills: skillAttachments(in: text)
                 )
+                if tracksAdmission {
+                    settlePromptSubmission(
+                        queuedPrompt.messageID,
+                        as: .accepted(admissionID: admission?.id ?? queuedPrompt.messageID)
+                    )
+                }
                 guard currentSession?.id == session.id else { return }
                 acceptQueuedPrompt(id: queuedPrompt.id)
                 if usesV2SessionAPI {
                     await loadMessages(syncModelSelection: false)
                 }
             } catch {
+                let outcome: PromptAdmissionOutcome = tracksAdmission
+                    ? await reconcilePromptAdmission(
+                        after: error,
+                        requestStarted: requestStarted,
+                        sessionID: session.id,
+                        messageID: queuedPrompt.messageID
+                    )
+                    : .failed
                 guard currentSession?.id == session.id else { return }
-                queuedPrompts.removeAll { $0.id == queuedPrompt.id }
-                if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    inputText = text
+                if case .admitted = outcome {
+                    acceptQueuedPrompt(id: queuedPrompt.id)
+                    await loadMessages(syncModelSelection: false)
+                    return
                 }
-                errorMessage = "Failed to queue: \(error.localizedDescription)"
+                queuedPrompts.removeAll { $0.id == queuedPrompt.id }
+                restoreComposer(text)
+                errorMessage = outcome == .uncertain
+                    ? AppText.promptAdmissionUncertain
+                    : "Failed to queue: \(error.localizedDescription)"
                 contentVersion &+= 1
             }
         }
@@ -2614,11 +2674,83 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func makeOptimisticUserMessage(text: String) -> ChatMessage {
-        let id = usesV2SessionAPI ? "msg_\(UUID().uuidString)" : UUID().uuidString
+        let id = usesV2SessionAPI ? beginPromptSubmission(text: text) : UUID().uuidString
         if usesV2SessionAPI {
             optimisticV2UserMessageIDs.insert(id)
         }
         return ChatMessage(id: id, role: .user, content: text)
+    }
+
+    // MARK: - V2 Prompt Admission
+
+    /// Starts tracking a v2 prompt and returns its caller-provided message ID.
+    /// Resending the exact text of an uncertain submission reuses its ID and
+    /// replaces its stale local row; changed text is new work with a new ID.
+    private func beginPromptSubmission(text: String) -> String {
+        let sessionID = currentSession?.id ?? ""
+        let id: String
+        if let index = promptSubmissions.lastIndex(where: {
+            $0.sessionID == sessionID && $0.text == text && $0.state == .uncertain
+        }) {
+            id = promptSubmissions.remove(at: index).id
+            messages.removeAll { $0.id == id }
+            queuedPrompts.removeAll { $0.messageID == id }
+        } else {
+            id = "msg_\(UUID().uuidString)"
+        }
+        promptSubmissions.append(PromptSubmission(id: id, sessionID: sessionID, text: text, state: .sending))
+        return id
+    }
+
+    private func settlePromptSubmission(_ id: String, as state: PromptSubmission.State) {
+        guard let index = promptSubmissions.firstIndex(where: { $0.id == id }) else { return }
+        promptSubmissions[index].state = state
+    }
+
+    /// Decides what a failed admission request means. Failures before the
+    /// request left, and explicit rejections, are definitive. Otherwise the
+    /// server is asked whether it admitted the ID, and the submission stays
+    /// uncertain unless the server positively answers.
+    private func reconcilePromptAdmission(
+        after error: Error,
+        requestStarted: Bool,
+        sessionID: String,
+        messageID: String
+    ) async -> PromptAdmissionOutcome {
+        let outcome: PromptAdmissionOutcome
+        if requestStarted, OpenCodeClient.requestMayHaveReachedServer(error), let messagesService {
+            do {
+                if let admission = try await messagesService.findPromptAdmission(
+                    sessionID: sessionID,
+                    messageID: messageID
+                ) {
+                    outcome = .admitted(admissionID: admission.id)
+                } else {
+                    outcome = .uncertain
+                }
+            } catch {
+                Logger.chat.warning("Prompt admission reconciliation failed: \(error, privacy: .public)")
+                outcome = .uncertain
+            }
+        } else {
+            outcome = .failed
+        }
+
+        switch outcome {
+        case let .admitted(admissionID):
+            settlePromptSubmission(messageID, as: .accepted(admissionID: admissionID))
+        case .uncertain:
+            settlePromptSubmission(messageID, as: .uncertain)
+        case .failed:
+            settlePromptSubmission(messageID, as: .failed)
+        }
+        return outcome
+    }
+
+    private func restoreComposer(_ text: String) {
+        if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            inputText = text
+        }
     }
 
     private func makeOptimisticCommandUserMessage(text: String) -> ChatMessage {
@@ -2694,12 +2826,15 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
+        let tracksAdmission = usesV2SessionAPI && messageID != nil
+        var requestStarted = false
         do {
             if let agent {
                 enqueueSessionSettingsChange(.agent(agent), for: session.id)
             }
             try await awaitSessionSettingsChanges(for: session.id)
-            try await messagesService!.sendPromptAsync(
+            requestStarted = true
+            let admission = try await messagesService!.sendPromptAsync(
                 sessionID: session.id,
                 text: text,
                 model: selectedModelRef,
@@ -2708,6 +2843,9 @@ final class ChatClient: SSEEventHandlerDelegate {
                 messageID: messageID,
                 skills: skillAttachments(in: text)
             )
+            if tracksAdmission, let messageID {
+                settlePromptSubmission(messageID, as: .accepted(admissionID: admission?.id ?? messageID))
+            }
             guard currentSession?.id == session.id else { return }
             if usesV2SessionAPI {
                 // Prompt admission is durable but projection is asynchronous.
@@ -2716,17 +2854,44 @@ final class ChatClient: SSEEventHandlerDelegate {
                 await loadMessages(syncModelSelection: false)
             }
         } catch {
-            if usesV2SessionAPI, let messageID {
-                // Keep the failed row visible for immediate feedback, but do
-                // not preserve it over a later authoritative transcript load.
-                optimisticV2UserMessageIDs.remove(messageID)
+            guard tracksAdmission, let messageID else {
+                guard responseState == .generating else { return }
+                markPromptFailed(error, agent: agent)
+                return
+            }
+
+            let outcome = await reconcilePromptAdmission(
+                after: error,
+                requestStarted: requestStarted,
+                sessionID: session.id,
+                messageID: messageID
+            )
+            guard currentSession?.id == session.id else { return }
+            if case .admitted = outcome {
+                await loadMessages(syncModelSelection: false)
+                return
+            }
+
+            // Keep the row visible for immediate feedback, but do not preserve
+            // it over a later authoritative transcript load.
+            optimisticV2UserMessageIDs.remove(messageID)
+            if let composerText = promptSubmissions.first(where: { $0.id == messageID })?.text {
+                restoreComposer(composerText)
             }
             guard responseState == .generating else { return }
-            if let agent, !agent.isEmpty {
-                markResponseFailed("Failed to run /\(agent): \(error.localizedDescription)")
+            if outcome == .uncertain {
+                markResponseFailed(AppText.promptAdmissionUncertain)
             } else {
-                markResponseFailed("Failed to send: \(error.localizedDescription)")
+                markPromptFailed(error, agent: agent)
             }
+        }
+    }
+
+    private func markPromptFailed(_ error: Error, agent: String?) {
+        if let agent, !agent.isEmpty {
+            markResponseFailed("Failed to run /\(agent): \(error.localizedDescription)")
+        } else {
+            markResponseFailed("Failed to send: \(error.localizedDescription)")
         }
     }
 
@@ -3901,6 +4066,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         ignoredAssistantMessageIDs.removeAll()
         optimisticV2UserMessageIDs.removeAll()
         optimisticV2CommandMessages.removeAll()
+        promptSubmissions.removeAll { $0.state != .uncertain }
         locallyStoppedSessionID = nil
         demoPlayer?.stop()
         recordedReplayPlayer?.stop()

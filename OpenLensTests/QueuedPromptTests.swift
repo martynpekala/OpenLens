@@ -6,7 +6,10 @@ struct QueuedPromptTests {
     @Test func v2QueuedPromptUsesTheSharedPromptAdmissionContract() async throws {
         let transport = QueuedPromptTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
-            .init(statusCode: 202, body: Data()),
+            .init(
+                statusCode: 200,
+                body: Data(#"{"data":{"id":"msg_queued","sessionID":"session-1","time":{"created":1},"type":"user","payload":{"text":"Run the tests after this finishes."},"delivery":"queue"}}"#.utf8)
+            ),
         ])
         let client = OpenCodeClient(
             baseURL: try #require(URL(string: "https://opencode.example.com")),
@@ -14,7 +17,7 @@ struct QueuedPromptTests {
         )
 
         _ = try await client.probeCapabilities()
-        try await client.queuePrompt(
+        let admission = try await client.queuePrompt(
             sessionID: "session-1",
             text: "Run the tests after this finishes.",
             model: .init(providerID: "anthropic", modelID: "claude-sonnet"),
@@ -22,6 +25,7 @@ struct QueuedPromptTests {
             variant: "high",
             messageID: "msg_queued"
         )
+        #expect(admission == OCV2PromptAdmission(id: "msg_queued", sessionID: "session-1", delivery: .queue))
 
         let requests = transport.recordedRequests()
         // A v2 session owns its selection, so queued prompts never reapply it.

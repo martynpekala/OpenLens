@@ -291,6 +291,8 @@ struct GatewayIntegrationTests {
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/interrupt"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/message"))
         #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/message/msg_456"))
+        #expect(OpenCodeForwarder.isAllowed(method: "GET", path: "/api/session/ses_123/inbox"))
+        #expect(!OpenCodeForwarder.isAllowed(method: "DELETE", path: "/api/session/ses_123/inbox"))
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/prompt"))
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/model"))
         #expect(OpenCodeForwarder.isAllowed(method: "POST", path: "/api/session/ses_123/agent"))

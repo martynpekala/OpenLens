@@ -2548,6 +2548,52 @@ nonisolated struct OCV2PromptInput: Codable, Sendable {
     }
 }
 
+/// Durable admission returned by `POST /api/session/:id/prompt`
+/// (`Session.Inbox.User`). The ID is the caller-provided admission ID when one
+/// was sent; the first admission of an ID wins for its session.
+nonisolated struct OCV2PromptAdmission: Decodable, Equatable, Sendable {
+    let id: String
+    let sessionID: String
+    let delivery: OCV2PromptInput.Delivery?
+
+    init(id: String, sessionID: String, delivery: OCV2PromptInput.Delivery?) {
+        self.id = id
+        self.sessionID = sessionID
+        self.delivery = delivery
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, sessionID, delivery }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        delivery = try? container.decodeIfPresent(OCV2PromptInput.Delivery.self, forKey: .delivery)
+    }
+}
+
+/// Durable session work not yet delivered (`Session.Inbox.Info`). Covers user,
+/// synthetic, compaction, and move entries; `text` is present for the first two.
+nonisolated struct OCV2InboxEntry: Decodable, Equatable, Sendable {
+    let id: String
+    let sessionID: String
+    let type: String
+    let delivery: OCV2PromptInput.Delivery?
+    let text: String?
+
+    private enum CodingKeys: String, CodingKey { case id, sessionID, type, delivery, payload }
+    private struct Payload: Decodable { let text: String? }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        type = try container.decode(String.self, forKey: .type)
+        delivery = try? container.decodeIfPresent(OCV2PromptInput.Delivery.self, forKey: .delivery)
+        text = (try? container.decodeIfPresent(Payload.self, forKey: .payload))??.text
+    }
+}
+
 /// Input accepted by the v2 session command endpoint. Commands execute using
 /// the session's current agent and model selection, so only the command's
 /// supported command inputs are included here.

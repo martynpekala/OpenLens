@@ -394,6 +394,7 @@ final class OpenCodeForwarder: @unchecked Sendable {
                  ("POST", "interrupt"),
                  ("GET", "message"),
                  ("POST", "prompt"),
+                 ("GET", "inbox"),
                  ("POST", "model"),
                  ("POST", "agent"),
                  ("GET", "diff"),

@@ -333,6 +333,10 @@ actor OpenCodeClient {
     /// `model`, `agent`, and `variant` only apply to v1 servers. A v2 session
     /// owns its canonical selection, so prompts never reapply it; callers use
     /// `switchSessionModel` / `switchSessionAgent` for explicit changes.
+    ///
+    /// On v2 the returned admission identifies the durable inbox entry. Pass
+    /// the same `messageID` and text to retry without creating duplicate work.
+    @discardableResult
     func sendPromptAsync(
         sessionID: String,
         text: String,
@@ -341,31 +345,26 @@ actor OpenCodeClient {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = []
-    ) async throws {
+    ) async throws -> OCV2PromptAdmission? {
         if usesV2 {
-            try await sendV2RequestDiscardingResponse(
-                method: "POST",
-                path: "/api/session/\(sessionID)/prompt",
-                body: OCV2PromptInput(
-                    id: messageID,
-                    text: text,
-                    skills: skills.isEmpty ? nil : skills,
-                    delivery: .steer
-                ),
-                includesLocation: false
+            return try await admitV2Prompt(
+                sessionID: sessionID,
+                text: text,
+                messageID: messageID,
+                skills: skills,
+                delivery: .steer
             )
-            return
         }
 
         let part = OCPromptPart(type: "text", text: text)
         let input = OCPromptInput(parts: [part], model: model, agent: agent, messageID: nil, variant: variant)
         let _: EmptyResponse = try await postCodable("/session/\(sessionID)/prompt_async", body: input, expect204: true)
+        return nil
     }
 
     /// Admit a prompt behind the active session turn without interrupting it.
-    /// The scheduler responds with admission metadata. The chat only needs the
-    /// successful admission signal, so its response body is intentionally ignored.
     /// Selection parameters only apply to v1, matching `sendPromptAsync`.
+    @discardableResult
     func queuePrompt(
         sessionID: String,
         text: String,
@@ -374,20 +373,15 @@ actor OpenCodeClient {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = []
-    ) async throws {
+    ) async throws -> OCV2PromptAdmission? {
         if usesV2 {
-            try await sendV2RequestDiscardingResponse(
-                method: "POST",
-                path: "/api/session/\(sessionID)/prompt",
-                body: OCV2PromptInput(
-                    id: messageID,
-                    text: text,
-                    skills: skills.isEmpty ? nil : skills,
-                    delivery: .queue
-                ),
-                includesLocation: false
+            return try await admitV2Prompt(
+                sessionID: sessionID,
+                text: text,
+                messageID: messageID,
+                skills: skills,
+                delivery: .queue
             )
-            return
         }
 
         let input = OCQueuedPromptInput(
@@ -395,6 +389,115 @@ actor OpenCodeClient {
             delivery: .queue
         )
         try await postDiscardingResponse("/api/session/\(sessionID)/prompt", body: input)
+        return nil
+    }
+
+    /// A 2xx response proves admission even if its body cannot be decoded, so
+    /// an unreadable body yields nil instead of a misleading failure.
+    private func admitV2Prompt(
+        sessionID: String,
+        text: String,
+        messageID: String?,
+        skills: [OCV2SkillAttachment],
+        delivery: OCV2PromptInput.Delivery
+    ) async throws -> OCV2PromptAdmission? {
+        let data = try await sendV2RequestData(
+            method: "POST",
+            path: "/api/session/\(sessionID)/prompt",
+            body: OCV2PromptInput(
+                id: messageID,
+                text: text,
+                skills: skills.isEmpty ? nil : skills,
+                delivery: delivery
+            ),
+            includesLocation: false
+        )
+        do {
+            let response: OCV2Envelope<OCV2PromptAdmission> = try decode(data)
+            return response.data
+        } catch {
+            Logger.api.warning("Prompt admission response was not decodable: \(error, privacy: .public)")
+            return nil
+        }
+    }
+
+    // MARK: - V2 Inbox
+
+    /// Durable work admitted to a v2 session and not yet delivered.
+    func listSessionInbox(sessionID: String) async throws -> [OCV2InboxEntry] {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("The session inbox requires a v2 OpenCode server.")
+        }
+        let response: OCV2Envelope<[OCV2InboxEntry]> = try await getV2(
+            "/api/session/\(sessionID)/inbox",
+            includesLocation: false
+        )
+        return response.data
+    }
+
+    /// Finds a prompt admitted under `messageID`, mirroring the server's own
+    /// reconciliation: the pending inbox first, then the delivered history.
+    /// Returns nil only when the server positively reports neither.
+    func findPromptAdmission(sessionID: String, messageID: String) async throws -> OCV2PromptAdmission? {
+        if let entry = try await listSessionInbox(sessionID: sessionID)
+            .first(where: { $0.id == messageID && $0.type == "user" }) {
+            return OCV2PromptAdmission(id: entry.id, sessionID: entry.sessionID, delivery: entry.delivery)
+        }
+
+        struct DeliveredMessage: Decodable, Sendable { let id: String; let type: String }
+        do {
+            let response: OCV2Envelope<DeliveredMessage> = try await getV2(
+                "/api/session/\(sessionID)/message",
+                pathParameter: messageID,
+                includesLocation: false
+            )
+            guard response.data.type == "user" else { return nil }
+            return OCV2PromptAdmission(id: response.data.id, sessionID: sessionID, delivery: nil)
+        } catch let OpenCodeError.apiError(statusCode, payload)
+            where statusCode == 404 && payload.tag == "MessageNotFoundError" {
+            return nil
+        }
+    }
+
+    /// Whether a failed request may still have been processed by the server.
+    /// Failures before the request could leave the device, and explicit server
+    /// rejections, are definitive; timeouts, lost connections, and gateway or
+    /// server errors are not proof that nothing was admitted.
+    nonisolated static func requestMayHaveReachedServer(_ error: Error) -> Bool {
+        switch error {
+        case let error as URLError:
+            switch error.code {
+            case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                 .badURL, .unsupportedURL, .appTransportSecurityRequiresSecureConnection,
+                 .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                 .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+                 .clientCertificateRejected, .clientCertificateRequired,
+                 .internationalRoamingOff, .callIsActive, .dataNotAllowed:
+                return false
+            default:
+                return true
+            }
+        case let error as OpenCodeError:
+            switch error {
+            case let .httpError(statusCode), let .apiError(statusCode, _):
+                return statusCode == 408 || statusCode >= 500
+            case .invalidResponse:
+                return true
+            case .notConnected, .invalidURL, .invalidPayload, .incompleteRevert:
+                return false
+            }
+        case let error as RemoteProtocolError:
+            switch error {
+            case .timeout, .disconnected, .malformedMessage, .remoteError:
+                return true
+            default:
+                return false
+            }
+        case is CancellationError:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Send a prompt synchronously (blocks until response is complete).

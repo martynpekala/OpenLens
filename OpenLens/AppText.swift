@@ -85,6 +85,7 @@ enum AppText {
     static let audio = "Audio"
     static let video = "Video"
     static let pdf = "PDF"
+    static let promptAdmissionUncertain = "OpenLens couldn’t confirm that the server received your prompt. It’s back in the composer — send it unchanged to retry without duplicating it."
     static let forget = "Forget"
     static let forgetConnection = "Forget Connection"
     static let forgetConnectionMessage = "Remove this server's credentials from Keychain? You'll need to re-enter them to connect again."

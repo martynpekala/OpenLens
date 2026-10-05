@@ -25,6 +25,7 @@ final class MessagesService {
     // MARK: - Send Prompt (async/fire-and-forget via SSE)
 
     /// Send a prompt to the server. The response arrives via SSE, not as a return value.
+    @discardableResult
     func sendPromptAsync(
         sessionID: String,
         text: String,
@@ -33,12 +34,12 @@ final class MessagesService {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = []
-    ) async throws {
+    ) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        try await client.sendPromptAsync(
+        return try await client.sendPromptAsync(
             sessionID: sessionID,
             text: text,
             model: model,
@@ -50,6 +51,7 @@ final class MessagesService {
     }
 
     /// Queue a follow-up behind the active session turn.
+    @discardableResult
     func queuePrompt(
         sessionID: String,
         text: String,
@@ -58,12 +60,12 @@ final class MessagesService {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = []
-    ) async throws {
+    ) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
 
-        try await client.queuePrompt(
+        return try await client.queuePrompt(
             sessionID: sessionID,
             text: text,
             model: model,
@@ -72,6 +74,14 @@ final class MessagesService {
             messageID: messageID,
             skills: skills
         )
+    }
+
+    /// Looks up a prompt admitted under `messageID` in the v2 inbox or history.
+    func findPromptAdmission(sessionID: String, messageID: String) async throws -> OCV2PromptAdmission? {
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+        return try await client.findPromptAdmission(sessionID: sessionID, messageID: messageID)
     }
 
     func sendCommand(
