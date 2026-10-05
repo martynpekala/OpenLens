@@ -11,6 +11,7 @@ struct MessageBubbleView: View {
     private let assistantSegments: [ChatMessage.AssistantSegment]?
     private let streamingText: ChatMessage.StreamingTextProjection?
     private let animatesSubagentStatus: Bool
+    private let submissionState: PromptSubmission.State?
     @AppStorage("showThinking") private var showThinking: Bool = true
     @Environment(\.openLensTheme) private var theme
     @Environment(\.chatEasterEgg) private var chatEasterEgg
@@ -20,12 +21,14 @@ struct MessageBubbleView: View {
         message: ChatMessage,
         assistantSegments: [ChatMessage.AssistantSegment]? = nil,
         streamingText: ChatMessage.StreamingTextProjection? = nil,
-        animatesSubagentStatus: Bool = false
+        animatesSubagentStatus: Bool = false,
+        submissionState: PromptSubmission.State? = nil
     ) {
         self.message = message
         self.assistantSegments = assistantSegments
         self.streamingText = streamingText
         self.animatesSubagentStatus = animatesSubagentStatus
+        self.submissionState = submissionState
     }
 
     private var showsTranscriptStyleAssistantContent: Bool {
@@ -135,6 +138,27 @@ struct MessageBubbleView: View {
                         bubbleStroke(theme.components.controlBorder)
                     }
                 }
+            submissionStatus
+        }
+    }
+
+    @ViewBuilder
+    private var submissionStatus: some View {
+        switch submissionState {
+        case .sending:
+            Label(AppText.promptAdmissionSending, systemImage: "arrow.up.circle")
+                .foregroundStyle(.secondary)
+                .submissionStatusStyle()
+        case .uncertain:
+            Label(AppText.promptAdmissionUnconfirmed, systemImage: "questionmark.circle")
+                .foregroundStyle(.orange)
+                .submissionStatusStyle()
+        case .failed:
+            Label(AppText.promptAdmissionFailed, systemImage: "exclamationmark.circle")
+                .foregroundStyle(.red)
+                .submissionStatusStyle()
+        case .accepted, nil:
+            EmptyView()
         }
     }
 
@@ -1386,5 +1410,13 @@ private extension View {
         makeText: @escaping () -> String?
     ) -> some View {
         modifier(MessageCopyActions(canCopy: canCopy, makeText: makeText))
+    }
+}
+
+private extension View {
+    func submissionStatusStyle() -> some View {
+        font(.caption)
+            .labelStyle(.titleAndIcon)
+            .transition(.opacity)
     }
 }

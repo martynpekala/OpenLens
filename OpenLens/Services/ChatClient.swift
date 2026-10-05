@@ -2541,6 +2541,9 @@ final class ChatClient: SSEEventHandlerDelegate {
             var requestStarted = false
             do {
                 try await awaitSessionSettingsChanges(for: session.id)
+                if tracksAdmission {
+                    await reconcileUncertainSubmissions(in: session.id, before: queuedPrompt.messageID)
+                }
                 requestStarted = true
                 let admission = try await messagesService.queuePrompt(
                     sessionID: session.id,
@@ -2683,18 +2686,24 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     // MARK: - V2 Prompt Admission
 
+    /// Admission state of the local user row with `messageID`, if tracked.
+    func promptSubmissionState(forMessageID messageID: String) -> PromptSubmission.State? {
+        promptSubmissions.first { $0.id == messageID }?.state
+    }
+
     /// Starts tracking a v2 prompt and returns its caller-provided message ID.
-    /// Resending the exact text of an uncertain submission reuses its ID and
-    /// replaces its stale local row; changed text is new work with a new ID.
+    /// Resending the exact text of an uncertain submission reuses its ID; a
+    /// rejected one is new work. Either way the stale local row is replaced.
     private func beginPromptSubmission(text: String) -> String {
         let sessionID = currentSession?.id ?? ""
         let id: String
         if let index = promptSubmissions.lastIndex(where: {
-            $0.sessionID == sessionID && $0.text == text && $0.state == .uncertain
+            $0.sessionID == sessionID && $0.text == text && ($0.state == .uncertain || $0.state == .failed)
         }) {
-            id = promptSubmissions.remove(at: index).id
-            messages.removeAll { $0.id == id }
-            queuedPrompts.removeAll { $0.messageID == id }
+            let previous = promptSubmissions.remove(at: index)
+            messages.removeAll { $0.id == previous.id }
+            queuedPrompts.removeAll { $0.messageID == previous.id }
+            id = previous.state == .uncertain ? previous.id : "msg_\(UUID().uuidString)"
         } else {
             id = "msg_\(UUID().uuidString)"
         }
@@ -2745,6 +2754,24 @@ final class ChatClient: SSEEventHandlerDelegate {
             settlePromptSubmission(messageID, as: .failed)
         }
         return outcome
+    }
+
+    /// Asks the server about earlier uncertain prompts before new content is
+    /// admitted, so an edited retry is not sent while the original may be pending.
+    private func reconcileUncertainSubmissions(in sessionID: String, before messageID: String) async {
+        guard let messagesService else { return }
+        let uncertainIDs = promptSubmissions
+            .filter { $0.sessionID == sessionID && $0.id != messageID && $0.state == .uncertain }
+            .map(\.id)
+        for id in uncertainIDs {
+            do {
+                if try await messagesService.findPromptAdmission(sessionID: sessionID, messageID: id) != nil {
+                    settlePromptSubmission(id, as: .accepted(admissionID: id))
+                }
+            } catch {
+                Logger.chat.warning("Uncertain prompt reconciliation failed: \(error, privacy: .public)")
+            }
+        }
     }
 
     private func restoreComposer(_ text: String) {
@@ -2833,6 +2860,9 @@ final class ChatClient: SSEEventHandlerDelegate {
                 enqueueSessionSettingsChange(.agent(agent), for: session.id)
             }
             try await awaitSessionSettingsChanges(for: session.id)
+            if tracksAdmission, let messageID {
+                await reconcileUncertainSubmissions(in: session.id, before: messageID)
+            }
             requestStarted = true
             let admission = try await messagesService!.sendPromptAsync(
                 sessionID: session.id,

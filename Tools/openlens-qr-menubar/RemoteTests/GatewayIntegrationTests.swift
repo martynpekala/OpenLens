@@ -367,6 +367,43 @@ struct GatewayIntegrationTests {
         #expect(ForwarderURLProtocol.recordedRequest()?.httpMethod == "GET")
     }
 
+    @Test func aLostPromptResponseIsReconciledAndRetriedThroughRemote() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+        let entry = #"{"id":"msg_1","sessionID":"ses_1","time":{"created":1},"type":"user","payload":{"text":"Hello"},"delivery":"steer"}"#
+        ForwarderURLProtocol.setRoutes([
+            "/api/session/ses_1": Data(#"{"data":{"id":"ses_1","location":{"directory":"\#(root.path)"}}}"#.utf8),
+            "/api/session/ses_1/prompt": Data(#"{"data":\#(entry)}"#.utf8),
+            "/api/session/ses_1/inbox": Data(#"{"data":[\#(entry)]}"#.utf8),
+        ])
+        ForwarderURLProtocol.failOnce(path: "/api/session/ses_1/prompt")
+        let prompt = RemoteHTTPRequest(
+            method: "POST",
+            pathAndQuery: "/api/session/ses_1/prompt",
+            headers: ["Content-Type": "application/json"],
+            body: Data(#"{"id":"msg_1","text":"Hello","delivery":"steer"}"#.utf8)
+        )
+
+        // The upstream received the prompt but its response was lost.
+        await #expect(throws: (any Error).self) { _ = try await forwarder.perform(prompt) }
+        let inbox = try await forwarder.perform(RemoteHTTPRequest(method: "GET", pathAndQuery: "/api/session/ses_1/inbox"))
+        let retry = try await forwarder.perform(prompt)
+
+        #expect(inbox.statusCode == 200)
+        #expect(inbox.body == Data(#"{"data":[\#(entry)]}"#.utf8))
+        #expect(retry.body == Data(#"{"data":\#(entry)}"#.utf8))
+        let forwardedPrompts = ForwarderURLProtocol.recordedRequests()
+            .filter { $0.url?.path == "/api/session/ses_1/prompt" }
+        #expect(forwardedPrompts.count == 2)
+        #expect(Set(forwardedPrompts.compactMap(\.httpBody)) == [try #require(prompt.body)])
+    }
+
     @Test func v2ActiveSnapshotFiltersForeignSessionsAndRechecksRegistry() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -904,6 +941,15 @@ private final class ForwarderURLProtocol: URLProtocol, @unchecked Sendable {
         lock.unlock()
     }
 
+    nonisolated(unsafe) private static var failingPaths: Set<String> = []
+
+    /// Records the next request to `path`, then fails it as if the response were lost.
+    static func failOnce(path: String) {
+        lock.lock()
+        failingPaths.insert(path)
+        lock.unlock()
+    }
+
     static func recordedRequests() -> [URLRequest] {
         lock.lock()
         defer { lock.unlock() }
@@ -951,7 +997,12 @@ private final class ForwarderURLProtocol: URLProtocol, @unchecked Sendable {
         Self.request = captured
         Self.history.append(captured)
         let response = Self.routes[request.url?.path ?? ""].map { Response(statusCode: 200, body: $0) } ?? Self.response
+        let fails = Self.failingPaths.remove(request.url?.path ?? "") != nil
         Self.lock.unlock()
+        if fails {
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            return
+        }
 
         let url = request.url ?? URL(string: "http://127.0.0.1")!
         let http = HTTPURLResponse(

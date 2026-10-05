@@ -66,6 +66,8 @@ struct V2PromptAdmissionTests {
             OpenCodeError.httpError(statusCode: 502),
             RemoteProtocolError.timeout,
             RemoteProtocolError.disconnected,
+            // The gateway reports an upstream failure after forwarding.
+            RemoteProtocolError.remoteError("request_failed"),
         ]
         let definitive: [Error] = [
             URLError(.notConnectedToInternet),
@@ -73,6 +75,8 @@ struct V2PromptAdmissionTests {
             OpenCodeError.httpError(statusCode: 400),
             OpenCodeError.notConnected,
             RemoteProtocolError.invalidRequest,
+            // The gateway refuses before forwarding when it is saturated.
+            RemoteProtocolError.remoteError("too_many_requests"),
         ]
 
         #expect(ambiguous.allSatisfy(OpenCodeClient.requestMayHaveReachedServer))
@@ -197,6 +201,48 @@ struct V2PromptAdmissionTests {
         #expect(ids.count == 2 && ids[0] != ids[1])
         #expect(requests.last?["text"] as? String == "Hello, with more detail")
         #expect(chat.promptSubmissions.map(\.state) == [.uncertain, .accepted(admissionID: ids[1])])
+    }
+
+    @Test func aChangedPromptFirstConfirmsTheEarlierUncertainOne() async throws {
+        let server = AdmissionFakeServer()
+        let chat = try await Self.openChat(server: server)
+        await server.loseNextResponses(1)
+        await server.setFailsReads(true)
+
+        chat.inputText = "Hello"
+        chat.send()
+        try await Self.waitUntil { chat.promptSubmissions.first?.state == .uncertain }
+        await server.setFailsReads(false)
+        await server.resetCounters()
+
+        chat.inputText = "Something else"
+        chat.send()
+        try await Self.waitUntil { chat.promptSubmissions.last?.state.isAccepted == true }
+
+        let paths = await server.requests.map(\.path)
+        let firstInboxRead = try #require(paths.firstIndex(of: "/api/session/ses_1/inbox"))
+        let newPrompt = try #require(paths.firstIndex(of: "/api/session/ses_1/prompt"))
+        #expect(firstInboxRead < newPrompt)
+        #expect(chat.promptSubmissions.allSatisfy { $0.state.isAccepted })
+        #expect(await server.admittedIDs.count == 2)
+    }
+
+    @Test func eachUserRowReportsItsAdmissionState() async throws {
+        let server = AdmissionFakeServer()
+        let chat = try await Self.openChat(server: server)
+        await server.rejectNextRequests(1)
+
+        chat.inputText = "Hello"
+        chat.send()
+        let rowID = try #require(chat.messages.last?.id)
+        #expect(chat.promptSubmissionState(forMessageID: rowID) == .sending)
+        try await Self.waitUntil { chat.promptSubmissionState(forMessageID: rowID) == .failed }
+
+        chat.send()
+        try await Self.waitUntil { chat.promptSubmissions.last?.state.isAccepted == true }
+        // The rejected row is replaced by the resent prompt, not duplicated.
+        #expect(chat.messages.filter { $0.role == .user }.map(\.content) == ["Hello"])
+        #expect(chat.promptSubmissionState(forMessageID: rowID) == nil)
     }
 
     @Test func aServerRejectionFailsWithoutReconcilingAndKeepsTheComposerText() async throws {

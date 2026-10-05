@@ -488,7 +488,10 @@ actor OpenCodeClient {
             }
         case let error as RemoteProtocolError:
             switch error {
-            case .timeout, .disconnected, .malformedMessage, .remoteError:
+            case let .remoteError(code):
+                // The gateway rejects saturated connections before forwarding.
+                return code != "too_many_requests"
+            case .timeout, .disconnected, .malformedMessage:
                 return true
             default:
                 return false

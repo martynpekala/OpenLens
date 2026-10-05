@@ -2540,7 +2540,12 @@ private struct ChatMessagesListView: View {
     private func timelineRow(_ item: ChatTimelineItem) -> some View {
         switch item.content {
         case .message(let message):
-            MessageBubbleView(message: message)
+            MessageBubbleView(
+                message: message,
+                submissionState: message.role == .user
+                    ? chatClient.promptSubmissionState(forMessageID: message.id)
+                    : nil
+            )
         case .assistantSegment(let message, let segment):
             AssistantSegmentTimelineRow(
                 message: message,
