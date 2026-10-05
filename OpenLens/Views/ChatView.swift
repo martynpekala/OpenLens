@@ -107,11 +107,7 @@ struct ChatView: View {
             )
         }
         .onAppear {
-            updateShakeMonitoring(for: scenePhase)
             displayedResponseState = chatClient.responseState
-        }
-        .onDisappear {
-            chatEasterEgg.stopShakeMonitoring()
         }
         // Initial load: ensure session is loaded when view appears
         .task {
@@ -124,8 +120,6 @@ struct ChatView: View {
 
         // Foreground recovery: refresh messages and questions when app becomes active
         .onChange(of: scenePhase) { _, newPhase in
-            updateShakeMonitoring(for: newPhase)
-
             if newPhase == .active {
                 chatClient.setupSSEHandlers()
                 Task {
@@ -273,14 +267,6 @@ struct ChatView: View {
 
         withAnimation(animation) {
             displayedResponseState = state
-        }
-    }
-
-    private func updateShakeMonitoring(for phase: ScenePhase) {
-        if phase == .active {
-            chatEasterEgg.startShakeMonitoring()
-        } else {
-            chatEasterEgg.stopShakeMonitoring()
         }
     }
 
