@@ -118,11 +118,7 @@ struct ChatView: View {
             )
         }
         .onAppear {
-            updateShakeMonitoring(for: scenePhase)
             displayedResponseState = chatClient.responseState
-        }
-        .onDisappear {
-            chatEasterEgg.stopShakeMonitoring()
         }
         // Initial load: ensure session is loaded when view appears
         .task {
@@ -141,8 +137,6 @@ struct ChatView: View {
         // suspended the app, so reconcile session and transcript before the
         // incremental stream is considered current again.
         .onChange(of: scenePhase) { _, newPhase in
-            updateShakeMonitoring(for: newPhase)
-
             if newPhase == .active {
                 chatClient.setupSSEHandlers()
                 chatClient.synchronizeCurrentSessionFromServer()
@@ -321,14 +315,6 @@ struct ChatView: View {
 
         withAnimation(animation) {
             displayedResponseState = state
-        }
-    }
-
-    private func updateShakeMonitoring(for phase: ScenePhase) {
-        if phase == .active {
-            chatEasterEgg.startShakeMonitoring()
-        } else {
-            chatEasterEgg.stopShakeMonitoring()
         }
     }
 
