@@ -6,8 +6,6 @@ struct QueuedPromptTests {
     @Test func v2QueuedPromptUsesTheSharedPromptAdmissionContract() async throws {
         let transport = QueuedPromptTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
-            .init(statusCode: 204, body: Data()),
-            .init(statusCode: 204, body: Data()),
             .init(statusCode: 202, body: Data()),
         ])
         let client = OpenCodeClient(
@@ -26,10 +24,9 @@ struct QueuedPromptTests {
         )
 
         let requests = transport.recordedRequests()
+        // A v2 session owns its selection, so queued prompts never reapply it.
         #expect(requests.map { $0.url?.path } == [
             "/api/info",
-            "/api/session/session-1/model",
-            "/api/session/session-1/agent",
             "/api/session/session-1/prompt",
         ])
         let request = try #require(requests.last)
@@ -42,6 +39,8 @@ struct QueuedPromptTests {
         #expect(payload["id"] as? String == "msg_queued")
         #expect(payload["text"] as? String == "Run the tests after this finishes.")
         #expect(payload["delivery"] as? String == "queue")
+        #expect(payload["model"] == nil)
+        #expect(payload["agent"] == nil)
     }
 
     @MainActor

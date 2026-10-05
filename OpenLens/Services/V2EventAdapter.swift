@@ -48,6 +48,18 @@ nonisolated struct V2EventAdapter {
         case "session.renamed":
             guard let sessionID = data["sessionID"] as? String, let title = data["title"] as? String else { return reconcile() }
             return make("session.updated", ["info": ["id": sessionID, "title": title]])
+        // Explicit switches from any client change the session's canonical
+        // selection. Merge just that field so the chat follows it without a
+        // full transcript reconcile.
+        case "session.model.selected":
+            guard let sessionID = data["sessionID"] as? String,
+                  let model = data["model"] as? [String: Any],
+                  model["id"] is String, model["providerID"] is String else { return reconcile() }
+            return make("session.updated", ["info": ["id": sessionID, "model": model]])
+        case "session.agent.selected":
+            guard let sessionID = data["sessionID"] as? String,
+                  let agent = data["agent"] as? String else { return reconcile() }
+            return make("session.updated", ["info": ["id": sessionID, "agent": agent]])
         case "location.shutdown", "location.disposed", "location.reloaded":
             tools.removeAll()
             return make("session.reconcile", [:])

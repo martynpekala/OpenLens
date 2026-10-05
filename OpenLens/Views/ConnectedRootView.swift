@@ -147,7 +147,8 @@ struct ConnectedRootView: View {
             SessionsListView(
                 initialState: initialSessions,
                 onSelect: selectChatSession,
-                onDelete: handleDeletedSession
+                onDelete: handleDeletedSession,
+                newSessionModel: { await chatClient.newSessionModelPreference() }
             )
         case .micro:
             MicroRootView(chatClient: chatClient)
@@ -212,7 +213,8 @@ private struct ConnectedSidebarLayout: View {
                 presentationStyle: .sidebar,
                 selectedSessionID: router.selectedChatSessionID,
                 onSelect: selectChatSession,
-                onDelete: handleDeletedSession
+                onDelete: handleDeletedSession,
+                newSessionModel: { await chatClient.newSessionModelPreference() }
             )
         }
         .background {

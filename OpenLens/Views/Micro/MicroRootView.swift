@@ -1149,7 +1149,9 @@ struct MicroRootView: View {
         defer { isCreatingSession = false }
 
         do {
-            let session = try await sessionsService.createSession()
+            let session = try await sessionsService.createSession(
+                model: await chatClient.newSessionModelPreference()
+            )
             sessions.removeAll { $0.id == session.id }
             sessions.insert(session, at: 0)
             focusedSessionID = session.id

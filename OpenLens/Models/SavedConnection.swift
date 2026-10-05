@@ -352,6 +352,17 @@ final class SavedConnectionsStore {
         persist()
     }
 
+    /// Records a model in the recent-model history without changing the
+    /// connection's saved selection.
+    func recordRecentModelSelection(connectionID: String, providerID: String, modelID: String) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
+        connections[index].recentModelSelections = Self.updatedRecentModelSelections(
+            existing: connections[index].recentModelSelections ?? [],
+            selected: SavedModelSelection(providerID: providerID, modelID: modelID)
+        )
+        persist()
+    }
+
     /// Updates the default model for a specific connection.
     func updateDefaultModelSelection(connectionID: String, providerID: String, modelID: String) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }

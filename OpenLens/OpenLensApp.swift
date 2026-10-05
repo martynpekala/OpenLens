@@ -743,7 +743,10 @@ struct OpenLensApp: App {
         }
 
         do {
-            let session = try await sessionsService.createSession(title: request.title)
+            let session = try await sessionsService.createSession(
+                title: request.title,
+                model: await chatClient.newSessionModelPreference()
+            )
             router.selectChatSession(session)
         } catch {
             Logger.chat.error("Couldn't create the session an App Shortcut requested: \(error, privacy: .public)")

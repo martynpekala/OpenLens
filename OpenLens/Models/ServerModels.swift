@@ -14,6 +14,11 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     let time: OCSessionTime
     let share: OCShareInfo?
     let revert: OCSessionRevert?
+    /// v2 canonical agent for the next turn. Absent on v1 servers.
+    let agent: String?
+    /// v2 canonical model and reasoning variant for the next turn. Absent on
+    /// v1 servers, and on v2 sessions that use the server default.
+    let model: OCV2ModelRef?
 
     /// Convenience: Unix timestamp (seconds) when last updated. Used for sorting.
     var updatedAt: Double { time.updated / 1000.0 }
@@ -21,7 +26,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     var createdAt: Double { time.created / 1000.0 }
 
     enum CodingKeys: String, CodingKey {
-        case id, projectID, directory, location, parentID, title, version, time, share, revert
+        case id, projectID, directory, location, parentID, title, version, time, share, revert, agent, model
     }
 
     init(
@@ -33,7 +38,9 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         version: String? = nil,
         time: OCSessionTime,
         share: OCShareInfo? = nil,
-        revert: OCSessionRevert? = nil
+        revert: OCSessionRevert? = nil,
+        agent: String? = nil,
+        model: OCV2ModelRef? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -44,6 +51,8 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         self.time = time
         self.share = share
         self.revert = revert
+        self.agent = agent
+        self.model = model
     }
 
     init(from decoder: Decoder) throws {
@@ -58,6 +67,10 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         time = try container.decodeIfPresent(OCSessionTime.self, forKey: .time) ?? OCSessionTime(created: 0, updated: 0)
         share = try container.decodeIfPresent(OCShareInfo.self, forKey: .share)
         revert = try container.decodeIfPresent(OCSessionRevert.self, forKey: .revert)
+        // Selection fields are advisory for listing sessions, so a shape the
+        // app does not understand must not hide the session itself.
+        agent = (try? container.decodeIfPresent(String.self, forKey: .agent))?.nilIfBlank
+        model = (try? container.decodeIfPresent(OCV2ModelRef.self, forKey: .model)) ?? nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -71,6 +84,8 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         try container.encode(time, forKey: .time)
         try container.encodeIfPresent(share, forKey: .share)
         try container.encodeIfPresent(revert, forKey: .revert)
+        try container.encodeIfPresent(agent, forKey: .agent)
+        try container.encodeIfPresent(model, forKey: .model)
     }
 
     func hash(into hasher: inout Hasher) {
@@ -82,6 +97,17 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
             && lhs.title == rhs.title
             && lhs.time.updated == rhs.time.updated
             && lhs.revert == rhs.revert
+            && lhs.agent == rhs.agent
+            && lhs.model == rhs.model
+    }
+
+    /// Returns a copy with v2 canonical selection fields replaced.
+    func withSelection(agent: String?, model: OCV2ModelRef?) -> OCSession {
+        OCSession(
+            id: id, projectID: projectID, directory: directory, parentID: parentID,
+            title: title, version: version, time: time, share: share, revert: revert,
+            agent: agent, model: model
+        )
     }
 }
 
@@ -2507,6 +2533,7 @@ nonisolated struct OCV2CreateSessionInput: Encodable, Sendable {
     let id: String
     let title: String?
     let location: OCV2LocationInfo?
+    var model: OCV2ModelRef? = nil
 }
 
 nonisolated struct OCV2PromptInput: Codable, Sendable {
@@ -2555,7 +2582,8 @@ nonisolated struct OCV2InterruptResponse: Decodable, Sendable {
 
 /// The v2 session model endpoints use `id`, rather than the legacy
 /// `modelID`, and include the selected reasoning variant in the same object.
-nonisolated struct OCV2ModelRef: Codable, Sendable {
+/// A v2 session's canonical model selection (`Model.Ref`).
+nonisolated struct OCV2ModelRef: Codable, Hashable, Sendable {
     let id: String
     let providerID: String
     let variant: String?

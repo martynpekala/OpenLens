@@ -81,6 +81,8 @@ struct SessionsListView: View {
     let selectedSessionID: String?
     var onSelect: (OCSession) -> Void
     var onDelete: (OCSession) -> Void
+    /// Resolves the model a new session starts with; nil uses the server default.
+    var newSessionModel: @MainActor () async -> OCV2ModelRef?
 
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.connection) private var connection
@@ -90,12 +92,14 @@ struct SessionsListView: View {
         presentationStyle: PresentationStyle = .navigation,
         selectedSessionID: String? = nil,
         onSelect: @escaping (OCSession) -> Void,
-        onDelete: @escaping (OCSession) -> Void = { _ in }
+        onDelete: @escaping (OCSession) -> Void = { _ in },
+        newSessionModel: @escaping @MainActor () async -> OCV2ModelRef? = { nil }
     ) {
         self.presentationStyle = presentationStyle
         self.selectedSessionID = selectedSessionID
         self.onSelect = onSelect
         self.onDelete = onDelete
+        self.newSessionModel = newSessionModel
 
         switch initialState {
         case .loaded(let sessions):
@@ -159,7 +163,7 @@ struct SessionsListView: View {
             .scrollEdgeEffectStyle(.soft, for: .bottom)
         .background(isSidebar ? Color.clear : Color.appBackground)
         .sheet(item: $newSessionRequest) { _ in
-            NewSessionSheet { session in
+            NewSessionSheet(newSessionModel: newSessionModel) { session in
                 handleCreatedSession(session)
             }
             .presentationDetents([.medium, .large])
@@ -599,6 +603,7 @@ private struct NewSessionSheet: View {
         case error(String)
     }
 
+    let newSessionModel: @MainActor () async -> OCV2ModelRef?
     let onCreated: (OCSession) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -1008,7 +1013,8 @@ private struct NewSessionSheet: View {
             let session = try await sessionsService.createSession(
                 title: trimmedTitle.isEmpty ? nil : trimmedTitle,
                 workspaceDirectory: selectedWorkspace.directory,
-                clearsWorkspaceContext: selectedWorkspace.clearsWorkspaceContext
+                clearsWorkspaceContext: selectedWorkspace.clearsWorkspaceContext,
+                model: await newSessionModel()
             )
             onCreated(session)
             dismiss()

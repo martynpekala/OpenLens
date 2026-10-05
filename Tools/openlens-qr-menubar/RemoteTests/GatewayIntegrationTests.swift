@@ -512,7 +512,8 @@ struct GatewayIntegrationTests {
         let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
 
         for directory in [nil, second.path] as [String?] {
-            var body: [String: Any] = ["title": "Created remotely"]
+            let model: [String: String] = ["id": "claude-a", "providerID": "anthropic", "variant": "high"]
+            var body: [String: Any] = ["title": "Created remotely", "model": model]
             if let directory { body["location"] = ["directory": directory] }
             _ = try await forwarder.perform(RemoteHTTPRequest(
                 method: "POST", pathAndQuery: "/api/session",
@@ -522,6 +523,8 @@ struct GatewayIntegrationTests {
             let payload = try #require(request.httpBody)
             let forwarded = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
             #expect(forwarded["location"] as? [String: String] == ["directory": directory ?? root.path])
+            // New-session model preferences reach OpenCode unchanged.
+            #expect(forwarded["model"] as? [String: String] == model)
             #expect(request.url?.query == nil)
         }
 

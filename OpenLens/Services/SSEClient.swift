@@ -98,6 +98,7 @@ nonisolated struct SSESessionUpdate {
         self.sessionID = sessionID
         self.presentFields = Set(info.keys).intersection(Set([
             "projectID", "directory", "parentID", "title", "version", "time", "share", "revert",
+            "agent", "model",
         ]))
         self.update = SSEPreparedPayload.decode(OCSession.self, from: info).map(Self.boundedSession)
         self.title = StreamDisplayValue.preview(info["title"] as? String, maximumBytes: 512)
@@ -119,6 +120,13 @@ nonisolated struct SSESessionUpdate {
                 guard StreamDisplayValue.fitsIdentifier($0.messageID),
                       $0.partID == nil || StreamDisplayValue.fitsIdentifier($0.partID) else { return nil }
                 return OCSessionRevert(messageID: $0.messageID, partID: $0.partID)
+            },
+            agent: StreamDisplayValue.fitsIdentifier(session.agent) ? session.agent : nil,
+            model: session.model.flatMap {
+                guard StreamDisplayValue.fitsIdentifier($0.id),
+                      StreamDisplayValue.fitsIdentifier($0.providerID),
+                      $0.variant == nil || StreamDisplayValue.fitsIdentifier($0.variant) else { return nil }
+                return $0
             }
         )
     }

@@ -653,7 +653,9 @@ final class SSEEventHandler {
             version: includes("version") ? update.version : currentSession.version,
             time: includes("time") ? update.time : currentSession.time,
             share: includes("share") ? update.share : currentSession.share,
-            revert: includes("revert") ? update.revert : currentSession.revert
+            revert: includes("revert") ? update.revert : currentSession.revert,
+            agent: includes("agent") ? update.agent : currentSession.agent,
+            model: includes("model") ? update.model : currentSession.model
         )
     }
 

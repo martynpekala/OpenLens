@@ -79,7 +79,14 @@ final class ChatClient: SSEEventHandlerDelegate {
     var timelineVersion: UInt = 0
 
     /// Current session being viewed.
-    var currentSession: OCSession?
+    var currentSession: OCSession? {
+        didSet {
+            guard currentSession?.id != oldValue?.id
+                    || currentSession?.model != oldValue?.model
+                    || currentSession?.agent != oldValue?.agent else { return }
+            applyCanonicalSessionSettings()
+        }
+    }
 
     /// Agent activity tracker for shimmer display.
     var currentActivity: AgentActivity?
@@ -277,6 +284,17 @@ final class ChatClient: SSEEventHandlerDelegate {
             inMemoryRecentModelIDs.removeAll { $0 == selectionID }
             inMemoryRecentModelIDs.insert(selectionID, at: 0)
             inMemoryRecentModelIDs = Array(inMemoryRecentModelIDs.prefix(5))
+            return
+        }
+
+        // A v2 session owns its settings; switching one must not change the
+        // preference that seeds new sessions.
+        if usesV2SessionAPI, currentSession != nil {
+            savedConnectionsStore?.recordRecentModelSelection(
+                connectionID: connID,
+                providerID: selectedProviderID,
+                modelID: selectedModelID
+            )
             return
         }
 
@@ -533,8 +551,10 @@ final class ChatClient: SSEEventHandlerDelegate {
             return false
         }
 
-        selectModel(model)
-        selectVariant(assignment.variant)
+        setSelectedModel(model)
+        selectedVariant = assignment.variant
+        persistCurrentSelection()
+        switchCurrentSessionModelToSelection()
         return true
     }
 
@@ -1320,7 +1340,9 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         do {
-            let session = try await sessionsService!.ensureSession()
+            let session = try await sessionsService!.ensureSession(
+                model: await newSessionModelPreference()
+            )
             await loadSession(session)
         } catch {
             Logger.chat.error("ensureSession failed: \(error, privacy: .public)")
@@ -1345,6 +1367,16 @@ final class ChatClient: SSEEventHandlerDelegate {
             resetSessionState()
             currentSession = session
             return
+        }
+
+        // A listed session can be stale: another client may have switched its
+        // model or agent since the list loaded. v2 sessions own that selection,
+        // so open them from a fresh snapshot and fall back to the list entry.
+        var session = session
+        if usesV2SessionAPI, let sessionsService,
+           let freshSession = try? await sessionsService.getSession(id: session.id) {
+            guard !Task.isCancelled else { return }
+            session = freshSession
         }
 
         // Session-scoped API calls can be read without a location, but the chat
@@ -1399,10 +1431,14 @@ final class ChatClient: SSEEventHandlerDelegate {
             prepareTurnDiffRefresh(for: visibleMessages)
             preserveTurnFileChanges(in: visibleMessages)
             self.messages = visibleMessages
-            if syncModelSelection, Self.recentSessionModelSelection(from: visibleMessages) != nil {
-                syncSessionModelSelection(from: visibleMessages)
-            } else if syncModelSelection {
-                applyPreferredDefaultModelSelection()
+            // v2 sessions carry their canonical selection; transcript history
+            // and saved defaults must not override it.
+            if syncModelSelection, !usesV2SessionAPI {
+                if Self.recentSessionModelSelection(from: visibleMessages) != nil {
+                    syncSessionModelSelection(from: visibleMessages)
+                } else {
+                    applyPreferredDefaultModelSelection()
+                }
             }
             Logger.debug.info("messages count: \(visibleMessages.count)")
             self.contentVersion &+= 1
@@ -1476,7 +1512,9 @@ final class ChatClient: SSEEventHandlerDelegate {
                 version: session.version,
                 time: session.time,
                 share: session.share,
-                revert: OCSessionRevert(messageID: message.id)
+                revert: OCSessionRevert(messageID: message.id),
+                agent: session.agent,
+                model: session.model
             )
             await loadMessages()
         } catch {
@@ -2049,6 +2087,10 @@ final class ChatClient: SSEEventHandlerDelegate {
             self.selectedVariant = nil
         }
 
+        // The selection above models new-session preferences. An open v2
+        // session keeps showing its canonical selection, even when that model
+        // is not in this client's catalog.
+        applyCanonicalSessionSettings()
     }
 
     static func recentSessionModelSelection(from messages: [ChatMessage]) -> (providerID: String, modelID: String)? {
@@ -2080,18 +2122,24 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     func selectModel(_ model: SelectableModel) {
+        setSelectedModel(model)
+        persistCurrentSelection()
+        switchCurrentSessionModelToSelection()
+    }
+
+    func selectVariant(_ variantID: String?) {
+        selectedVariant = variantID
+        persistCurrentSelection()
+        switchCurrentSessionModelToSelection()
+    }
+
+    private func setSelectedModel(_ model: SelectableModel) {
         let isSameModel = selectedProviderID == model.providerID && selectedModelID == model.modelID
         selectedProviderID = model.providerID
         selectedModelID = model.modelID
         if !isSameModel || !model.variants.contains(where: { $0.id == selectedVariant }) {
             selectedVariant = nil
         }
-        persistCurrentSelection()
-    }
-
-    func selectVariant(_ variantID: String?) {
-        selectedVariant = variantID
-        persistCurrentSelection()
     }
 
     func toggleDefaultModel(_ model: SelectableModel) {
@@ -2102,6 +2150,160 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         refreshPreferredDefaultModelSelection()
+    }
+
+    // MARK: - V2 Session Settings
+
+    private enum SessionSettingsChange {
+        case model(OCV2ModelRef)
+        case agent(String)
+    }
+
+    enum SessionSettingsError: LocalizedError {
+        case notApplied
+
+        var errorDescription: String? {
+            "The session settings change was not applied."
+        }
+    }
+
+    /// Explicit setting changes for one v2 session, applied in order. The task
+    /// yields whether every change since the chain started succeeded, so a
+    /// prompt that depends on them is only admitted after they all apply.
+    private struct SessionSettingsChain {
+        let id: UUID
+        let sessionID: String
+        let task: Task<Bool, Never>
+    }
+
+    private var sessionSettingsChain: SessionSettingsChain?
+
+    /// Model to seed a new v2 session with: the saved new-session selection,
+    /// else the saved default, whichever this server still offers; otherwise
+    /// nil so the server default applies. Existing sessions never read this.
+    func newSessionModelPreference() async -> OCV2ModelRef? {
+        guard usesV2SessionAPI, !isDemoMode, !isRecordedReplayMode else { return nil }
+        if providers.isEmpty {
+            await loadProviders()
+        }
+        if let saved = savedConnectionsStore?.activeConnectionID.flatMap({
+               savedConnectionsStore?.savedModelSelection(connectionID: $0)
+           }),
+           let model = Self.resolveSavedModelSelection(
+               providerID: saved.providerID,
+               modelID: saved.modelID,
+               availableModels: availableModels,
+               legacyModelIDs: legacyModelIDs
+           ) {
+            let variant = saved.variant.flatMap { variant in
+                model.variants.contains { $0.id == variant } ? variant : nil
+            }
+            return OCV2ModelRef(id: model.modelID, providerID: model.providerID, variant: variant)
+        }
+        guard let selection = defaultModelSelection else { return nil }
+        return OCV2ModelRef(id: selection.modelID, providerID: selection.providerID, variant: nil)
+    }
+
+    /// Shows the open v2 session's canonical model and variant. While explicit
+    /// local changes are in flight the optimistic selection stays visible.
+    private func applyCanonicalSessionSettings() {
+        guard usesV2SessionAPI,
+              !isDemoMode,
+              !isRecordedReplayMode,
+              let session = currentSession,
+              sessionSettingsChain?.sessionID != session.id else { return }
+
+        if let model = session.model {
+            setDisplayedSelection(
+                providerID: model.providerID,
+                modelID: model.id,
+                variant: model.variant?.nilIfBlank
+            )
+        } else if let serverDefault = serverReportedDefault {
+            setDisplayedSelection(
+                providerID: serverDefault.providerID,
+                modelID: serverDefault.modelID,
+                variant: nil
+            )
+        }
+    }
+
+    private func setDisplayedSelection(providerID: String, modelID: String, variant: String?) {
+        if selectedProviderID != providerID { selectedProviderID = providerID }
+        if selectedModelID != modelID { selectedModelID = modelID }
+        if selectedVariant != variant { selectedVariant = variant }
+    }
+
+    private func switchCurrentSessionModelToSelection() {
+        guard let sessionID = currentSession?.id,
+              !selectedProviderID.isEmpty,
+              !selectedModelID.isEmpty else { return }
+        enqueueSessionSettingsChange(
+            .model(OCV2ModelRef(id: selectedModelID, providerID: selectedProviderID, variant: selectedVariant)),
+            for: sessionID
+        )
+    }
+
+    private func enqueueSessionSettingsChange(_ change: SessionSettingsChange, for sessionID: String) {
+        guard usesV2SessionAPI,
+              !isDemoMode,
+              !isRecordedReplayMode,
+              currentSession?.id == sessionID,
+              let sessionsService else { return }
+
+        let previous = sessionSettingsChain?.sessionID == sessionID ? sessionSettingsChain?.task : nil
+        let chainID = UUID()
+        let task = Task { [weak self] () -> Bool in
+            let previousSucceeded = await previous?.value ?? true
+            guard let self, self.currentSession?.id == sessionID else { return false }
+            do {
+                switch change {
+                case .model(let model):
+                    try await sessionsService.switchModel(sessionID: sessionID, model: model)
+                case .agent(let agent):
+                    try await sessionsService.switchAgent(sessionID: sessionID, agent: agent)
+                }
+            } catch {
+                guard self.currentSession?.id == sessionID else { return false }
+                switch change {
+                case .model:
+                    self.errorMessage = "Failed to change model: \(error.localizedDescription)"
+                case .agent(let agent):
+                    self.errorMessage = "Failed to switch to \(agent): \(error.localizedDescription)"
+                }
+                return false
+            }
+
+            // A result for a session that is no longer open must not touch
+            // the current chat or admit its prompts.
+            guard let session = self.currentSession, session.id == sessionID else { return false }
+            switch change {
+            case .model(let model):
+                self.currentSession = session.withSelection(agent: session.agent, model: model)
+            case .agent(let agent):
+                self.currentSession = session.withSelection(agent: agent, model: session.model)
+            }
+            return previousSucceeded
+        }
+        sessionSettingsChain = SessionSettingsChain(id: chainID, sessionID: sessionID, task: task)
+
+        Task { [weak self] in
+            _ = await task.value
+            guard let self, self.sessionSettingsChain?.id == chainID else { return }
+            self.sessionSettingsChain = nil
+            // Settles the display on the canonical selection, which restores
+            // it after a failed change.
+            self.applyCanonicalSessionSettings()
+        }
+    }
+
+    /// Waits for explicit setting changes queued before a prompt. Throws when
+    /// any of them failed or the session changed, so the prompt is not admitted.
+    private func awaitSessionSettingsChanges(for sessionID: String) async throws {
+        guard let chain = sessionSettingsChain, chain.sessionID == sessionID else { return }
+        guard await chain.task.value, currentSession?.id == sessionID else {
+            throw SessionSettingsError.notApplied
+        }
     }
 
     func updateSlashCatalog(commands: [String], agents: [String]) {
@@ -2298,6 +2500,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             }
 
             do {
+                try await awaitSessionSettingsChanges(for: session.id)
                 try await messagesService.queuePrompt(
                     sessionID: session.id,
                     text: text,
@@ -2492,6 +2695,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         do {
+            if let agent {
+                enqueueSessionSettingsChange(.agent(agent), for: session.id)
+            }
+            try await awaitSessionSettingsChanges(for: session.id)
             try await messagesService!.sendPromptAsync(
                 sessionID: session.id,
                 text: text,
@@ -2535,6 +2742,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
 
         do {
+            try await awaitSessionSettingsChanges(for: session.id)
             try await messagesService!.sendCommand(
                 sessionID: session.id,
                 command: command,
@@ -3674,6 +3882,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func resetSessionState() {
+        sessionSettingsChain = nil
         streamSynchronizationTask?.cancel()
         streamSynchronizationTask = nil
         streamSynchronizationToken = nil

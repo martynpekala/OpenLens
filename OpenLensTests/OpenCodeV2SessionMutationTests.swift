@@ -67,11 +67,9 @@ struct OpenCodeV2SessionMutationTests {
         #expect(requests[2].path == "/api/session/\(callerID)")
     }
 
-    @Test func v2PromptAppliesModelAndAgentBeforeAdmittingTheCallerIdentifiedTurn() async throws {
+    @Test func v2PromptLeavesTheCanonicalSelectionToTheSession() async throws {
         let transport = V2SessionMutationTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
-            .init(statusCode: 204, body: Data()),
-            .init(statusCode: 204, body: Data()),
             .init(statusCode: 200, body: Data(#"{"data":{"id":"msg_local","sessionID":"ses_1","time":{"created":0},"type":"user","payload":{"text":"Explain the migration"},"delivery":"steer"}}"#.utf8)),
         ])
         let client = OpenCodeClient(
@@ -80,6 +78,7 @@ struct OpenCodeV2SessionMutationTests {
         )
         _ = try await client.probeCapabilities()
 
+        // Selection arguments are v1-only; a v2 prompt never reapplies them.
         try await client.sendPromptAsync(
             sessionID: "ses_1",
             text: "Explain the migration",
@@ -90,32 +89,54 @@ struct OpenCodeV2SessionMutationTests {
         )
 
         let requests = transport.recordedRequests()
+        #expect(requests.map(\.path) == ["/api/info", "/api/session/ses_1/prompt"])
+
+        let prompt = try bodyObject(requests[1])
+        #expect(prompt["id"] as? String == "msg_local")
+        #expect(prompt["text"] as? String == "Explain the migration")
+        #expect(prompt["delivery"] as? String == "steer")
+        #expect(prompt["model"] == nil)
+        #expect(prompt["agent"] == nil)
+        #expect(requests[1].queryItems["location[directory]"] == nil)
+    }
+
+    @Test func v2ExplicitSwitchesUseTheSessionSettingRoutes() async throws {
+        let transport = V2SessionMutationTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 204, body: Data()),
+            .init(statusCode: 204, body: Data()),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            contextDirectory: "/workspace/OpenLens",
+            transport: transport
+        )
+        _ = try await client.probeCapabilities()
+
+        try await client.switchSessionModel(
+            sessionID: "ses_1",
+            model: OCV2ModelRef(id: "claude-sonnet", providerID: "anthropic", variant: "high")
+        )
+        try await client.switchSessionAgent(sessionID: "ses_1", agent: "build")
+
+        let requests = transport.recordedRequests()
         #expect(requests.map(\.path) == [
             "/api/info",
             "/api/session/ses_1/model",
             "/api/session/ses_1/agent",
-            "/api/session/ses_1/prompt",
         ])
-
-        let modelPayload = try bodyObject(requests[1])
-        let model = try #require(modelPayload["model"] as? [String: Any])
+        #expect(requests[1...].allSatisfy { $0.method == "POST" })
+        #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
+        let model = try #require(try bodyObject(requests[1])["model"] as? [String: Any])
         #expect(model["id"] as? String == "claude-sonnet")
         #expect(model["providerID"] as? String == "anthropic")
         #expect(model["variant"] as? String == "high")
         #expect(try bodyObject(requests[2])["agent"] as? String == "build")
-
-        let prompt = try bodyObject(requests[3])
-        #expect(prompt["id"] as? String == "msg_local")
-        #expect(prompt["text"] as? String == "Explain the migration")
-        #expect(prompt["delivery"] as? String == "steer")
-        #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
     }
 
     @Test func v2CommandUsesTheCommandAdmissionRouteAndRequestedDelivery() async throws {
         let transport = V2SessionMutationTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
-            .init(statusCode: 204, body: Data()),
-            .init(statusCode: 204, body: Data()),
             .init(statusCode: 204, body: Data()),
         ])
         let client = OpenCodeClient(
@@ -138,23 +159,12 @@ struct OpenCodeV2SessionMutationTests {
         )
 
         let requests = transport.recordedRequests()
-        #expect(requests.map(\.path) == [
-            "/api/info",
-            "/api/session/ses_1/model",
-            "/api/session/ses_1/agent",
-            "/api/session/ses_1/command",
-        ])
-        #expect(requests[1...].allSatisfy { $0.method == "POST" })
-        #expect(requests[1...].allSatisfy { $0.queryItems["location[directory]"] == nil })
+        // Commands run with the session's canonical selection.
+        #expect(requests.map(\.path) == ["/api/info", "/api/session/ses_1/command"])
+        #expect(requests[1].method == "POST")
+        #expect(requests[1].queryItems["location[directory]"] == nil)
 
-        let modelPayload = try bodyObject(requests[1])
-        let model = try #require(modelPayload["model"] as? [String: Any])
-        #expect(model["id"] as? String == "claude-sonnet")
-        #expect(model["providerID"] as? String == "anthropic")
-        #expect(model["variant"] as? String == "high")
-        #expect(try bodyObject(requests[2])["agent"] as? String == "build")
-
-        let command = try bodyObject(requests[3])
+        let command = try bodyObject(requests[1])
         #expect(command["name"] as? String == "review")
         #expect(command["text"] as? String == "--staged")
         #expect(command["files"] as? [[String: String]] == [["uri": "README.md"]])
@@ -163,6 +173,8 @@ struct OpenCodeV2SessionMutationTests {
         #expect(command["delivery"] as? String == "queue")
         #expect(command["command"] == nil)
         #expect(command["arguments"] == nil)
+        #expect(command["model"] == nil)
+        #expect(command["agent"] == nil)
     }
 
     @Test func v2PromptAttachesMentionedSkillsAndOmitsThemWhenThereAreNone() async throws {

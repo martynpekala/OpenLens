@@ -188,7 +188,13 @@ actor OpenCodeClient {
         return try await get("/session/\(id)")
     }
 
-    func createSession(title: String? = nil, parentID: String? = nil) async throws -> OCSession {
+    /// `model` seeds a new v2 session's canonical selection; when nil the
+    /// server applies its own default. It is ignored by v1 servers.
+    func createSession(
+        title: String? = nil,
+        parentID: String? = nil,
+        model: OCV2ModelRef? = nil
+    ) async throws -> OCSession {
         Logger.api.debug("Creating session with directory context \(self.contextDirectory ?? "nil", privacy: .public)")
         if usesV2 {
             // V2 session creation is location-scoped and returns its session
@@ -199,7 +205,8 @@ actor OpenCodeClient {
             let sessionID = "ses_\(UUID().uuidString)"
             let body = OCV2CreateSessionInput(
                 id: sessionID, title: title,
-                location: contextDirectory.map { OCV2LocationInfo(directory: $0, project: nil) }
+                location: contextDirectory.map { OCV2LocationInfo(directory: $0, project: nil) },
+                model: model
             )
             let data = try await sendV2RequestData(
                 method: "POST",
@@ -322,6 +329,10 @@ actor OpenCodeClient {
     }
 
     /// Send a prompt asynchronously (fire and forget, monitor via SSE).
+    ///
+    /// `model`, `agent`, and `variant` only apply to v1 servers. A v2 session
+    /// owns its canonical selection, so prompts never reapply it; callers use
+    /// `switchSessionModel` / `switchSessionAgent` for explicit changes.
     func sendPromptAsync(
         sessionID: String,
         text: String,
@@ -332,16 +343,6 @@ actor OpenCodeClient {
         skills: [OCV2SkillAttachment] = []
     ) async throws {
         if usesV2 {
-            // v2 records selection changes as session mutations. They must be
-            // accepted before the prompt is admitted, otherwise the runner may
-            // begin this turn with the previous selection.
-            try await applyV2PromptSelection(
-                sessionID: sessionID,
-                model: model,
-                agent: agent,
-                variant: variant
-            )
-
             try await sendV2RequestDiscardingResponse(
                 method: "POST",
                 path: "/api/session/\(sessionID)/prompt",
@@ -364,6 +365,7 @@ actor OpenCodeClient {
     /// Admit a prompt behind the active session turn without interrupting it.
     /// The scheduler responds with admission metadata. The chat only needs the
     /// successful admission signal, so its response body is intentionally ignored.
+    /// Selection parameters only apply to v1, matching `sendPromptAsync`.
     func queuePrompt(
         sessionID: String,
         text: String,
@@ -374,12 +376,6 @@ actor OpenCodeClient {
         skills: [OCV2SkillAttachment] = []
     ) async throws {
         if usesV2 {
-            try await applyV2PromptSelection(
-                sessionID: sessionID,
-                model: model,
-                agent: agent,
-                variant: variant
-            )
             try await sendV2RequestDiscardingResponse(
                 method: "POST",
                 path: "/api/session/\(sessionID)/prompt",
@@ -415,6 +411,35 @@ actor OpenCodeClient {
         let part = OCPromptPart(type: "text", text: text)
         let input = OCPromptInput(parts: [part], model: model, agent: agent, messageID: nil, variant: variant)
         return try await postCodable("/session/\(sessionID)/message", body: input)
+    }
+
+    // MARK: - V2 Session Settings
+
+    /// Records an explicit model/variant change on a v2 session. The server
+    /// acknowledges with 204 and publishes `session.model.selected`.
+    func switchSessionModel(sessionID: String, model: OCV2ModelRef) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Session model switching requires a v2 OpenCode server.")
+        }
+        try await sendV2RequestDiscardingResponse(
+            method: "POST",
+            path: "/api/session/\(sessionID)/model",
+            body: ["model": model],
+            includesLocation: false
+        )
+    }
+
+    /// Records an explicit agent change on a v2 session.
+    func switchSessionAgent(sessionID: String, agent: String) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Session agent switching requires a v2 OpenCode server.")
+        }
+        try await sendV2RequestDiscardingResponse(
+            method: "POST",
+            path: "/api/session/\(sessionID)/agent",
+            body: ["agent": agent],
+            includesLocation: false
+        )
     }
 
     // MARK: - Providers
@@ -513,6 +538,8 @@ actor OpenCodeClient {
         return response.data
     }
 
+    /// Selection parameters only apply to v1; v2 commands run with the
+    /// session's canonical model, variant, and agent.
     func sendCommand(
         sessionID: String,
         command: String,
@@ -526,12 +553,6 @@ actor OpenCodeClient {
         delivery: OCV2PromptInput.Delivery = .steer
     ) async throws {
         if usesV2 {
-            try await applyV2PromptSelection(
-                sessionID: sessionID,
-                model: model,
-                agent: agent,
-                variant: variant
-            )
             try await sendV2RequestDiscardingResponse(
                 method: "POST",
                 path: "/api/session/\(sessionID)/command",
@@ -989,35 +1010,6 @@ actor OpenCodeClient {
 
     private func supports(_ feature: OpenCodeOptionalFeature) -> Bool {
         capabilities?.supports(feature) ?? true
-    }
-
-    private func applyV2PromptSelection(
-        sessionID: String,
-        model: OCPromptInput.OCModelRef?,
-        agent: String?,
-        variant: String?
-    ) async throws {
-        if let model {
-            let selection = OCV2ModelRef(
-                id: model.modelID,
-                providerID: model.providerID,
-                variant: variant
-            )
-            try await sendV2RequestDiscardingResponse(
-                method: "POST",
-                path: "/api/session/\(sessionID)/model",
-                body: ["model": selection],
-                includesLocation: false
-            )
-        }
-        if let agent = agent?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank {
-            try await sendV2RequestDiscardingResponse(
-                method: "POST",
-                path: "/api/session/\(sessionID)/agent",
-                body: ["agent": agent],
-                includesLocation: false
-            )
-        }
     }
 
     private func getV2<T: Decodable>(

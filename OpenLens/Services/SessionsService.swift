@@ -95,10 +95,13 @@ final class SessionsService {
     // MARK: - Create
 
     /// Create a new session, optionally with a title and workspace context.
+    /// `model` is the new-session preference; nil lets a v2 server choose its
+    /// default. It never alters an existing session.
     func createSession(
         title: String? = nil,
         workspaceDirectory: String? = nil,
-        clearsWorkspaceContext: Bool = false
+        clearsWorkspaceContext: Bool = false,
+        model: OCV2ModelRef? = nil
     ) async throws -> OCSession {
         if ScreenshotFixtures.isEnabled {
             let now = Date().timeIntervalSince1970 * 1000
@@ -120,7 +123,7 @@ final class SessionsService {
             await connection.setProjectContext(directory: workspaceDirectory)
         }
 
-        let session = try await client.createSession(title: title)
+        let session = try await client.createSession(title: title, model: model)
         return resolvingProjectDirectory(for: session)
     }
 
@@ -152,7 +155,10 @@ final class SessionsService {
                 title: newTitle,
                 version: session.version,
                 time: session.time,
-                share: session.share
+                share: session.share,
+                revert: session.revert,
+                agent: session.agent,
+                model: session.model
             )
         }
 
@@ -167,7 +173,7 @@ final class SessionsService {
     // MARK: - Ensure Session
 
     /// Returns the most recent session, or creates a new one if none exist.
-    func ensureSession() async throws -> OCSession {
+    func ensureSession(model: OCV2ModelRef? = nil) async throws -> OCSession {
         if ScreenshotFixtures.isEnabled {
             return ScreenshotFixtures.defaultSession
         }
@@ -180,7 +186,25 @@ final class SessionsService {
         if let latest = sorted.first {
             return latest
         }
-        return try await createSession()
+        return try await createSession(model: model)
+    }
+
+    // MARK: - V2 Session Settings
+
+    /// Explicitly switches an existing v2 session's model and variant.
+    func switchModel(sessionID: String, model: OCV2ModelRef) async throws {
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+        try await client.switchSessionModel(sessionID: sessionID, model: model)
+    }
+
+    /// Explicitly switches an existing v2 session's agent.
+    func switchAgent(sessionID: String, agent: String) async throws {
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+        try await client.switchSessionAgent(sessionID: sessionID, agent: agent)
     }
 
     static func rootSessions(in sessions: [OCSession]) -> [OCSession] {
@@ -227,7 +251,9 @@ final class SessionsService {
                 version: session.version,
                 time: session.time,
                 share: session.share,
-                revert: session.revert
+                revert: session.revert,
+                agent: session.agent,
+                model: session.model
             )
         }
     }
