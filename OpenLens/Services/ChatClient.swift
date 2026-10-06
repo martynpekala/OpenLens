@@ -19,27 +19,27 @@ struct QueuedPrompt: Identifiable, Equatable {
     let id: UUID
     let messageID: String
     let text: String
-    let images: [PromptImageAttachment]
+    let attachments: [PromptAttachment]
     var state: State
 
     init(
         id: UUID = UUID(),
         messageID: String = UUID().uuidString,
         text: String,
-        images: [PromptImageAttachment] = [],
+        attachments: [PromptAttachment] = [],
         state: State
     ) {
         self.id = id
         self.messageID = messageID
         self.text = text
-        self.images = images
+        self.attachments = attachments
         self.state = state
     }
 }
 
 /// A v2 prompt admission attempt, keyed by its caller-provided message ID.
 /// `uncertain` means the request may have reached the server but admission
-/// could not be confirmed; resending the same text and images reuses the same
+/// could not be confirmed; resending the same text and attachments reuses the same
 /// ID so the server's first-admission-wins reconciliation prevents duplicate work.
 struct PromptSubmission: Identifiable, Equatable {
     enum State: Equatable {
@@ -53,8 +53,8 @@ struct PromptSubmission: Identifiable, Equatable {
     let sessionID: String
     /// Raw composer text, used to match retries and to restore the composer.
     let text: String
-    /// The exact prepared images, so a retry resends identical bytes.
-    let images: [PromptImageAttachment]
+    /// The exact prepared attachments, so a retry resends identical bytes.
+    let attachments: [PromptAttachment]
     var state: State
 }
 
@@ -90,7 +90,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
     var inputText: String = ""
-    private(set) var composerImages: [PromptImageAttachment] = []
+    private(set) var composerAttachments: [PromptAttachment] = []
     private(set) var isPreparingComposerImage = false
     var isLoading: Bool = false
     /// True while a follow-up is being admitted to the server-side turn queue.
@@ -1425,9 +1425,9 @@ final class ChatClient: SSEEventHandlerDelegate {
         await restoreProjectContext(for: session)
         guard !Task.isCancelled else { return }
 
-        // Images picked for one session must never be sent to another.
+        // Attachments picked for one session must never be sent to another.
         if currentSession?.id != session.id {
-            composerImages = []
+            composerAttachments = []
         }
 
         // Drain any in-flight state from the previous session
@@ -1504,7 +1504,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         resetSessionState()
         currentSession = nil
         inputText = ""
-        composerImages = []
+        composerAttachments = []
     }
 
     nonisolated static func messagesBeforeRevert(
@@ -1811,9 +1811,9 @@ final class ChatClient: SSEEventHandlerDelegate {
             // The restored text invited a retry; once the transcript proves
             // admission, resending would create new work, so withdraw it.
             if inputText == promptSubmissions[index].text,
-               composerImages == promptSubmissions[index].images {
+               composerAttachments == promptSubmissions[index].attachments {
                 inputText = ""
-                composerImages = []
+                composerAttachments = []
             }
             if errorMessage == AppText.promptAdmissionUncertain {
                 dismissError()
@@ -2010,7 +2010,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         isStreamSynchronized = false
         currentSession = nil
         inputText = ""
-        composerImages = []
+        composerAttachments = []
 
         await loadProviders()
         await ensureSession()
@@ -2479,15 +2479,15 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
-        let images = composerImages
-        guard validateComposerImages(images, text: text, delivery: .steer) else { return }
+        let attachments = composerAttachments
+        guard validateComposerAttachments(attachments, text: text, delivery: .steer) else { return }
 
         beginResponse()
 
-        let userMessage = makeOptimisticUserMessage(text: text, images: images)
+        let userMessage = makeOptimisticUserMessage(text: text, attachments: attachments)
         messages.append(userMessage)
         inputText = ""
-        composerImages = []
+        composerAttachments = []
 
         currentActivity = AgentActivity()
         currentActivity?.currentLabel = "Thinking..."
@@ -2498,7 +2498,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         contentVersion &+= 1
 
         Task {
-            await sendPromptAsync(text: text, messageID: userMessage.id, images: images)
+            await sendPromptAsync(text: text, messageID: userMessage.id, attachments: attachments)
         }
     }
 
@@ -2526,18 +2526,18 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
-        let images = composerImages
-        guard validateComposerImages(images, text: text, delivery: .queue) else { return }
+        let attachments = composerAttachments
+        guard validateComposerAttachments(attachments, text: text, delivery: .queue) else { return }
 
         let tracksAdmission = usesV2SessionAPI && !isDemoMode && !isRecordedReplayMode
         let queuedPrompt = QueuedPrompt(
-            messageID: tracksAdmission ? beginPromptSubmission(text: text, images: images) : UUID().uuidString,
+            messageID: tracksAdmission ? beginPromptSubmission(text: text, attachments: attachments) : UUID().uuidString,
             text: text,
-            images: images,
+            attachments: attachments,
             state: isDemoMode ? .queued : .submitting
         )
         inputText = ""
-        composerImages = []
+        composerAttachments = []
         queuedPrompts.append(queuedPrompt)
         contentVersion &+= 1
         scrollAnchor &+= 1
@@ -2582,7 +2582,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                     variant: selectedVariant,
                     messageID: tracksAdmission ? queuedPrompt.messageID : nil,
                     skills: skillAttachments(in: text),
-                    images: images
+                    attachments: attachments
                 )
                 if tracksAdmission {
                     settlePromptSubmission(
@@ -2611,7 +2611,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                     return
                 }
                 queuedPrompts.removeAll { $0.id == queuedPrompt.id }
-                restoreComposer(text, images: images)
+                restoreComposer(text, attachments: attachments)
                 errorMessage = outcome == .uncertain
                     ? AppText.promptAdmissionUncertain
                     : "Failed to queue: \(error.localizedDescription)"
@@ -2643,7 +2643,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                 id: prompt.messageID,
                 role: .user,
                 content: prompt.text,
-                parts: imageParts(for: prompt.images, messageID: prompt.messageID),
+                parts: attachmentParts(for: prompt.attachments, messageID: prompt.messageID),
                 createdAt: Date()
             )
         )
@@ -2688,15 +2688,15 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func sendAgentPrompt(text: String, agent: String, prompt: String) {
-        let images = composerImages
-        guard validateComposerImages(images, text: prompt, delivery: .steer) else { return }
+        let attachments = composerAttachments
+        guard validateComposerAttachments(attachments, text: prompt, delivery: .steer) else { return }
 
         beginResponse()
 
-        let userMessage = makeOptimisticUserMessage(text: text, images: images)
+        let userMessage = makeOptimisticUserMessage(text: text, attachments: attachments)
         messages.append(userMessage)
         inputText = ""
-        composerImages = []
+        composerAttachments = []
 
         currentActivity = AgentActivity()
         currentActivity?.currentLabel = "Running /\(agent)..."
@@ -2708,36 +2708,40 @@ final class ChatClient: SSEEventHandlerDelegate {
         scrollAnchor &+= 1
 
         Task {
-            await sendPromptAsync(text: prompt, agent: agent, messageID: userMessage.id, images: images)
+            await sendPromptAsync(text: prompt, agent: agent, messageID: userMessage.id, attachments: attachments)
         }
     }
 
-    private func makeOptimisticUserMessage(text: String, images: [PromptImageAttachment] = []) -> ChatMessage {
-        let id = usesV2SessionAPI ? beginPromptSubmission(text: text, images: images) : UUID().uuidString
+    private func makeOptimisticUserMessage(text: String, attachments: [PromptAttachment] = []) -> ChatMessage {
+        let id = usesV2SessionAPI ? beginPromptSubmission(text: text, attachments: attachments) : UUID().uuidString
         if usesV2SessionAPI {
             optimisticV2UserMessageIDs.insert(id)
         }
-        return ChatMessage(id: id, role: .user, content: text, parts: imageParts(for: images, messageID: id))
+        return ChatMessage(id: id, role: .user, content: text, parts: attachmentParts(for: attachments, messageID: id))
     }
 
-    private func imageParts(for images: [PromptImageAttachment], messageID: String) -> [OCPart] {
-        images.enumerated().map { index, image in
-            OCPart(
-                id: "\(messageID)-file-\(index)",
-                sessionID: currentSession?.id ?? "",
-                messageID: messageID,
-                type: .file,
-                mime: image.mime,
-                filename: image.name,
-                url: image.dataURI
-            )
+    private func attachmentParts(for attachments: [PromptAttachment], messageID: String) -> [OCPart] {
+        attachments.enumerated().map { index, attachment in
+            attachment.part(id: "\(messageID)-file-\(index)", sessionID: currentSession?.id ?? "", messageID: messageID)
         }
     }
 
-    // MARK: - Composer Images
+    // MARK: - Composer Attachments
 
-    var canAttachImages: Bool {
+    var canAttachFiles: Bool {
         usesV2SessionAPI && !isDemoMode && !isRecordedReplayMode && canCompose && currentSession != nil
+    }
+
+    var composerImages: [PromptImageAttachment] {
+        composerAttachments.compactMap(\.image)
+    }
+
+    /// The folder the current session runs in on the server; repository
+    /// references must stay inside it.
+    var sessionDirectory: String? {
+        let directory = currentSession?.directory
+        guard let directory, !directory.isEmpty else { return nil }
+        return directory
     }
 
     /// Whether the selected model reads images. v2 catalogs list input media;
@@ -2751,19 +2755,19 @@ final class ChatClient: SSEEventHandlerDelegate {
         return selectedModel.attachment
     }
 
-    func addComposerImage(_ image: PromptImageAttachment) {
-        composerImages.append(image)
+    func addComposerAttachment(_ attachment: PromptAttachment) {
+        composerAttachments.append(attachment)
     }
 
-    func removeComposerImage(id: String) {
-        composerImages.removeAll { $0.id == id }
+    func removeComposerAttachment(id: String) {
+        composerAttachments.removeAll { $0.id == id }
     }
 
     /// Prepares picked image data off the main actor and attaches it,
-    /// within the space the composer's text and images leave in the request.
+    /// within the space the composer's text and attachments leave in the request.
     /// `nil` means the photo library could not provide the image's bytes.
     func attachComposerImage(data: Data?) async {
-        guard canAttachImages else { return }
+        guard canAttachFiles else { return }
         guard let data else {
             errorMessage = PromptAttachmentError.unsupportedImage.errorDescription
             return
@@ -2790,11 +2794,73 @@ final class ChatClient: SSEEventHandlerDelegate {
                 try PromptImagePreparer.prepare(data, maximumBytes: budget)
             }.value
             guard currentSession?.id == sessionID else { return }
-            composerImages.append(image)
+            composerAttachments.append(.image(image))
         } catch {
             errorMessage = (error as? PromptAttachmentError)?.errorDescription
                 ?? PromptAttachmentError.unsupportedImage.errorDescription
         }
+    }
+
+    /// Attaches a text file picked from Files on the phone. Its content is
+    /// sent inline; files that aren't UTF-8 text or don't fit are refused.
+    func attachComposerTextFile(at url: URL) {
+        attachComposerTextFile(name: url.lastPathComponent) { try PromptTextFileAttachment.read(from: url) }
+    }
+
+    func attachComposerTextFile(data: Data, name: String) {
+        attachComposerTextFile(name: name) { try PromptTextFileAttachment(data: data, name: name) }
+    }
+
+    private func attachComposerTextFile(name: String, _ makeFile: () throws -> PromptTextFileAttachment) {
+        guard canAttachFiles else { return }
+        do {
+            let file = try makeFile()
+            do {
+                try appendIfItFits(.textFile(file))
+            } catch PromptAttachmentError.promptTooLarge where composerAttachments.isEmpty {
+                throw PromptAttachmentError.textFileTooLarge(name: name)
+            }
+        } catch {
+            errorMessage = (error as? PromptAttachmentError)?.errorDescription
+                ?? PromptAttachmentError.unreadableFile(name: name).errorDescription
+        }
+    }
+
+    /// Attaches a reference to a file in the session's folder on the server,
+    /// optionally limited to a line range. `relativePath` is relative to the
+    /// session folder; the server reads the file when the prompt is admitted.
+    func attachComposerServerFile(relativePath: String, lines: ServerFileReference.LineRange? = nil) {
+        guard canAttachFiles else { return }
+        do {
+            guard let directory = sessionDirectory, !relativePath.hasPrefix("/") else {
+                throw PromptAttachmentError.fileOutsideSession
+            }
+            let reference = try ServerFileReference(
+                path: ServerFileReference.path(relativePath, in: directory),
+                sessionDirectory: directory,
+                lines: lines
+            )
+            try appendIfItFits(.serverFile(reference))
+        } catch {
+            errorMessage = (error as? PromptAttachmentError)?.errorDescription
+                ?? PromptAttachmentError.fileOutsideSession.errorDescription
+        }
+    }
+
+    private func appendIfItFits(_ attachment: PromptAttachment) throws {
+        let input = OpenCodeClient.makePromptInput(
+            messageID: "msg_\(UUID().uuidString)",
+            text: inputText,
+            skills: skillAttachments(in: inputText),
+            attachments: composerAttachments + [attachment],
+            delivery: .queue
+        )
+        do {
+            try OpenCodeClient.validatePromptBodySize(input)
+        } catch {
+            throw PromptAttachmentError.promptTooLarge
+        }
+        composerAttachments.append(attachment)
     }
 
     private func currentComposerBodySize() -> Int {
@@ -2802,36 +2868,41 @@ final class ChatClient: SSEEventHandlerDelegate {
             messageID: "msg_\(UUID().uuidString)",
             text: inputText,
             skills: skillAttachments(in: inputText),
-            images: composerImages,
+            attachments: composerAttachments,
             delivery: .queue
         )
         return (try? OpenCodeClient.encodedPromptBodySize(input)) ?? 0
     }
 
     private func imageCapabilityError() -> PromptAttachmentError? {
-        guard usesV2SessionAPI else { return .imagesRequireV2 }
+        guard usesV2SessionAPI else { return .attachmentsRequireV2 }
         guard selectedModelAcceptsImages else {
             return .modelDoesNotAcceptImages(modelName: selectedModelDisplayName)
         }
         return nil
     }
 
-    /// Checks images against the selected model and the complete request
-    /// size before any row or request is created. Shows the error and keeps
-    /// the composer intact when the prompt cannot be sent.
-    private func validateComposerImages(
-        _ images: [PromptImageAttachment],
+    /// Checks attachments against the protocol, the selected model, and the
+    /// complete request size before any row or request is created. Shows the
+    /// error and keeps the composer intact when the prompt cannot be sent.
+    private func validateComposerAttachments(
+        _ attachments: [PromptAttachment],
         text: String,
         delivery: OCV2PromptInput.Delivery
     ) -> Bool {
-        guard !images.isEmpty else { return true }
-        var failure = imageCapabilityError()
+        guard !attachments.isEmpty else { return true }
+        var failure: PromptAttachmentError?
+        if !usesV2SessionAPI {
+            failure = .attachmentsRequireV2
+        } else if attachments.contains(where: { $0.image != nil }) {
+            failure = imageCapabilityError()
+        }
         if failure == nil {
             let input = OpenCodeClient.makePromptInput(
                 messageID: "msg_\(UUID().uuidString)",
                 text: text,
                 skills: skillAttachments(in: text),
-                images: images,
+                attachments: attachments,
                 delivery: delivery
             )
             do {
@@ -2855,14 +2926,14 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     /// Starts tracking a v2 prompt and returns its caller-provided message ID.
-    /// Resending the exact text and images of an uncertain submission reuses
+    /// Resending the exact text and attachments of an uncertain submission reuses
     /// its ID; a rejected one is new work. Either way the stale local row is
     /// replaced.
-    private func beginPromptSubmission(text: String, images: [PromptImageAttachment]) -> String {
+    private func beginPromptSubmission(text: String, attachments: [PromptAttachment]) -> String {
         let sessionID = currentSession?.id ?? ""
         let id: String
         if let index = promptSubmissions.lastIndex(where: {
-            $0.sessionID == sessionID && $0.text == text && $0.images == images
+            $0.sessionID == sessionID && $0.text == text && $0.attachments == attachments
                 && ($0.state == .uncertain || $0.state == .failed)
         }) {
             let previous = promptSubmissions.remove(at: index)
@@ -2873,7 +2944,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             id = "msg_\(UUID().uuidString)"
         }
         promptSubmissions.append(
-            PromptSubmission(id: id, sessionID: sessionID, text: text, images: images, state: .sending)
+            PromptSubmission(id: id, sessionID: sessionID, text: text, attachments: attachments, state: .sending)
         )
         return id
     }
@@ -2941,10 +3012,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
-    private func restoreComposer(_ text: String, images: [PromptImageAttachment]) {
-        if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, composerImages.isEmpty {
+    private func restoreComposer(_ text: String, attachments: [PromptAttachment]) {
+        if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, composerAttachments.isEmpty {
             inputText = text
-            composerImages = images
+            composerAttachments = attachments
         }
     }
 
@@ -3004,18 +3075,18 @@ final class ChatClient: SSEEventHandlerDelegate {
             return
         }
 
-        let images = composerImages
-        guard validateComposerImages(images, text: text, delivery: .steer) else { return }
+        let attachments = composerAttachments
+        guard validateComposerAttachments(attachments, text: text, delivery: .steer) else { return }
 
-        let userMessage = makeOptimisticUserMessage(text: text, images: images)
+        let userMessage = makeOptimisticUserMessage(text: text, attachments: attachments)
         messages.append(userMessage)
         inputText = ""
-        composerImages = []
+        composerAttachments = []
         contentVersion &+= 1
         scrollAnchor &+= 1
 
         Task {
-            await sendPromptAsync(text: text, messageID: userMessage.id, images: images)
+            await sendPromptAsync(text: text, messageID: userMessage.id, attachments: attachments)
         }
     }
 
@@ -3023,7 +3094,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         text: String,
         agent: String? = nil,
         messageID: String? = nil,
-        images: [PromptImageAttachment] = []
+        attachments: [PromptAttachment] = []
     ) async {
         guard let session = currentSession else {
             markResponseFailed("Not connected.")
@@ -3049,7 +3120,7 @@ final class ChatClient: SSEEventHandlerDelegate {
                 variant: selectedVariant,
                 messageID: messageID,
                 skills: skillAttachments(in: text),
-                images: images
+                attachments: attachments
             )
             if tracksAdmission, let messageID {
                 settlePromptSubmission(messageID, as: .accepted(admissionID: admission?.id ?? messageID))
@@ -3084,7 +3155,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             // it over a later authoritative transcript load.
             optimisticV2UserMessageIDs.remove(messageID)
             if let submission = promptSubmissions.first(where: { $0.id == messageID }) {
-                restoreComposer(submission.text, images: submission.images)
+                restoreComposer(submission.text, attachments: submission.attachments)
             }
             guard responseState == .generating else { return }
             if outcome == .uncertain {

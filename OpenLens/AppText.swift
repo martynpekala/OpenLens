@@ -84,7 +84,11 @@ enum AppText {
     static let image = "Image"
     static let audio = "Audio"
     static let video = "Video"
-    static let attachImages = "Attach images"
+    static let attach = "Attach"
+    static let attachFiles = "Attach files"
+    static let attachFromFiles = "Files"
+    static let attachPhotos = "Photos"
+    static let attachRepositoryFile = "Repository File"
     static let attachedFile = "Attached file"
     static let attachedImage = "Attached image"
     static let pdf = "PDF"
@@ -94,6 +98,46 @@ enum AppText {
     static let promptAdmissionUnconfirmed = "Not confirmed"
     static let promptAdmissionUncertain = "OpenLens couldn’t confirm that the server received your prompt. It’s back in the composer — send it unchanged to retry without duplicating it."
     static let removeAttachedImage = "Remove image"
+    static let removeAttachment = "Remove attachment"
+    static let previewAttachment = "Preview"
+    static let previewTruncated = "Preview shortened. The whole file will be sent."
+    static let repositoryFileReference = "Repository file"
+    static let repositoryFiles = "Repository"
+    static let repositoryFolderEmpty = "This folder is empty"
+    static let repositoryFolderUnavailable = "Couldn't Load Folder"
+    static let repositoryFileUnavailable = "Couldn't Load File"
+    static let startLine = "Start line"
+    static let endLine = "End line"
+    static let wholeFileReference = "The whole file will be read when the prompt is sent. Add lines to narrow it."
+    static func lineRangeReference(_ label: String) -> String {
+        "Lines \(label) will be read when the prompt is sent."
+    }
+    nonisolated static func lineRangeToEnd(_ start: Int) -> String { "\(start)–end" }
+    static func lineRangePastEnd(_ lineCount: Int) -> String {
+        "This file has \(lineCount) lines. Choose lines within it."
+    }
+    nonisolated static let unsupportedImageAttachment = "This file isn't an image OpenLens can send. Choose a PNG, JPEG, GIF, WebP, or HEIC photo or screenshot."
+    nonisolated static let imageAttachmentTooLarge = "This image is too large to send, even after resizing. Crop it or choose a smaller image."
+    nonisolated static func unsupportedTextFileAttachment(_ name: String) -> String {
+        "\(name) isn't a UTF-8 text file. Choose a plain text, Markdown, or source file."
+    }
+    nonisolated static func textFileAttachmentTooLarge(_ name: String) -> String {
+        "\(name) is too large to attach. Choose a smaller file or reference it from the repository."
+    }
+    nonisolated static func unreadableFileAttachment(_ name: String) -> String {
+        "OpenLens couldn't read \(name). Make sure it's downloaded to this device and try again."
+    }
+    nonisolated static let repositoryFileNotText = "This file isn't text, so it can't be referenced by line."
+    nonisolated static let invalidLineRange = "Line ranges start at line 1 and can't end before they start."
+    nonisolated static let fileOutsideSession = "Only files inside this session's folder on the computer can be referenced."
+    nonisolated static let attachmentsTooLarge = "These attachments are too large to send together. Remove one and try again."
+    nonisolated static func modelDoesNotAcceptImages(_ modelName: String) -> String {
+        "\(modelName) doesn't accept images. Choose a model with image input or remove the images."
+    }
+    nonisolated static let attachmentsRequireV2 = "Sending attachments requires OpenCode 2."
+    nonisolated static func attachmentRejected(_ message: String) -> String {
+        "An attached file couldn't be used. \(message)"
+    }
     static let forget = "Forget"
     static let forgetConnection = "Forget Connection"
     static let forgetConnectionMessage = "Remove this server's credentials from Keychain? You'll need to re-enter them to connect again."

@@ -453,6 +453,143 @@ struct GatewayIntegrationTests {
         await #expect(throws: RemoteProtocolError.invalidRequest) { _ = try await forwarder.perform(oversized) }
     }
 
+    @Test func promptAttachmentURIsAreCheckedAgainstTheSessionFolder() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let workspace = root.appendingPathComponent("app")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: workspace.appendingPathComponent("escape"), withDestinationURL: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = workspace.resolvingSymlinksInPath().path
+
+        func rejection(_ files: Any?) throws -> RemoteHTTPResponse? {
+            var body: [String: Any] = ["id": "msg_1", "text": "Read"]
+            body["files"] = files
+            return OpenCodeForwarder.promptAttachmentRejection(
+                try JSONSerialization.data(withJSONObject: body),
+                sessionDirectory: directory
+            )
+        }
+
+        #expect(try rejection(nil) == nil)
+        #expect(try rejection([
+            ["uri": "data:text/plain;charset=utf-8;base64,aGk="],
+            ["uri": "file://\(directory)/Sources/main.swift?start=2&end=4"],
+            ["uri": "file://\(directory)"],
+        ]) == nil)
+        for uri in [
+            "file:///etc/hosts",
+            "file://\(directory)/../secret.txt",
+            "file://\(directory)/escape/secret.txt",
+            "file://\(directory)-other/a.txt",
+            "file://evil.example\(directory)/a.txt",
+            "https://example.com/a.txt",
+            "/Users/someone/a.txt",
+        ] {
+            let response = try #require(try rejection([["uri": uri]]), "\(uri)")
+            #expect(response.statusCode == 400)
+            let error = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+            #expect(error["field"] as? String == "files")
+        }
+        #expect(try rejection("file:///etc/hosts")?.statusCode == 400)
+
+        for query in ["start=0", "start=5&end=2", "start=a", "start=1&start=2", "start=%2B3", "lines=1"] {
+            let response = try #require(try rejection([["uri": "file://\(directory)/a.txt?\(query)"]]), "\(query)")
+            #expect(response.statusCode == 400)
+        }
+        #expect(try rejection([["uri": "file://\(directory)/a.txt?end=4"]]) == nil)
+    }
+
+    @Test func promptBodiesThatCouldParseDifferentlyUpstreamAreRefused() throws {
+        let directory = "/workspace/app"
+        let bodies = [
+            #"{"files":[{"uri":"data:text/plain;base64,aGk="}],"files":[{"uri":"file:///etc/hosts"}]}"#,
+            #"{"files":[{"uri":"data:text/plain;base64,aGk="}],"fil\u0065s":[{"uri":"file:///etc/hosts"}]}"#,
+            #"{"files":[{"uri":"file:///etc/hosts","uri":"data:text/plain;base64,aGk="}]}"#,
+            #"{"text":"\ud800","files":[{"uri":"file:///etc/hosts"}]}"#,
+            #"{"text":"hi""#,
+        ]
+        for body in bodies {
+            let response = try #require(
+                OpenCodeForwarder.promptAttachmentRejection(Data(body.utf8), sessionDirectory: directory), "\(body)"
+            )
+            #expect(response.statusCode == 400)
+        }
+        #expect(OpenCodeForwarder.promptAttachmentRejection(
+            Data(#"{"text":"a \"files\": [1]","nested":{"files":1},"other":{"files":2}}"#.utf8),
+            sessionDirectory: directory
+        ) == nil)
+        #expect(OpenCodeForwarder.promptAttachmentRejection(nil, sessionDirectory: directory) == nil)
+    }
+
+    @Test func promptFileAttachmentsMustStayInsideTheSessionsApprovedFolder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let workspace = root.appendingPathComponent("app")
+        let sources = workspace.appendingPathComponent("Sources")
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: workspace.appendingPathComponent("escape"), withDestinationURL: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        let approved = try registry.add(url: workspace).path
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+        let entry = #"{"id":"msg_1","sessionID":"ses_1","time":{"created":1},"type":"user","payload":{"text":"Read"},"delivery":"steer"}"#
+        ForwarderURLProtocol.setRoutes([
+            "/api/session/ses_1": Data(#"{"data":{"id":"ses_1","location":{"directory":"\#(workspace.path)"}}}"#.utf8),
+            "/api/session/ses_1/prompt": Data(#"{"data":\#(entry)}"#.utf8),
+        ])
+
+        func prompt(_ uris: [String]) throws -> RemoteHTTPRequest {
+            let body = try JSONSerialization.data(withJSONObject: [
+                "id": "msg_1", "text": "Read", "delivery": "steer",
+                "files": uris.map { ["uri": $0, "name": "file"] },
+            ])
+            return RemoteHTTPRequest(
+                method: "POST", pathAndQuery: "/api/session/ses_1/prompt",
+                headers: ["Content-Type": "application/json"], body: body
+            )
+        }
+        func forwardedPromptCount() -> Int {
+            ForwarderURLProtocol.recordedRequests().filter { $0.url?.path == "/api/session/ses_1/prompt" }.count
+        }
+
+        let allowed = try prompt([
+            "data:text/plain;charset=utf-8;base64,aGk=",
+            "file://\(approved)/Sources/main.swift?start=2&end=4",
+            "file://\(approved)/Sources",
+        ])
+        let response = try await forwarder.perform(allowed)
+        #expect(response.statusCode == 200)
+        #expect(forwardedPromptCount() == 1)
+
+        let refused = [
+            "file:///etc/hosts",
+            "file://\(approved)/../secret.txt",
+            "file://\(approved)/escape/allowlist.json",
+            "file://\(approved)-other/a.txt",
+            "file://evil.example\(approved)/a.txt",
+            "https://example.com/a.txt",
+            "/Users/someone/Documents/a.txt",
+        ]
+        for uri in refused {
+            let rejection = try await forwarder.perform(try prompt([uri]))
+            #expect(rejection.statusCode == 400, "\(uri)")
+            let error = try #require(JSONSerialization.jsonObject(with: rejection.body) as? [String: Any])
+            #expect(error["field"] as? String == "files")
+            #expect(error["_tag"] as? String == "InvalidRequestError")
+        }
+        #expect(forwardedPromptCount() == 1)
+
+        // Commands accept the same attachments, so they get the same check.
+        var command = try prompt(["file:///etc/hosts"])
+        command = RemoteHTTPRequest(
+            method: "POST", pathAndQuery: "/api/session/ses_1/command",
+            headers: command.headers, body: command.body
+        )
+        #expect(try await forwarder.perform(command).statusCode == 400)
+        #expect(!ForwarderURLProtocol.recordedRequests().contains { $0.url?.path == "/api/session/ses_1/command" })
+    }
+
     @Test func v2ActiveSnapshotFiltersForeignSessionsAndRechecksRegistry() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

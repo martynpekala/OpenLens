@@ -29,7 +29,13 @@ final class OpenCodeForwarder: @unchecked Sendable {
         let ownedSessionID = segments.count >= 3 && segments[0] == "api" && segments[1] == "session" && segments[2] != "active"
             ? segments[2] : nil
         if let ownedSessionID {
-            guard try await ownsSession(ownedSessionID) else { throw RemoteProtocolError.invalidRequest }
+            guard let sessionDirectory = try await ownedSessionDirectory(ownedSessionID) else {
+                throw RemoteProtocolError.invalidRequest
+            }
+            if localRequest.httpMethod == "POST", segments.count == 4, ["prompt", "command"].contains(segments[3]),
+               let rejection = Self.promptAttachmentRejection(localRequest.httpBody, sessionDirectory: sessionDirectory) {
+                return rejection
+            }
         }
         let (responseData, response) = try await session.data(for: localRequest)
         var data = responseData
@@ -88,20 +94,161 @@ final class OpenCodeForwarder: @unchecked Sendable {
         return workspaceRegistry.isAllowed(directory)
     }
 
-    /// No ownership cache: sessions can move and the approved registry can change.
     private func ownsSession(_ id: String) async throws -> Bool {
-        guard Self.isSafeIdentifier(id) else { return false }
+        try await ownedSessionDirectory(id) != nil
+    }
+
+    /// The approved directory a session runs in, or nil when it is not owned.
+    /// No ownership cache: sessions can move and the approved registry can change.
+    private func ownedSessionDirectory(_ id: String) async throws -> String? {
+        guard Self.isSafeIdentifier(id) else { return nil }
         let url = URL(string: "http://127.0.0.1:\(RemoteProtocolVersion.openCodePort)/api/session")!.appendingPathComponent(id)
         var request = URLRequest(url: url)
         request.setValue(authHeader, forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw RemoteProtocolError.invalidRequest }
-        if response.statusCode == 404 { return false }
+        if response.statusCode == 404 { return nil }
         guard response.statusCode == 200, data.count <= RemoteProtocolVersion.maximumHTTPBodyBytes,
               let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let info = envelope["data"] as? [String: Any], info["id"] as? String == id
         else { throw RemoteProtocolError.invalidRequest }
-        return ownsLocation(info["location"])
+        guard let location = info["location"] as? [String: Any], let directory = location["directory"] as? String,
+              workspaceRegistry.isAllowed(directory)
+        else { return nil }
+        return workspaceRegistry.resolvedPath(directory)
+    }
+
+    /// OpenCode reads `file:` attachments from anywhere on this computer, so a
+    /// prompt or command may only reference files inside its session's
+    /// approved folder. Inline `data:` content is allowed; any other URI is
+    /// refused. Refusals use OpenCode's own attachment error shape so the app
+    /// treats them as definitive rejections.
+    ///
+    /// The body is forwarded byte-for-byte, so it must mean the same thing to
+    /// OpenCode as it does here: bodies this parser can't read, or with
+    /// duplicate keys that parsers resolve differently, are refused.
+    static func promptAttachmentRejection(_ body: Data?, sessionDirectory: String) -> RemoteHTTPResponse? {
+        guard let body, !body.isEmpty else { return nil }
+        guard !body.contains(0), String(data: body, encoding: .utf8) != nil,
+              let prompt = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              !hasDuplicateObjectKeys(body)
+        else {
+            return attachmentRejection("The request body isn't valid JSON.", field: nil)
+        }
+        guard let files = prompt["files"] else { return nil }
+        guard let files = files as? [[String: Any]] else {
+            return attachmentRejection("Invalid attachments.")
+        }
+        for file in files {
+            guard let uri = file["uri"] as? String else { return attachmentRejection("Invalid attachment URI.") }
+            if uri.lowercased().hasPrefix("data:") { continue }
+            guard let components = URLComponents(string: uri), isFileURI(components, inside: sessionDirectory) else {
+                return attachmentRejection("Only files inside this session's approved folder can be attached.")
+            }
+            guard hasValidLineRange(components) else {
+                return attachmentRejection("Line ranges must be positive whole numbers and can't end before they start.")
+            }
+        }
+        return nil
+    }
+
+    private static func hasValidLineRange(_ components: URLComponents) -> Bool {
+        let items = components.queryItems ?? []
+        guard Set(items.map(\.name)).isSubset(of: ["start", "end"]),
+              Set(items.map(\.name)).count == items.count
+        else { return false }
+        var bounds: [String: Int] = [:]
+        for item in items {
+            guard let value = item.value, !value.isEmpty, value.allSatisfy(\.isASCII), value.allSatisfy(\.isNumber),
+                  let number = Int(value), number >= 1
+            else { return false }
+            bounds[item.name] = number
+        }
+        if let start = bounds["start"], let end = bounds["end"] { return end >= start }
+        return true
+    }
+
+    private enum JSONContainer {
+        case array
+        case object(keys: Set<String>, expectsKey: Bool)
+    }
+
+    /// Whether any object in already-parsed JSON repeats a key. Keys are
+    /// compared after unescaping, so `"files"` and `"fil\u0065s"` collide.
+    static func hasDuplicateObjectKeys(_ data: Data) -> Bool {
+        let bytes = [UInt8](data)
+        var stack: [JSONContainer] = []
+        var index = 0
+        while index < bytes.count {
+            switch bytes[index] {
+            case UInt8(ascii: "{"):
+                stack.append(.object(keys: [], expectsKey: true))
+            case UInt8(ascii: "["):
+                stack.append(.array)
+            case UInt8(ascii: "}"), UInt8(ascii: "]"):
+                _ = stack.popLast()
+            case UInt8(ascii: ","):
+                if case let .object(keys, _) = stack.last { stack[stack.count - 1] = .object(keys: keys, expectsKey: true) }
+            case UInt8(ascii: ":"):
+                if case let .object(keys, _) = stack.last { stack[stack.count - 1] = .object(keys: keys, expectsKey: false) }
+            case UInt8(ascii: "\""):
+                var end = index + 1
+                while end < bytes.count, bytes[end] != UInt8(ascii: "\"") {
+                    end += bytes[end] == UInt8(ascii: "\\") ? 2 : 1
+                }
+                guard end < bytes.count else { return true }
+                if case .object(var keys, true) = stack.last {
+                    guard let key = (try? JSONSerialization.jsonObject(
+                        with: Data(bytes[index...end]), options: .fragmentsAllowed
+                    )) as? String, keys.insert(key).inserted
+                    else { return true }
+                    stack[stack.count - 1] = .object(keys: keys, expectsKey: true)
+                }
+                index = end
+            default:
+                break
+            }
+            index += 1
+        }
+        return false
+    }
+
+    private static func isFileURI(_ components: URLComponents, inside directory: String) -> Bool {
+        guard components.scheme?.lowercased() == "file",
+              (components.host ?? "").isEmpty || components.host == "localhost",
+              components.user == nil, components.port == nil, components.fragment == nil
+        else { return false }
+        let path = components.path
+        guard path.hasPrefix("/"), !path.contains("\0"), !path.contains("\\"),
+              !path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." })
+        else { return false }
+        guard let root = realPath(directory), let target = realPath(path) else { return false }
+        return target == root || target.hasPrefix(root == "/" ? "/" : root + "/")
+    }
+
+    /// Resolves every symlink in the deepest existing ancestor of `path`, so a
+    /// link inside the folder can't point a not-yet-existing file elsewhere.
+    private static func realPath(_ path: String) -> String? {
+        var existing = path
+        var missing: [String] = []
+        while true {
+            if let resolved = realpath(existing, nil) {
+                defer { free(resolved) }
+                let base = String(cString: resolved)
+                guard !missing.isEmpty else { return base }
+                return (base == "/" ? "" : base) + "/" + missing.reversed().joined(separator: "/")
+            }
+            guard existing != "/", !existing.isEmpty else { return nil }
+            missing.append((existing as NSString).lastPathComponent)
+            existing = (existing as NSString).deletingLastPathComponent
+        }
+    }
+
+    private static func attachmentRejection(_ message: String, field: String? = "files") -> RemoteHTTPResponse {
+        var error = ["_tag": "InvalidRequestError", "message": message]
+        error["field"] = field
+        let body = (try? JSONSerialization.data(withJSONObject: error)) ?? Data()
+        return RemoteHTTPResponse(statusCode: 400, headers: ["Content-Type": "application/json"], body: body)
     }
 
     func makeEventStream(

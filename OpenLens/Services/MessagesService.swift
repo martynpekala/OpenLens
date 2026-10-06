@@ -34,7 +34,7 @@ final class MessagesService {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = [],
-        images: [PromptImageAttachment] = []
+        attachments: [PromptAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
@@ -48,7 +48,7 @@ final class MessagesService {
             variant: variant,
             messageID: messageID,
             skills: skills,
-            images: images
+            attachments: attachments
         )
     }
 
@@ -62,7 +62,7 @@ final class MessagesService {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = [],
-        images: [PromptImageAttachment] = []
+        attachments: [PromptAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
@@ -76,7 +76,7 @@ final class MessagesService {
             variant: variant,
             messageID: messageID,
             skills: skills,
-            images: images
+            attachments: attachments
         )
     }
 

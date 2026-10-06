@@ -335,8 +335,8 @@ actor OpenCodeClient {
     /// `switchSessionModel` / `switchSessionAgent` for explicit changes.
     ///
     /// On v2 the returned admission identifies the durable inbox entry. Pass
-    /// the same `messageID`, text, and images to retry without creating
-    /// duplicate work. Images are v2-only.
+    /// the same `messageID`, text, and attachments to retry without creating
+    /// duplicate work. Attachments are v2-only.
     @discardableResult
     func sendPromptAsync(
         sessionID: String,
@@ -346,7 +346,7 @@ actor OpenCodeClient {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = [],
-        images: [PromptImageAttachment] = []
+        attachments: [PromptAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         if usesV2 {
             return try await admitV2Prompt(
@@ -354,12 +354,12 @@ actor OpenCodeClient {
                 text: text,
                 messageID: messageID,
                 skills: skills,
-                images: images,
+                attachments: attachments,
                 delivery: .steer
             )
         }
 
-        guard images.isEmpty else { throw PromptAttachmentError.imagesRequireV2 }
+        guard attachments.isEmpty else { throw PromptAttachmentError.attachmentsRequireV2 }
         let part = OCPromptPart(type: "text", text: text)
         let input = OCPromptInput(parts: [part], model: model, agent: agent, messageID: nil, variant: variant)
         let _: EmptyResponse = try await postCodable("/session/\(sessionID)/prompt_async", body: input, expect204: true)
@@ -377,7 +377,7 @@ actor OpenCodeClient {
         variant: String? = nil,
         messageID: String? = nil,
         skills: [OCV2SkillAttachment] = [],
-        images: [PromptImageAttachment] = []
+        attachments: [PromptAttachment] = []
     ) async throws -> OCV2PromptAdmission? {
         if usesV2 {
             return try await admitV2Prompt(
@@ -385,12 +385,12 @@ actor OpenCodeClient {
                 text: text,
                 messageID: messageID,
                 skills: skills,
-                images: images,
+                attachments: attachments,
                 delivery: .queue
             )
         }
 
-        guard images.isEmpty else { throw PromptAttachmentError.imagesRequireV2 }
+        guard attachments.isEmpty else { throw PromptAttachmentError.attachmentsRequireV2 }
         let input = OCQueuedPromptInput(
             prompt: .init(text: text),
             delivery: .queue
@@ -413,14 +413,14 @@ actor OpenCodeClient {
         messageID: String?,
         text: String,
         skills: [OCV2SkillAttachment],
-        images: [PromptImageAttachment],
+        attachments: [PromptAttachment],
         delivery: OCV2PromptInput.Delivery
     ) -> OCV2PromptInput {
         OCV2PromptInput(
             id: messageID,
             text: text,
             skills: skills.isEmpty ? nil : skills,
-            files: images.isEmpty ? nil : images.map(\.promptFile),
+            files: attachments.isEmpty ? nil : attachments.map(\.promptFile),
             delivery: delivery
         )
     }
@@ -441,23 +441,31 @@ actor OpenCodeClient {
         text: String,
         messageID: String?,
         skills: [OCV2SkillAttachment],
-        images: [PromptImageAttachment],
+        attachments: [PromptAttachment],
         delivery: OCV2PromptInput.Delivery
     ) async throws -> OCV2PromptAdmission? {
         let input = Self.makePromptInput(
             messageID: messageID,
             text: text,
             skills: skills,
-            images: images,
+            attachments: attachments,
             delivery: delivery
         )
         try Self.validatePromptBodySize(input)
-        let data = try await sendV2RequestData(
-            method: "POST",
-            path: "/api/session/\(sessionID)/prompt",
-            body: input,
-            includesLocation: false
-        )
+        let data: Data
+        do {
+            data = try await sendV2RequestData(
+                method: "POST",
+                path: "/api/session/\(sessionID)/prompt",
+                body: input,
+                includesLocation: false
+            )
+        } catch let OpenCodeError.apiError(statusCode, payload)
+            where statusCode == 400 && payload.field == "files" {
+            // OpenCode (or OpenLens Remote) refused an attachment before
+            // admitting anything, so the prompt can be fixed and resent.
+            throw PromptAttachmentError.rejected(payload.message ?? "The server refused it.")
+        }
         do {
             let response: OCV2Envelope<OCV2PromptAdmission> = try decode(data)
             return response.data
@@ -789,10 +797,13 @@ actor OpenCodeClient {
         return try await get("/file/status")
     }
 
-    func readFileContent(path: String) async throws -> OCFileContent {
+    /// Reads a file relative to `directory`, or to the current context.
+    /// Reading from another session's folder is a v2 capability.
+    func readFileContent(path: String, directory: String? = nil) async throws -> OCFileContent {
         if usesV2 {
-            return try await readV2FileContent(path: path)
+            return try await readV2FileContent(path: path, directory: directory)
         }
+        guard directory == nil else { throw PromptAttachmentError.attachmentsRequireV2 }
 
         let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
         return try await get("/file/content?path=\(encodedPath)")
@@ -1385,8 +1396,13 @@ actor OpenCodeClient {
         return OCV2PageResult(values: page.data, nextCursor: next)
     }
 
-    private func readV2FileContent(path: String) async throws -> OCFileContent {
-        let request = makeV2Request(path: "/api/fs/read", pathParameter: path)
+    private func readV2FileContent(path: String, directory: String?) async throws -> OCFileContent {
+        let request = makeV2Request(
+            path: "/api/fs/read",
+            pathParameter: path,
+            queryItems: directory.map { [URLQueryItem(name: "location[directory]", value: $0)] } ?? [],
+            includesLocation: directory == nil
+        )
         let (data, response) = try await transport.data(for: request)
         try validateResponse(response, data: data)
 

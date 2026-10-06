@@ -472,6 +472,35 @@ enum ScreenshotFixtures {
         return trimmed ?? "."
     }
 
+    static func repositoryEntries(at relativePath: String) -> [RepositoryEntry] {
+        switch relativePath {
+        case "":
+            return [
+                RepositoryEntry(path: "OpenLens", name: "OpenLens", isDirectory: true),
+                RepositoryEntry(path: "OpenLensTests", name: "OpenLensTests", isDirectory: true),
+                RepositoryEntry(path: "AGENTS.md", name: "AGENTS.md", isDirectory: false),
+                RepositoryEntry(path: "README.md", name: "README.md", isDirectory: false),
+            ]
+        default:
+            return [
+                RepositoryEntry(path: relativePath + "/ChatView.swift", name: "ChatView.swift", isDirectory: false),
+                RepositoryEntry(path: relativePath + "/OpenLensApp.swift", name: "OpenLensApp.swift", isDirectory: false),
+            ]
+        }
+    }
+
+    static let repositoryFileContent = """
+    # OpenLens
+
+    OpenLens is a native iOS companion app for OpenCode.
+
+    ## Getting started
+
+    1. Start OpenCode on your Mac.
+    2. Pair OpenLens Remote by scanning the QR code.
+    3. Pick a session and start chatting.
+    """
+
     static func folderSnapshot(directory: String) -> WorkspaceFolderSnapshot {
         let names: [String]
         switch directory {

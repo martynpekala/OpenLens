@@ -2033,9 +2033,22 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
     /// A file on a user prompt (`Prompt.FileAttachment`): base64 `data` with
     /// its detected `mime`, whether it was sent inline or read from a URI.
     nonisolated struct File: Decodable, Sendable {
+        nonisolated struct Source: Decodable, Sendable {
+            let type: String
+            let uri: String?
+        }
+
         let data: String
         let mime: String
         let name: String?
+        let source: Source?
+
+        /// A server-read reference keeps its `file:` URI so it is shown as a
+        /// reference rather than inline content.
+        var partURL: String {
+            if source?.type == "uri", let uri = source?.uri, !uri.isEmpty { return uri }
+            return "data:\(mime);base64,\(data)"
+        }
     }
 
     /// One malformed file must not hide the rest of the prompt.
@@ -2127,7 +2140,7 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
                     type: .file,
                     mime: file.mime,
                     filename: file.name,
-                    url: "data:\(file.mime);base64,\(file.data)"
+                    url: file.partURL
                 )
             }
             parts = textParts + fileParts

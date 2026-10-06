@@ -1,5 +1,6 @@
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Main chat interface.
 /// Keeps view-local UI state and delegates IO to the coordinator ViewModel + services.
@@ -37,6 +38,8 @@ struct ChatView: View {
     @State private var displayedResponseState: ChatResponseState = .idle
     @State private var isComposerExpanded = false
     @State private var pickedPhotos: [PhotosPickerItem] = []
+    @State private var attachmentSource: ComposerAttachmentSource?
+    @State private var previewedTextFile: PromptTextFileAttachment?
 
     init(chatClient: ChatClient, initialSession: OCSession? = nil) {
         self._chatClient = Bindable(wrappedValue: chatClient)
@@ -620,19 +623,20 @@ struct ChatView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if !chatClient.composerImages.isEmpty || chatClient.isPreparingComposerImage {
-                ComposerImageStrip(
-                    images: chatClient.composerImages,
+            if !chatClient.composerAttachments.isEmpty || chatClient.isPreparingComposerImage {
+                ComposerAttachmentStrip(
+                    attachments: chatClient.composerAttachments,
                     isPreparing: chatClient.isPreparingComposerImage,
-                    onRemove: chatClient.removeComposerImage(id:)
+                    onRemove: chatClient.removeComposerAttachment(id:),
+                    onPreview: { previewedTextFile = $0 }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .center, spacing: 8) {
-                    if chatClient.canAttachImages {
-                        composerPhotoPicker
+                    if chatClient.canAttachFiles {
+                        composerAttachMenu
                     }
 
                     ComposerTokenLayout(spacing: 6, minimumFieldWidth: 120, lineHeight: 32) {
@@ -663,7 +667,7 @@ struct ChatView: View {
                     composerActionButton
                         .padding(4)
                 }
-                .padding(.leading, chatClient.canAttachImages ? 6 : 16)
+                .padding(.leading, chatClient.canAttachFiles ? 6 : 16)
                 .padding(.trailing, 4)
                 .padding(.vertical, 4)
                 .chatComposerFieldChrome(visualMode)
@@ -672,21 +676,55 @@ struct ChatView: View {
         .padding(.horizontal, 16)
     }
 
-    private var composerPhotoPicker: some View {
-        PhotosPicker(
-            selection: $pickedPhotos,
-            maxSelectionCount: 4,
-            matching: .images,
-            preferredItemEncoding: .compatible
-        ) {
-            Image(systemName: "photo.badge.plus")
+    private var composerAttachMenu: some View {
+        Menu {
+            Button(AppText.attachPhotos, systemImage: "photo.on.rectangle") {
+                attachmentSource = .photos
+            }
+            Button(AppText.attachFromFiles, systemImage: "folder") {
+                attachmentSource = .files
+            }
+            if chatClient.sessionDirectory != nil {
+                Button(AppText.attachRepositoryFile, systemImage: "chevron.left.forwardslash.chevron.right") {
+                    attachmentSource = .repository
+                }
+            }
+        } label: {
+            Image(systemName: "paperclip")
                 .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(secondaryTextColor)
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
         }
         .disabled(chatClient.isPreparingComposerImage)
-        .accessibilityLabel(AppText.attachImages)
+        .accessibilityLabel(AppText.attachFiles)
+        .photosPicker(
+            isPresented: attachmentSourceBinding(.photos),
+            selection: $pickedPhotos,
+            maxSelectionCount: 4,
+            matching: .images,
+            preferredItemEncoding: .compatible
+        )
+        .fileImporter(
+            isPresented: attachmentSourceBinding(.files),
+            allowedContentTypes: [.text, .sourceCode, .json, .xml, .yaml, .data],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case let .success(urls) = result else { return }
+            for url in urls {
+                chatClient.attachComposerTextFile(at: url)
+            }
+        }
+        .sheet(isPresented: attachmentSourceBinding(.repository)) {
+            if let directory = chatClient.sessionDirectory {
+                RepositoryFilePicker(directory: directory) { path, lines in
+                    chatClient.attachComposerServerFile(relativePath: path, lines: lines)
+                }
+            }
+        }
+        .sheet(item: $previewedTextFile) { file in
+            TextAttachmentPreview(file: file)
+        }
         .onChange(of: pickedPhotos) { _, items in
             guard !items.isEmpty else { return }
             pickedPhotos = []
@@ -696,6 +734,15 @@ struct ChatView: View {
                 }
             }
         }
+    }
+
+    private func attachmentSourceBinding(_ source: ComposerAttachmentSource) -> Binding<Bool> {
+        Binding(
+            get: { attachmentSource == source },
+            set: { isPresented in
+                if !isPresented, attachmentSource == source { attachmentSource = nil }
+            }
+        )
     }
 
     @ViewBuilder
@@ -2759,11 +2806,22 @@ private struct QueuedPromptBubbleView: View {
             Spacer(minLength: isRetroChat ? 42 : 64)
 
             VStack(alignment: .trailing, spacing: 6) {
-                if !prompt.images.isEmpty {
+                let images = prompt.attachments.compactMap(\.image)
+                if !images.isEmpty {
                     HStack(spacing: 6) {
-                        ForEach(prompt.images) { image in
+                        ForEach(images) { image in
                             PromptImageThumbnail(cacheKey: image.id, source: .data(image.data), side: 56)
                         }
+                    }
+                }
+                ForEach(prompt.attachments) { attachment in
+                    switch attachment {
+                    case .image:
+                        EmptyView()
+                    case let .textFile(file):
+                        PromptAttachmentChip(title: file.name, kind: .textFile)
+                    case let .serverFile(reference):
+                        PromptAttachmentChip(title: reference.displayName, kind: .serverFile)
                     }
                 }
 
@@ -3077,4 +3135,10 @@ enum ChatScrollPolicy {
     static func shouldAnimateManualScroll(isLoading: Bool) -> Bool {
         !isLoading
     }
+}
+
+private enum ComposerAttachmentSource {
+    case photos
+    case files
+    case repository
 }

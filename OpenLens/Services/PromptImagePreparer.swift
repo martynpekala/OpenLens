@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// An image prepared on the phone for a v2 prompt. `data` holds the exact
 /// bytes sent, so a retry of the same submission resends identical content.
-nonisolated struct PromptImageAttachment: Identifiable, Equatable, Sendable {
+nonisolated struct PromptImageAttachment: Identifiable, Hashable, Sendable {
     let id: String
     let data: Data
     let mime: String
@@ -34,29 +34,6 @@ nonisolated struct PromptImageAttachment: Identifiable, Equatable, Sendable {
 
     var promptFile: OCV2PromptFile {
         OCV2PromptFile(uri: dataURI, name: name)
-    }
-}
-
-nonisolated enum PromptAttachmentError: LocalizedError, Equatable, Sendable {
-    case unsupportedImage
-    case imageTooLarge
-    case promptTooLarge
-    case modelDoesNotAcceptImages(modelName: String)
-    case imagesRequireV2
-
-    var errorDescription: String? {
-        switch self {
-        case .unsupportedImage:
-            "This file isn't an image OpenLens can send. Choose a PNG, JPEG, GIF, WebP, or HEIC photo or screenshot."
-        case .imageTooLarge:
-            "This image is too large to send, even after resizing. Crop it or choose a smaller image."
-        case .promptTooLarge:
-            "These images are too large to send together. Remove an image and try again."
-        case let .modelDoesNotAcceptImages(modelName):
-            "\(modelName) doesn't accept images. Choose a model with image input or remove the images."
-        case .imagesRequireV2:
-            "Sending images requires OpenCode 2."
-        }
     }
 }
 

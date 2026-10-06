@@ -81,7 +81,7 @@ struct V2PromptImageAttachmentTests {
         let api = try await Self.makeClient(server: server)
         let image = try Self.screenshot()
 
-        _ = try await api.sendPromptAsync(sessionID: "ses_1", text: "What is this?", messageID: "msg_1", images: [image])
+        _ = try await api.sendPromptAsync(sessionID: "ses_1", text: "What is this?", messageID: "msg_1", attachments: [.image(image)])
 
         let body = try #require(await server.promptRequests.first?.json)
         let files = try #require(body["files"] as? [[String: Any]])
@@ -99,7 +99,7 @@ struct V2PromptImageAttachmentTests {
         let image = PromptImageAttachment(data: raw, mime: "image/png", name: "big.png", pixelWidth: 1, pixelHeight: 1)
 
         await #expect(throws: PromptAttachmentError.promptTooLarge) {
-            try await api.queuePrompt(sessionID: "ses_1", text: "Big", messageID: "msg_1", images: [image])
+            try await api.queuePrompt(sessionID: "ses_1", text: "Big", messageID: "msg_1", attachments: [.image(image)])
         }
         #expect(await server.promptRequests.isEmpty)
         #expect(!OpenCodeClient.requestMayHaveReachedServer(PromptAttachmentError.promptTooLarge))
@@ -147,7 +147,7 @@ struct V2PromptImageAttachmentTests {
         let image = try Self.screenshot()
 
         chat.inputText = "Look"
-        chat.addComposerImage(image)
+        chat.addComposerAttachment(.image(image))
         chat.send()
         try await Self.waitUntil { await server.promptRequests.count == 1 }
 
@@ -183,7 +183,7 @@ struct V2PromptImageAttachmentTests {
         let image = try Self.screenshot()
 
         chat.inputText = "Look"
-        chat.addComposerImage(image)
+        chat.addComposerAttachment(.image(image))
         chat.send()
 
         #expect(chat.errorMessage == PromptAttachmentError.modelDoesNotAcceptImages(modelName: "Claude A").errorDescription)
@@ -202,8 +202,8 @@ struct V2PromptImageAttachmentTests {
         let second = PromptImageAttachment(data: raw, mime: "image/png", name: "b.png", pixelWidth: 1, pixelHeight: 1)
 
         chat.inputText = "Two"
-        chat.addComposerImage(first)
-        chat.addComposerImage(second)
+        chat.addComposerAttachment(.image(first))
+        chat.addComposerAttachment(.image(second))
         chat.send()
 
         #expect(chat.errorMessage == PromptAttachmentError.promptTooLarge.errorDescription)
@@ -218,7 +218,7 @@ struct V2PromptImageAttachmentTests {
         let image = try Self.screenshot()
 
         chat.inputText = "Look"
-        chat.addComposerImage(image)
+        chat.addComposerAttachment(.image(image))
         chat.send()
         try await Self.waitUntil { chat.promptSubmissions.first?.state == .uncertain }
 
@@ -241,11 +241,11 @@ struct V2PromptImageAttachmentTests {
         await server.dropNextPrompts(1)
 
         chat.inputText = "Look"
-        chat.addComposerImage(try Self.screenshot())
+        chat.addComposerAttachment(.image(try Self.screenshot()))
         chat.send()
         try await Self.waitUntil { chat.promptSubmissions.first?.state == .uncertain }
 
-        chat.removeComposerImage(id: try #require(chat.composerImages.first?.id))
+        chat.removeComposerAttachment(id: try #require(chat.composerImages.first?.id))
         chat.send()
         try await Self.waitUntil { await server.promptRequests.count == 2 }
 
@@ -261,7 +261,7 @@ struct V2PromptImageAttachmentTests {
         let image = try Self.screenshot()
 
         chat.inputText = "Look"
-        chat.addComposerImage(image)
+        chat.addComposerAttachment(.image(image))
         chat.send()
         try await Self.waitUntil { chat.promptSubmissions.first?.state == .failed }
 
