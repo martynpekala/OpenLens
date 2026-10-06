@@ -29,6 +29,9 @@
 
 ## Verification
 - When app or widget code changes, run `xcodegen generate && xcodebuild -project OpenLens.xcodeproj -scheme OpenLens -destination 'platform=iOS Simulator,id=F323E9E4-4B39-4EB6-A42B-AB9E203A3E9A' CODE_SIGNING_ALLOWED=NO test` from the repo root.
+- To iterate quickly, split build and test instead of running `test` repeatedly: `xcodebuild -project OpenLens.xcodeproj -scheme OpenLens -destination 'platform=iOS Simulator,id=F323E9E4-4B39-4EB6-A42B-AB9E203A3E9A' CODE_SIGNING_ALLOWED=NO build-for-testing`, then the same command with `test-without-building -parallel-testing-enabled NO` (add `-only-testing:OpenLensTests/<Suite>` for one suite). Run `xcodegen generate` first when files are added or removed. The full suite runs in about 20 seconds this way.
+- Keep the simulator booted between runs. If a run stalls after "Simulator device failed to launch com.martyn.OpenLens", stop it, then `xcrun simctl shutdown`, `boot`, and `bootstatus` the simulator before retrying.
+- Tests are hosted in the iOS app, so they cannot run without a simulator unless the app is signed for "My Mac (Designed for iPad)".
 - Use the local booted `iPhone 18 Pro` simulator (`F323E9E4-4B39-4EB6-A42B-AB9E203A3E9A`) for OpenLens verification unless the user explicitly asks for another destination.
 - When `Tools/openlens-qr/` changes, run `xcrun swift build --package-path Tools/openlens-qr`.
 - When `Tools/appstore-shot-studio/` changes, open `Tools/appstore-shot-studio/index.html` locally or serve the folder and verify the changed flow in a browser.
@@ -37,3 +40,4 @@
 - Keep changes focused on the user-facing reason for the task.
 - Include screenshots for visible UI changes.
 - Do not commit secrets, signing material, or local editor/workspace files.
+- After marking an OpenCode V2 completion ticket done, add an entry to `.scratch/opencode-v2-completion/ENABLED.md` describing what the ticket now lets the user do, with its commits.
