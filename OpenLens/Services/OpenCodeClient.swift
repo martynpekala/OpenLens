@@ -809,6 +809,12 @@ actor OpenCodeClient {
         return try await get("/file/content?path=\(encodedPath)")
     }
 
+    /// The raw bytes of a file in `directory`, as served by v2.
+    func readFileData(path: String, directory: String) async throws -> Data {
+        guard usesV2 else { throw ToolResultFileError.unavailable }
+        return try await readV2FileData(path: path, directory: directory).0
+    }
+
     // MARK: - Project
 
     func listProjects() async throws -> [OCProject] {
@@ -1188,8 +1194,14 @@ actor OpenCodeClient {
             includesLocation: includesLocation
         )
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
-        let (data, response) = try await transport.data(for: request)
+        var (data, response) = try await transport.data(for: request)
         try validateResponse(response, data: data)
+        if ToolResultFileBudget.isTranscriptPath(path),
+           let value = try? JSONSerialization.jsonObject(with: data) {
+            // Same tool file budget the Remote gateway applies, so direct and
+            // Remote transcripts show the same files.
+            data = try ToolResultFileBudget.compactedJSON(value, maximumBytes: RemoteProtocolVersion.maximumHTTPBodyBytes)
+        }
         return try decode(data)
     }
 
@@ -1397,6 +1409,15 @@ actor OpenCodeClient {
     }
 
     private func readV2FileContent(path: String, directory: String?) async throws -> OCFileContent {
+        let (data, mimeType) = try await readV2FileData(path: path, directory: directory)
+        guard let content = String(data: data, encoding: .utf8)
+        else {
+            return OCFileContent(type: "binary", mimeType: mimeType)
+        }
+        return OCFileContent(type: "text", content: content, mimeType: mimeType)
+    }
+
+    private func readV2FileData(path: String, directory: String?) async throws -> (Data, String?) {
         let request = makeV2Request(
             path: "/api/fs/read",
             pathParameter: path,
@@ -1411,11 +1432,7 @@ actor OpenCodeClient {
             .split(separator: ";", maxSplits: 1)
             .first
             .map(String.init)
-        guard let content = String(data: data, encoding: .utf8)
-        else {
-            return OCFileContent(type: "binary", mimeType: mimeType)
-        }
-        return OCFileContent(type: "text", content: content, mimeType: mimeType)
+        return (data, mimeType)
     }
 
     private func makeV2Request(

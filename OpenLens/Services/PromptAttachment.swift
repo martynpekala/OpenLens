@@ -136,6 +136,14 @@ nonisolated struct ServerFileReference: Identifiable, Hashable, Sendable {
 
     var name: String { (path as NSString).lastPathComponent }
 
+    /// `path` relative to `sessionDirectory`, the folder it was checked against.
+    func relativePath(in sessionDirectory: String) -> String? {
+        guard let directory = Self.normalizedAbsolutePath(sessionDirectory) else { return nil }
+        let prefix = directory == "/" ? "/" : directory + "/"
+        guard path.hasPrefix(prefix) else { return nil }
+        return String(path.dropFirst(prefix.count))
+    }
+
     var displayName: String {
         lines.map { "\(name):\($0.label)" } ?? name
     }

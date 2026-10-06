@@ -719,8 +719,88 @@ struct GatewayIntegrationTests {
         registry.remove(id: workspace.id)
         #expect(try filter.append(allowed).isEmpty)
         #expect(throws: RemoteProtocolError.messageTooLarge) {
-            _ = try filter.append(Data(repeating: 65, count: RemoteProtocolVersion.maximumWireMessageBytes + 1))
+            _ = try filter.append(Data(repeating: 65, count: ToolResultFileBudget.maximumUpstreamBytes + 1))
         }
+    }
+
+    @Test func toolFilesInV2EventsAreCompactedToTheSharedBudgetInsteadOfEndingTheStream() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        let filter = GatewayV2EventFilter(registry: registry)
+        let small = "data:image/png;base64,iVBORw0KGgo="
+        let huge = "data:image/png;base64," + String(repeating: "A", count: 5 * 1_024 * 1_024)
+        let event: [String: Any] = [
+            "type": "session.tool.success", "location": ["directory": root.path],
+            "data": ["sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_1", "executed": true, "content": [
+                ["type": "text", "text": "Image read successfully"],
+                ["type": "file", "uri": huge, "mime": "image/png", "name": "huge.png"],
+                ["type": "file", "uri": small, "mime": "image/png", "name": "small.png"],
+            ]],
+        ]
+        let record = Data("event: message\ndata: ".utf8) + (try JSONSerialization.data(withJSONObject: event)) + Data("\n\n".utf8)
+        #expect(record.count > RemoteProtocolVersion.maximumWireMessageBytes)
+
+        let output = try filter.append(record)
+
+        let forwarded = try #require(output.first)
+        #expect(forwarded.count <= GatewayV2EventFilter.maximumForwardedBytes + 64)
+        let text = String(decoding: forwarded, as: UTF8.self)
+        #expect(text.contains("Image read successfully"))
+        #expect(text.contains("huge.png"))
+        #expect(text.contains(small.replacingOccurrences(of: "/", with: "\\/")) || text.contains(small))
+        #expect(!text.contains(String(repeating: "A", count: 1_024)))
+        // The forwarded record still fits one encrypted Remote message.
+        let frame = try RemoteMessage(kind: .eventData, payload: forwarded).encoded()
+        _ = try RemoteWireEnvelope(kind: .encrypted, sequence: 0, ciphertext: frame + Data(count: 16)).encoded()
+    }
+
+    @Test func toolFilesInTranscriptPagesAreCompactedToTheSharedBudget() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = WorkspaceRegistry(storageURL: root.appendingPathComponent("allowlist.json"))
+        _ = try registry.add(url: root)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForwarderURLProtocol.self]
+        let forwarder = OpenCodeForwarder(workspaceRegistry: registry, password: "test", session: URLSession(configuration: configuration))
+        let image = String(repeating: "B", count: 900_000)
+        func tool(_ id: String) -> [String: Any] {
+            ["type": "tool", "id": id, "name": "read", "time": ["created": 1], "state": [
+                "status": "completed", "input": [:] as [String: Any],
+                "content": [["type": "text", "text": "Read \(id)"], ["type": "file", "uri": "data:image/png;base64,\(image)", "mime": "image/png", "name": "\(id).png"]],
+            ]]
+        }
+        let page: [String: Any] = ["data": [[
+            "id": "msg_1", "type": "assistant", "time": ["created": 1], "content": [tool("one"), tool("two"), tool("three")],
+        ]], "cursor": ["next": NSNull()]]
+        ForwarderURLProtocol.setRoutes([
+            "/api/session/ses_1": Data(#"{"data":{"id":"ses_1","location":{"directory":"\#(root.path)"}}}"#.utf8),
+            "/api/session/ses_1/message": try JSONSerialization.data(withJSONObject: page),
+        ])
+
+        let response = try await forwarder.perform(RemoteHTTPRequest(method: "GET", pathAndQuery: "/api/session/ses_1/message"))
+
+        #expect(response.statusCode == 200)
+        #expect(response.body.count <= RemoteProtocolVersion.maximumHTTPBodyBytes)
+        let text = String(decoding: response.body, as: UTF8.self)
+        for id in ["one", "two", "three"] {
+            #expect(text.contains("Read \(id)"))
+            #expect(text.contains("\(id).png"))
+        }
+        // Only the first equally large file is withheld; the other two fit.
+        #expect(text.components(separatedBy: image).count - 1 == 2)
+        let forwarded = try JSONSerialization.jsonObject(with: response.body) as? [String: Any]
+        let messages = forwarded?["data"] as? [[String: Any]] ?? []
+        let tools = messages.first?["content"] as? [[String: Any]] ?? []
+        let kept: [Bool] = tools.map { tool in
+            let state = tool["state"] as? [String: Any]
+            let content = state?["content"] as? [[String: Any]]
+            return content?.last?["uri"] != nil
+        }
+        #expect(kept == [false, true, true])
     }
 
     @Test func v2SessionCreationPinsAndValidatesBodyLocation() async throws {

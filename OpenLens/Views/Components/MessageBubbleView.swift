@@ -85,6 +85,15 @@ struct MessageBubbleView: View {
                 if let output = step.outputPreview {
                     appendCopyable(output, to: &lines)
                 }
+                if let partial = step.partialOutputPreview {
+                    appendCopyable("\(AppText.partialOutputBeforeError)\n\(partial)", to: &lines)
+                }
+                for file in step.files {
+                    appendCopyable("\(AppText.toolReturnedFile): \(file.title)", to: &lines)
+                }
+                if step.omittedFileCount > 0 {
+                    appendCopyable(AppText.toolFilesNotShown(step.omittedFileCount), to: &lines)
+                }
             }
         }
 
@@ -357,6 +366,28 @@ struct MessageBubbleView: View {
                     .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 2)
+            }
+
+            if let partial = step.partialOutputPreview {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(AppText.partialOutputBeforeError)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 11, weight: .semibold))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : Color.appSecondary)
+                    Text(partial)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, design: .monospaced))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.leading, 2)
+            }
+
+            if !step.files.isEmpty || step.omittedFileCount > 0 {
+                ToolResultFilesStrip(
+                    files: step.files,
+                    omittedFileCount: step.omittedFileCount,
+                    usesRetroTypography: isRetroChat
+                )
+                .padding(.leading, 2)
             }
         }
         .padding(.leading, 2)

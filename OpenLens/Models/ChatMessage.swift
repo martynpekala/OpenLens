@@ -397,6 +397,13 @@ final class ChatMessage: Identifiable {
         let outputPreview: String?
         let isError: Bool
         let toolCategory: ToolCategory
+        /// Output a failed tool produced before its error, when the preview
+        /// above shows the error.
+        var partialOutputPreview: String? = nil
+        /// Files the tool returned, inspected from its row.
+        var files: [ToolResultFile] = []
+        /// Returned files beyond what one row shows.
+        var omittedFileCount = 0
     }
 
     struct PersistedQuestionStep: Identifiable {
@@ -2009,12 +2016,17 @@ final class ChatMessage: Identifiable {
                 ? toolPathPreview(from: state)
                 : nil
             let outputPreview: String?
+            var partialOutputPreview: String?
             if isTodoTool {
                 outputPreview = nil
             } else if state.status == .error {
                 outputPreview = inlineDetailPreview
                     ?? ToolOutputPreview.make(from: state.error)
                     ?? ToolOutputPreview.make(from: state.output)
+                let partialOutput = ToolOutputPreview.make(from: state.output)
+                if partialOutput != outputPreview {
+                    partialOutputPreview = partialOutput
+                }
             } else {
                 outputPreview = inlineDetailPreview
                     ?? ToolOutputPreview.make(from: state.output)
@@ -2027,7 +2039,12 @@ final class ChatMessage: Identifiable {
                 label: ToolLabelFormatter.label(toolName: toolName, state: state),
                 outputPreview: outputPreview,
                 isError: state.status == .error,
-                toolCategory: ToolCategory.from(toolName: toolName)
+                toolCategory: ToolCategory.from(toolName: toolName),
+                partialOutputPreview: partialOutputPreview,
+                files: state.files.enumerated().map { index, file in
+                    ToolResultFile(file: file, id: "\(part.id)-file-\(index)")
+                },
+                omittedFileCount: state.omittedFileCount
             )
         }
     }

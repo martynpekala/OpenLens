@@ -42,6 +42,17 @@ final class OpenCodeForwarder: @unchecked Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw RemoteProtocolError.remoteError("invalid_local_response")
         }
+        let isTranscript = ownedSessionID != nil && ToolResultFileBudget.isTranscriptPath(path)
+            && localRequest.httpMethod == "GET"
+        if isTranscript, (200..<300).contains(http.statusCode),
+           data.count <= ToolResultFileBudget.maximumUpstreamBytes {
+            // Tool files are fitted to the shared budget so a transcript with
+            // screenshots still fits; the app applies the same step directly.
+            data = try ToolResultFileBudget.compactedJSON(
+                JSONSerialization.jsonObject(with: data),
+                maximumBytes: RemoteProtocolVersion.maximumHTTPBodyBytes
+            )
+        }
         guard data.count <= RemoteProtocolVersion.maximumHTTPBodyBytes else {
             throw RemoteProtocolError.messageTooLarge
         }
@@ -804,7 +815,8 @@ final class GatewayEventStream: NSObject, URLSessionDataDelegate, @unchecked Sen
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard session === self.session, dataTask === task else { return }
-        if data.count > RemoteProtocolVersion.maximumWireMessageBytes {
+        // The v2 filter bounds whole records itself.
+        if eventFilter == nil, data.count > RemoteProtocolVersion.maximumWireMessageBytes {
             cancel()
             onComplete(RemoteProtocolError.messageTooLarge)
             return

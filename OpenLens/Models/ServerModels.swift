@@ -580,10 +580,52 @@ nonisolated struct OCPart: Codable, Identifiable, Sendable {
     }
 }
 
+/// A file returned by a v2 tool (`Tool.FileContent`). `uri` is nil when the
+/// file was withheld for exceeding `ToolResultFileBudget`, by this app or by
+/// the Remote gateway; its MIME and name still say what was left out.
+nonisolated struct OCToolFile: Codable, Hashable, Sendable {
+    let uri: String?
+    let mime: String
+    let name: String?
+
+    init(uri: String?, mime: String, name: String? = nil) {
+        self.uri = uri
+        self.mime = mime
+        self.name = name
+    }
+}
+
 nonisolated struct OCToolState: Codable, Sendable {
+    /// One `Tool.Content` item. Unknown or malformed items decode as nil so
+    /// they can't hide the rest of the result.
     private struct ContentItem: Decodable {
-        let type: OCPartType
+        let type: String?
         let text: String?
+        let uri: String?
+        let mime: String?
+        let name: String?
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            type = try? container.decodeIfPresent(String.self, forKey: .type)
+            text = try? container.decodeIfPresent(String.self, forKey: .text)
+            uri = try? container.decodeIfPresent(String.self, forKey: .uri)
+            mime = try? container.decodeIfPresent(String.self, forKey: .mime)
+            name = try? container.decodeIfPresent(String.self, forKey: .name)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case type, text, uri, mime, name
+        }
+    }
+
+    /// A non-object item (not keyed) also decodes as nil.
+    private struct OptionalContentItem: Decodable {
+        let value: ContentItem?
+
+        init(from decoder: Decoder) throws {
+            value = try? ContentItem(from: decoder)
+        }
     }
 
     private struct ErrorDetail: Decodable {
@@ -598,18 +640,23 @@ nonisolated struct OCToolState: Codable, Sendable {
     let metadata: [String: AnyCodable]?
     let time: OCToolTime?
     let attachments: [AnyCodable]?
+    /// Files the tool returned, within `ToolResultFileBudget.maximumFiles`.
+    let files: [OCToolFile]
+    /// Returned files beyond `ToolResultFileBudget.maximumFiles`.
+    let omittedFileCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case status, input, output, title, error, metadata, time, attachments
+        case status, input, output, title, error, metadata, time, attachments, files, omittedFileCount
     }
 
     private enum DecodingKeys: String, CodingKey {
-        case status, input, output, content, title, error, metadata, time, attachments
+        case status, input, output, content, title, error, metadata, time, attachments, files, omittedFileCount
     }
 
     init(status: OCToolStatus, input: AnyCodable? = nil, output: String? = nil,
          title: String? = nil, error: String? = nil, metadata: [String: AnyCodable]? = nil,
-         time: OCToolTime? = nil, attachments: [AnyCodable]? = nil) {
+         time: OCToolTime? = nil, attachments: [AnyCodable]? = nil,
+         files: [OCToolFile] = [], omittedFileCount: Int = 0) {
         self.status = status
         self.input = input
         self.output = output
@@ -618,18 +665,28 @@ nonisolated struct OCToolState: Codable, Sendable {
         self.metadata = metadata
         self.time = time
         self.attachments = attachments
+        self.files = files
+        self.omittedFileCount = omittedFileCount
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DecodingKeys.self)
         status = try container.decodeIfPresent(OCToolStatus.self, forKey: .status) ?? .pending
         input = try? container.decodeIfPresent(AnyCodable.self, forKey: .input)
+        let content = (try? container.decodeIfPresent([OptionalContentItem].self, forKey: .content))?
+            .compactMap(\.value)
+        if let content {
+            (files, omittedFileCount) = Self.boundedFiles(from: content)
+        } else {
+            files = (try? container.decodeIfPresent([OCToolFile].self, forKey: .files)) ?? []
+            omittedFileCount = max(0, (try? container.decodeIfPresent(Int.self, forKey: .omittedFileCount)) ?? 0)
+        }
         // output can sometimes be a non-string value; fall back gracefully
         if let str = try? container.decodeIfPresent(String.self, forKey: .output) {
             output = str
-        } else if let content = try? container.decodeIfPresent([ContentItem].self, forKey: .content) {
+        } else if let content {
             let text = content
-                .filter { $0.type == .text }
+                .filter { $0.type == "text" }
                 .compactMap(\.text)
                 .joined(separator: "\n")
             output = text.isEmpty ? nil : text
@@ -653,6 +710,21 @@ nonisolated struct OCToolState: Codable, Sendable {
         metadata = try? container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
         time = try? container.decodeIfPresent(OCToolTime.self, forKey: .time)
         attachments = try? container.decodeIfPresent([AnyCodable].self, forKey: .attachments)
+    }
+
+    /// Applies `ToolResultFileBudget`, exactly as the Remote gateway does,
+    /// so both transports keep the same files.
+    private static func boundedFiles(from content: [ContentItem]) -> ([OCToolFile], Int) {
+        let items = content.filter { $0.type == "file" }
+        let keeps = ToolResultFileBudget.keepsURIs(ofSizes: items.map { $0.uri?.utf8.count ?? 0 })
+        let files = zip(items, keeps).prefix(ToolResultFileBudget.maximumFiles).map { item, keeps in
+            OCToolFile(
+                uri: keeps ? item.uri : nil,
+                mime: StreamDisplayValue.preview(item.mime, maximumBytes: 128) ?? "application/octet-stream",
+                name: StreamDisplayValue.preview(item.name, maximumBytes: 512)
+            )
+        }
+        return (Array(files), items.count - files.count)
     }
 }
 

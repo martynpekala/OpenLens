@@ -2452,7 +2452,9 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
                 value = try JSONSerialization.jsonObject(with: Data(encoded.utf8))
             }
             if let envelope = value as? [String: Any], envelope["type"] != nil, envelope["data"] != nil {
-                return try v2EventAdapter.event(envelope, directory: contextDirectory)
+                // Same tool file budget the Remote gateway applies to events.
+                let fitted = try ToolResultFileBudget.fitted(envelope, maximumBytes: RemoteProtocolVersion.maximumHTTPBodyBytes)
+                return try v2EventAdapter.event(fitted as? [String: Any] ?? envelope, directory: contextDirectory)
             }
         }
         if let legacyEvent = try? JSONDecoder().decode(OCEvent.self, from: data) {

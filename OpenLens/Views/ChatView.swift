@@ -60,6 +60,7 @@ struct ChatView: View {
                 chatClient: chatClient
             )
             .environment(\.chatSkillIDs, availableSkills.map(\.id))
+            .environment(\.chatSessionDirectory, chatClient.sessionDirectory)
 
             if let error = chatClient.errorMessage {
                 HStack(spacing: 8) {

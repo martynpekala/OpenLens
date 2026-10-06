@@ -9,6 +9,9 @@ final class GatewayV2EventFilter {
     private var recordBytes = 0
     private var afterCR = false
 
+    /// A forwarded record must fit one encrypted Remote message.
+    static let maximumForwardedBytes = RemoteProtocolVersion.maximumHTTPBodyBytes
+
     init(registry: WorkspaceRegistry) { self.registry = registry }
 
     func append(_ bytes: Data) throws -> [Data] {
@@ -19,7 +22,9 @@ final class GatewayV2EventFilter {
                 if byte == 10 { continue }
             }
             recordBytes += 1
-            guard recordBytes <= RemoteProtocolVersion.maximumWireMessageBytes else {
+            // Tool results can carry large files; they're compacted below
+            // rather than ending the stream.
+            guard recordBytes <= ToolResultFileBudget.maximumUpstreamBytes else {
                 throw RemoteProtocolError.messageTooLarge
             }
             if byte == 10 || byte == 13 {
@@ -64,8 +69,10 @@ final class GatewayV2EventFilter {
                   registry.isAllowed(directory) else { return nil }
             safeEvent = event
         }
+        let json = try ToolResultFileBudget.compactedJSON(safeEvent, maximumBytes: Self.maximumForwardedBytes)
+        guard json.count <= Self.maximumForwardedBytes else { throw RemoteProtocolError.messageTooLarge }
         var output = Data("event: message\ndata: ".utf8)
-        output.append(try JSONSerialization.data(withJSONObject: safeEvent))
+        output.append(json)
         output.append(Data("\n\n".utf8))
         return output
     }

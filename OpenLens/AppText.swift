@@ -138,6 +138,19 @@ enum AppText {
     nonisolated static func attachmentRejected(_ message: String) -> String {
         "An attached file couldn't be used. \(message)"
     }
+    nonisolated static let toolFileTooLarge = "Too large to show here"
+    nonisolated static let toolFileUnavailable = "OpenLens can't open this location"
+    nonisolated static func toolFileUnsupported(_ mime: String) -> String { "No preview for \(mime)" }
+    nonisolated static let toolFileCannotPreview = "OpenLens can't preview this kind of file."
+    nonisolated static let toolFileUnreadable = "This file couldn't be read."
+    nonisolated static let toolFileOutsideSession = "This file is outside the session's folder, so OpenLens won't open it."
+    static let toolFileCouldNotOpen = "Couldn't Open File"
+    static func toolFilesNotShown(_ count: Int) -> String {
+        count == 1 ? "1 more file not shown" : "\(count) more files not shown"
+    }
+    static let openToolFile = "Open"
+    static let toolReturnedFile = "Tool file"
+    static let partialOutputBeforeError = "Output before the error:"
     static let forget = "Forget"
     static let forgetConnection = "Forget Connection"
     static let forgetConnectionMessage = "Remove this server's credentials from Keychain? You'll need to re-enter them to connect again."

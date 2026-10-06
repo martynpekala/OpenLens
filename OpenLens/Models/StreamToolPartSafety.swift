@@ -81,7 +81,10 @@ nonisolated enum StreamToolPartSafety {
             title: StreamDisplayValue.preview(state.title, maximumBytes: maximumTitleBytes),
             error: StreamDisplayValue.preview(state.error, maximumBytes: maximumOutputBytes),
             metadata: sanitizedMetadata(state.metadata),
-            time: state.time
+            time: state.time,
+            // Already held to `ToolResultFileBudget` when decoded.
+            files: state.files,
+            omittedFileCount: state.omittedFileCount
         )
     }
 
