@@ -581,8 +581,8 @@ nonisolated struct OCPart: Codable, Identifiable, Sendable {
 }
 
 /// A file returned by a v2 tool (`Tool.FileContent`). `uri` is nil when the
-/// file was withheld for exceeding `ToolResultFileBudget`, by this app or by
-/// the Remote gateway; its MIME and name still say what was left out.
+/// file was withheld for exceeding `ToolResultFileBudget`; its MIME and name
+/// still say what was left out.
 nonisolated struct OCToolFile: Codable, Hashable, Sendable {
     let uri: String?
     let mime: String
@@ -712,8 +712,7 @@ nonisolated struct OCToolState: Codable, Sendable {
         attachments = try? container.decodeIfPresent([AnyCodable].self, forKey: .attachments)
     }
 
-    /// Applies `ToolResultFileBudget`, exactly as the Remote gateway does,
-    /// so both transports keep the same files.
+    /// Applies `ToolResultFileBudget`.
     private static func boundedFiles(from content: [ContentItem]) -> ([OCToolFile], Int) {
         let items = content.filter { $0.type == "file" }
         let keeps = ToolResultFileBudget.keepsURIs(ofSizes: items.map { $0.uri?.utf8.count ?? 0 })

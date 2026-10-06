@@ -18,8 +18,6 @@ Thanks for taking the time to improve OpenLens.
 - `OpenLensWatchApp/` - Apple Watch app container
 - `OpenLensWatchExtension/` - Apple Watch companion UI and logic
 - `OpenLensTests/` - app tests
-- `Tools/openlens-qr/` - Swift CLI for QR-based setup
-- `Tools/appstore-shot-studio/` - local browser tool for marketing screenshots
 
 ## Architecture Notes
 
@@ -42,13 +40,6 @@ xcodegen generate
 xcodebuild -project OpenLens.xcodeproj -scheme OpenLens -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO test
 ```
 
-Build the QR helper when you touch the CLI:
-
-```bash
-xcrun swift build --package-path Tools/openlens-qr
-```
-
-If you change `Tools/appstore-shot-studio/`, open `Tools/appstore-shot-studio/index.html` locally or serve the folder and verify the changed flow in a browser.
 
 ## Pull Requests
 

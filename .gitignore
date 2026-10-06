@@ -25,4 +25,3 @@ Config/Signing.local.xcconfig
 xcuserdata/
 *.xcbkptlist
 *.xcuserstate
-Tools/openlens-qr-menubar/Resources/cloudflared-*

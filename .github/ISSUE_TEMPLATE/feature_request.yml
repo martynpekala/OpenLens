@@ -37,8 +37,6 @@ body:
         - Connection / onboarding
         - Chat / sessions
         - Workspace / review
-        - openlens-qr CLI
-        - App Store Shot Studio
         - Documentation
 
   - type: textarea

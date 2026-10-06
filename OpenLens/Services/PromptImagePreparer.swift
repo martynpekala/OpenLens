@@ -46,7 +46,7 @@ nonisolated struct PromptImageAttachment: Identifiable, Hashable, Sendable {
 /// compressed until they fit the byte budget of the prompt request.
 nonisolated enum PromptImagePreparer {
     static let maximumPixelDimension = 2_000
-    /// Leaves room for several images within OpenLens Remote's 2 MiB body.
+    /// Leaves room for several images within the 2 MiB prompt body.
     static let defaultMaximumBytes = 600_000
 
     private static let minimumPixelDimension = 320

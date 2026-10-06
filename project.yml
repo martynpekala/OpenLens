@@ -93,7 +93,6 @@ fileGroups:
   - LICENSE
   - AGENTS.md
   - Config
-  - Tools
 
 targets:
   OpenLens:
@@ -109,7 +108,6 @@ targets:
           - "**/*.entitlements"
           - "**/*.md"
           - Assets.xcassets
-      - path: OpenLensRemoteCore
       - path: OpenLens/Assets.xcassets
         buildPhase: resources
     dependencies:

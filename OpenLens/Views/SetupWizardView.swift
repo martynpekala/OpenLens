@@ -210,7 +210,7 @@ struct SetupWizardView: View {
                         .foregroundStyle(Color.appSecondary)
                         .lineSpacing(3)
 
-                    commandCard("OPENLENS_QR_PASSWORD=mySecret Tools/openlens-qr/.build/release/openlens-qr --serve")
+                    commandCard("opencode pair")
                 }
             }
         }

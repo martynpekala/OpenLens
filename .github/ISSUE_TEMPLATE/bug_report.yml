@@ -22,8 +22,6 @@ body:
         - Connection / networking
         - Chat / sessions
         - Workspace / review
-        - openlens-qr CLI
-        - App Store Shot Studio
         - Documentation
     validations:
       required: true

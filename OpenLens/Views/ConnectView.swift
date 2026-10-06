@@ -96,8 +96,6 @@ struct ConnectView: View {
     @State private var connectionTask: Task<Void, Never>?
     @State private var isAutoReconnect: Bool = false
     @State private var currentConnectionMethod: ConnectionMethod = .manual
-    @State private var pendingRemoteOffer: RemotePairingOffer?
-    @State private var pendingRemoteCredential: RemoteDeviceCredential?
     @State private var pendingOpenCodePairingLink: OpenCodePairingLink?
 
     @State private var setupStep: ConnectionSetupStep = .welcome
@@ -161,8 +159,6 @@ struct ConnectView: View {
         switch code {
         case .direct(let deepLink):
             applyDeepLink(deepLink)
-        case .remote(let offer):
-            startRemotePairing(offer)
         case .openCodePairing(let link):
             startOpenCodePairing(link)
         }
@@ -405,7 +401,6 @@ struct ConnectView: View {
         let currentURL = normalizedServerSuggestionKey(query)
 
         return savedConnections.suggestions(for: query)
-            .filter { !$0.isRemote }
             .filter { normalizedServerSuggestionKey($0.serverURL) != currentURL || query.isEmpty }
             .prefix(4)
             .map { $0 }
@@ -655,8 +650,6 @@ struct ConnectView: View {
             return
         }
         pendingOpenCodePairingLink = nil
-        pendingRemoteOffer = nil
-        pendingRemoteCredential = nil
         if auto {
             guard let saved = savedConnections.mostRecent, saved.isConfigured else { return }
             manualURL = saved.serverURL
@@ -686,8 +679,6 @@ struct ConnectView: View {
 
     private func startOpenCodePairing(_ link: OpenCodePairingLink) {
         connectionTask?.cancel()
-        pendingRemoteOffer = nil
-        pendingRemoteCredential = nil
         pendingOpenCodePairingLink = link
         pendingSessionNavigationID = nil
         manualURL = link.serverURL.absoluteString
@@ -731,46 +722,10 @@ struct ConnectView: View {
         }
     }
 
-    private func startRemotePairing(_ offer: RemotePairingOffer) {
-        pendingOpenCodePairingLink = nil
-        pendingRemoteOffer = offer
-        pendingRemoteCredential = nil
-        connectionTask?.cancel()
-        isAutoReconnect = false
-        connectionError = nil
-        focusedManualField = nil
-        showConnectionStatus(.pairing, serverURL: nil)
-
-        connectionTask = Task {
-            do {
-                let credential = try await RemotePairingClient().pair(using: offer)
-                guard !Task.isCancelled else { return }
-                pendingRemoteCredential = credential
-                pendingRemoteOffer = nil
-                await completeRemoteConnection(credential)
-            } catch {
-                guard !Task.isCancelled else { return }
-                connectionError = error.localizedDescription
-                showConnectionFailure(whilePairing: true)
-            }
-        }
-    }
-
     private func retryConnection() {
         connectionError = nil
         if let pendingOpenCodePairingLink {
             startOpenCodePairing(pendingOpenCodePairingLink)
-            return
-        }
-        if let pendingRemoteCredential {
-            connectionTask?.cancel()
-            connectionTask = Task {
-                await completeRemoteConnection(pendingRemoteCredential)
-            }
-            return
-        }
-        if let pendingRemoteOffer {
-            startRemotePairing(pendingRemoteOffer)
             return
         }
         startConnect(auto: isAutoReconnect)
@@ -789,8 +744,6 @@ struct ConnectView: View {
     private func cancelConnection() {
         connectionTask?.cancel()
         connectionTask = nil
-        pendingRemoteOffer = nil
-        pendingRemoteCredential = nil
         pendingOpenCodePairingLink = nil
         if case .connecting = connection.state {
             connection.disconnect()
@@ -801,27 +754,6 @@ struct ConnectView: View {
     private func dismissConnectionStatus() {
         cancelConnection()
         connectionStatus = nil
-    }
-
-    private func completeRemoteConnection(_ credential: RemoteDeviceCredential) async {
-        connectionStatus?.phase = .connecting
-        do {
-            guard RemoteConnectionSecretStore.save(credential) else {
-                throw RemoteProtocolError.remoteError("keychain_write_failed")
-            }
-            savedConnections.saveRemoteConnection(credential)
-            await connection.connect(remoteCredential: credential, method: .qr)
-            guard !Task.isCancelled else { return }
-
-            if connection.isConnected {
-                pendingRemoteCredential = nil
-            }
-            await finishConnectionAttempt()
-        } catch {
-            guard !Task.isCancelled else { return }
-            connectionError = error.localizedDescription
-            showConnectionFailure()
-        }
     }
 
     private func connectToDiscovered(_ server: BonjourDiscovery.DiscoveredServer) {
@@ -880,8 +812,7 @@ struct ConnectView: View {
 
     private func prefillFromMostRecentConnectionIfNeeded() {
         guard manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let saved = savedConnections.mostRecent,
-              !saved.isRemote else { return }
+              let saved = savedConnections.mostRecent else { return }
 
         manualURL = saved.serverURL
         username = saved.username

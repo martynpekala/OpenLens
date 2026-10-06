@@ -399,9 +399,8 @@ actor OpenCodeClient {
         return nil
     }
 
-    /// OpenLens Remote forwards at most this many request body bytes. Direct
-    /// connections use the same limit so a prompt behaves the same on both.
-    nonisolated static let maximumPromptBodyBytes = RemoteProtocolVersion.maximumHTTPBodyBytes
+    /// Largest prompt request body OpenLens sends; images are resized to fit.
+    nonisolated static let maximumPromptBodyBytes = 2 * 1_024 * 1_024
 
     /// The exact size of the JSON body sent for `input`, including base64
     /// and JSON escaping overhead.
@@ -462,7 +461,7 @@ actor OpenCodeClient {
             )
         } catch let OpenCodeError.apiError(statusCode, payload)
             where statusCode == 400 && payload.field == "files" {
-            // OpenCode (or OpenLens Remote) refused an attachment before
+            // OpenCode refused an attachment before
             // admitting anything, so the prompt can be fixed and resent.
             throw PromptAttachmentError.rejected(payload.message ?? "The server refused it.")
         }
@@ -515,7 +514,7 @@ actor OpenCodeClient {
 
     /// Whether a failed request may still have been processed by the server.
     /// Failures before the request could leave the device, and explicit server
-    /// rejections, are definitive; timeouts, lost connections, and gateway or
+    /// rejections, are definitive; timeouts, lost connections, and
     /// server errors are not proof that nothing was admitted.
     nonisolated static func requestMayHaveReachedServer(_ error: Error) -> Bool {
         switch error {
@@ -538,16 +537,6 @@ actor OpenCodeClient {
             case .invalidResponse:
                 return true
             case .notConnected, .invalidURL, .invalidPayload, .incompleteRevert:
-                return false
-            }
-        case let error as RemoteProtocolError:
-            switch error {
-            case let .remoteError(code):
-                // The gateway rejects saturated connections before forwarding.
-                return code != "too_many_requests"
-            case .timeout, .disconnected, .malformedMessage:
-                return true
-            default:
                 return false
             }
         case is CancellationError:
@@ -1194,14 +1183,8 @@ actor OpenCodeClient {
             includesLocation: includesLocation
         )
         Logger.api.debug("GET \(request.url?.absoluteString ?? "nil", privacy: .public) → \(String(describing: T.self), privacy: .public)")
-        var (data, response) = try await transport.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         try validateResponse(response, data: data)
-        if ToolResultFileBudget.isTranscriptPath(path),
-           let value = try? JSONSerialization.jsonObject(with: data) {
-            // Same tool file budget the Remote gateway applies, so direct and
-            // Remote transcripts show the same files.
-            data = try ToolResultFileBudget.compactedJSON(value, maximumBytes: RemoteProtocolVersion.maximumHTTPBodyBytes)
-        }
         return try decode(data)
     }
 
@@ -1313,8 +1296,8 @@ actor OpenCodeClient {
         return try decode(data)
     }
 
-    /// Follows opaque v2 cursors until the server ends the snapshot. A remote
-    /// catalog page may be empty after gateway filtering while more pages remain.
+    /// Follows opaque v2 cursors until the server ends the snapshot. A catalog
+    /// page may be empty while more pages remain.
     private func getAllV2Pages<T: Decodable & Sendable>(
         endpoint: String,
         limit: Int = v2PageSize,
@@ -1594,14 +1577,6 @@ actor OpenCodeClient {
             default:
                 break
             }
-        }
-
-        // The pre-v2 remote relay rejects unknown routes before forwarding
-        // them. Treat that rejection exactly like a missing v2 endpoint so
-        // existing paired v1 servers keep connecting until the relay itself is
-        // upgraded in the remote-v2 migration step.
-        if let remoteError = error as? RemoteProtocolError {
-            return remoteError == .invalidRequest
         }
 
         return false

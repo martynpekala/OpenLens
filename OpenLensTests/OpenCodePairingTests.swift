@@ -60,25 +60,13 @@ struct OpenCodePairingTests {
         #expect(OpenCodePairingLink(url: try #require(URL(string: value))) == nil)
     }
 
-    @Test func scannerStillAcceptsLegacyDirectAndRemoteCodes() throws {
+    @Test func scannerStillAcceptsLegacyDirectCodes() throws {
         let directURL = try #require(URL(string: "openlens://connect?url=http%3A%2F%2Flocalhost%3A4096&pass=test"))
         guard case .direct(let direct) = ScannedOpenLensCode(url: directURL) else {
             Issue.record("Legacy direct QR was rejected")
             return
         }
         #expect(direct.password == "test")
-        let offer = RemotePairingOffer(
-            endpoint: try #require(URL(string: "https://remote.example.com")),
-            gatewayID: "gateway", gatewayPublicKey: Data([1]),
-            pairingID: "pair", pairingSecret: Data([2]),
-            accessCredential: .init(clientID: "client", clientSecret: "secret"),
-            expiresAt: Date(timeIntervalSince1970: 2_000_000_000)
-        )
-        guard case .remote(let decoded) = ScannedOpenLensCode(url: try #require(offer.deepLinkURL)) else {
-            Issue.record("Legacy remote QR was rejected")
-            return
-        }
-        #expect(decoded == offer)
     }
 
     @Test func redeemsJSONAndReturnsReusableBasicAuthCredentials() async throws {

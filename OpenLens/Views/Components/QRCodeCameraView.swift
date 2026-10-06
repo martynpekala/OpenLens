@@ -140,11 +140,6 @@ struct QRCodeCameraView: View {
             return
         }
 
-        if case .remote(let offer) = scannedCode, offer.isExpired {
-            errorMessage = RemoteProtocolError.expiredPairingOffer.localizedDescription
-            return
-        }
-
         hasScanned = true
         onScanned(scannedCode)
     }

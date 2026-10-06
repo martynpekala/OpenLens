@@ -5,8 +5,8 @@ import UniformTypeIdentifiers
 @testable import OpenLens
 
 /// Files returned by v2 tools (`Tool.FileContent`): kept alongside text from
-/// history and the event stream, bounded by the budget the Remote gateway
-/// also applies, and opened only from approved locations.
+/// history and the event stream, bounded by `ToolResultFileBudget`, and
+/// opened only from approved locations.
 @MainActor
 struct V2ToolFileContentTests {
 
@@ -186,9 +186,9 @@ struct V2ToolFileContentTests {
         #expect(await server.recordedPaths().filter { $0.hasPrefix("/api/fs/read") } == ["/api/fs/read/notes.md"])
     }
 
-    // MARK: - Transports
+    // MARK: - Transport
 
-    @Test func aRecordedToolResponseLooksTheSameThroughDirectAndRemote() async throws {
+    @Test func aRecordedToolResponseLoadsThroughTheClient() async throws {
         let big = "data:image/png;base64," + String(repeating: "A", count: ToolResultFileBudget.maximumURIBytes)
         let recorded = Self.history(tools: [
             Self.tool(id: "call_1", name: "read", content: [
@@ -198,38 +198,14 @@ struct V2ToolFileContentTests {
                 ["type": "file", "uri": "https://example.com/x", "mime": "text/html"],
             ]),
         ])
-        let direct = try await Self.loadSteps(transport: OpenCodeContractTransport(routes: Self.v2Routes.merging([
+        let steps = try await Self.loadSteps(transport: OpenCodeContractTransport(routes: Self.v2Routes.merging([
             "/api/session/ses_1/message": .init(statusCode: 200, body: recorded),
         ]) { $1 }))
-        let remote = try await Self.loadSteps(transport: OpenCodeContractTransport(routes: Self.v2Routes.merging([
-            "/api/session/ses_1/message": .init(statusCode: 200, body: try Self.throughRemoteGateway(recorded)),
-        ]) { $1 }))
 
-        #expect(direct.map(\.visible) == remote.map(\.visible))
-        let files = try #require(remote.first?.files)
-        #expect(files.map(\.title) == ["shot.png", "huge.png", "text/html"])
-        #expect(files.map(\.source) == [.dataURI(Self.pngDataURI), .tooLarge, .unavailable])
-        #expect(try Self.throughRemoteGateway(recorded).count < RemoteProtocolVersion.maximumHTTPBodyBytes)
-    }
-
-    @Test func aTranscriptTooLargeForRemoteWithholdsTheSameLargestFilesOnBothTransports() async throws {
-        let image = "data:image/png;base64," + String(repeating: "A", count: 900_000)
-        let recorded = Self.history(tools: ["one", "two", "three"].map { id in
-            Self.tool(id: id, name: "read", content: [
-                ["type": "text", "text": "Read \(id)"],
-                ["type": "file", "uri": image, "mime": "image/png", "name": "\(id).png"],
-            ])
-        })
-        #expect(recorded.count > RemoteProtocolVersion.maximumHTTPBodyBytes)
-        let direct = try await Self.loadSteps(transport: OpenCodeContractTransport(routes: Self.v2Routes.merging([
-            "/api/session/ses_1/message": .init(statusCode: 200, body: recorded),
-        ]) { $1 }))
-        let remote = try await Self.loadSteps(transport: OpenCodeContractTransport(routes: Self.v2Routes.merging([
-            "/api/session/ses_1/message": .init(statusCode: 200, body: try Self.throughRemoteGateway(recorded)),
-        ]) { $1 }))
-
-        #expect(direct.map(\.visible) == remote.map(\.visible))
-        #expect(remote.flatMap(\.files).map(\.source) == [.tooLarge, .dataURI(image), .dataURI(image)])
+        let step = try #require(steps.first)
+        #expect(step.outputPreview?.contains("Image read successfully") == true)
+        #expect(step.files.map(\.title) == ["shot.png", "huge.png", "text/html"])
+        #expect(step.files.map(\.source) == [.dataURI(Self.pngDataURI), .tooLarge, .unavailable])
     }
 
     // MARK: - Fixtures
@@ -302,20 +278,6 @@ struct V2ToolFileContentTests {
         return MessagesService.convert(decoded).persistedToolSteps
     }
 
-    /// What the gateway forwards: tool files fitted to the shared budget and
-    /// one Remote message, then carried as a Remote response message.
-    private static func throughRemoteGateway(_ body: Data) throws -> Data {
-        let compacted = try ToolResultFileBudget.compactedJSON(
-            JSONSerialization.jsonObject(with: body),
-            maximumBytes: RemoteProtocolVersion.maximumHTTPBodyBytes
-        )
-        let message = RemoteMessage(
-            kind: .response,
-            response: RemoteHTTPResponse(statusCode: 200, headers: ["Content-Type": "application/json"], body: compacted)
-        )
-        return try #require(try RemoteMessage.decode(message.encoded()).response?.body)
-    }
-
     private static func loadSteps(transport: OpenCodeContractTransport) async throws -> [ChatMessage.PersistedToolStep] {
         let client = OpenCodeClient(baseURL: URL(string: "http://opencode.example.com")!, transport: transport)
         let connection = ConnectionManager(testClient: client, capabilities: try await client.probeCapabilities())
@@ -327,13 +289,5 @@ struct V2ToolFileContentTests {
         let client = OpenCodeClient(baseURL: URL(string: "http://opencode.example.com")!, transport: server)
         let connection = ConnectionManager(testClient: client, capabilities: try await client.probeCapabilities())
         return WorkspaceService(connection: connection)
-    }
-}
-
-private extension ChatMessage.PersistedToolStep {
-    /// Everything the transcript row shows for this step.
-    var visible: [String] {
-        [label, outputPreview ?? "", partialOutputPreview ?? "", "\(isError)", "\(omittedFileCount)"]
-            + files.map { "\($0.id)|\($0.title)|\($0.mime)|\($0.kind)|\($0.source)" }
     }
 }

@@ -64,19 +64,12 @@ struct V2PromptAdmissionTests {
             URLError(.timedOut),
             URLError(.networkConnectionLost),
             OpenCodeError.httpError(statusCode: 502),
-            RemoteProtocolError.timeout,
-            RemoteProtocolError.disconnected,
-            // The gateway reports an upstream failure after forwarding.
-            RemoteProtocolError.remoteError("request_failed"),
         ]
         let definitive: [Error] = [
             URLError(.notConnectedToInternet),
             URLError(.cannotConnectToHost),
             OpenCodeError.httpError(statusCode: 400),
             OpenCodeError.notConnected,
-            RemoteProtocolError.invalidRequest,
-            // The gateway refuses before forwarding when it is saturated.
-            RemoteProtocolError.remoteError("too_many_requests"),
         ]
 
         #expect(ambiguous.allSatisfy(OpenCodeClient.requestMayHaveReachedServer))

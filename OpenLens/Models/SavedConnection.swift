@@ -60,10 +60,6 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     /// HTTP Basic Auth password.
     var password: String
 
-    /// Present only for a QR-paired Remote profile. Long-lived keys remain in
-    /// `RemoteConnectionSecretStore`, never in this public connection model.
-    var remoteGatewayID: String?
-
     /// Per-connection model selection: provider ID (e.g. "anthropic").
     var selectedProviderID: String?
 
@@ -106,7 +102,6 @@ struct SavedConnection: Codable, Identifiable, Hashable {
         serverURL: String,
         username: String,
         password: String,
-        remoteGatewayID: String? = nil,
         selectedProviderID: String? = nil,
         selectedModelID: String? = nil,
         selectedVariant: String? = nil,
@@ -119,7 +114,6 @@ struct SavedConnection: Codable, Identifiable, Hashable {
         self.serverURL = serverURL
         self.username = username
         self.password = password
-        self.remoteGatewayID = remoteGatewayID
         self.selectedProviderID = selectedProviderID
         self.selectedModelID = selectedModelID
         self.selectedVariant = selectedVariant
@@ -133,10 +127,6 @@ struct SavedConnection: Codable, Identifiable, Hashable {
 
     var isConfigured: Bool {
         !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var isRemote: Bool {
-        remoteGatewayID != nil
     }
 
     /// Full base URL for API calls (e.g. "http://192.168.1.50:4096").
@@ -167,6 +157,7 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
     var id: String
     var serverURL: String
     var username: String
+    /// Only read to drop profiles saved by the removed OpenLens Remote feature.
     var remoteGatewayID: String?
     var selectedProviderID: String?
     var selectedModelID: String?
@@ -182,7 +173,6 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
         id = connection.id
         serverURL = connection.serverURL
         username = connection.username
-        remoteGatewayID = connection.remoteGatewayID
         selectedProviderID = connection.selectedProviderID
         selectedModelID = connection.selectedModelID
         selectedVariant = connection.selectedVariant
@@ -200,7 +190,6 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
             serverURL: serverURL,
             username: username,
             password: "",
-            remoteGatewayID: remoteGatewayID,
             selectedProviderID: selectedProviderID,
             selectedModelID: selectedModelID,
             selectedVariant: selectedVariant,
@@ -302,41 +291,6 @@ final class SavedConnectionsStore {
             persist()
             return connection
         }
-    }
-
-    /// Adds the non-secret half of a QR-paired Remote profile. The credential
-    /// itself is persisted independently in this-device-only Keychain storage.
-    @discardableResult
-    func saveRemoteConnection(_ credential: RemoteDeviceCredential) -> SavedConnection {
-        if let index = connections.firstIndex(where: { $0.id == credential.connectionID }) {
-            connections[index].serverURL = credential.endpoint.absoluteString
-            connections[index].remoteGatewayID = credential.gatewayID
-            connections[index].lastConnectedAt = Date()
-            let connection = connections[index]
-            activeConnectionID = connection.id
-            persist()
-            return connection
-        }
-
-        let replacedConnections = connections.filter {
-            $0.remoteGatewayID == credential.gatewayID && $0.id != credential.connectionID
-        }
-        replacedConnections.forEach {
-            RemoteConnectionSecretStore.delete(connectionID: $0.id)
-        }
-        let connection = SavedConnection(
-            id: credential.connectionID,
-            serverURL: credential.endpoint.absoluteString,
-            username: "OpenLens Remote",
-            password: "",
-            remoteGatewayID: credential.gatewayID,
-            lastConnectedAt: Date()
-        )
-        connections.removeAll { $0.remoteGatewayID == credential.gatewayID }
-        connections.insert(connection, at: 0)
-        activeConnectionID = connection.id
-        persist()
-        return connection
     }
 
     /// Updates model selection for a specific connection.
@@ -463,9 +417,6 @@ final class SavedConnectionsStore {
 
     /// Removes a saved connection ("forget").
     func removeConnection(_ connection: SavedConnection) {
-        if connection.isRemote {
-            RemoteConnectionSecretStore.delete(connectionID: connection.id)
-        }
         connections.removeAll { $0.id == connection.id }
         if activeConnectionID == connection.id {
             activeConnectionID = nil
@@ -475,9 +426,6 @@ final class SavedConnectionsStore {
 
     /// Removes a connection by ID.
     func removeConnection(id: String) {
-        if connections.first(where: { $0.id == id })?.isRemote == true {
-            RemoteConnectionSecretStore.delete(connectionID: id)
-        }
         connections.removeAll { $0.id == id }
         if activeConnectionID == id {
             activeConnectionID = nil
@@ -541,9 +489,14 @@ final class SavedConnectionsStore {
         _ keychainConnections: [SavedConnection],
         withPublicSnapshots snapshots: [SavedConnectionPublicSnapshot]
     ) -> [SavedConnection] {
-        var merged = keychainConnections
+        // OpenLens Remote was removed; its profiles can no longer connect.
+        let legacyRemoteIDs = Set(snapshots.filter { $0.remoteGatewayID != nil }.map(\.id))
+        for id in legacyRemoteIDs {
+            KeychainService.delete(key: "openlens_remote_connection_v1_" + id)
+        }
+        var merged = keychainConnections.filter { !legacyRemoteIDs.contains($0.id) }
 
-        for snapshot in snapshots {
+        for snapshot in snapshots where !legacyRemoteIDs.contains(snapshot.id) {
             if let index = merged.firstIndex(where: { $0.id == snapshot.id }) {
                 merged[index].applyPublicSnapshot(snapshot)
             } else if let index = merged.firstIndex(where: {
@@ -715,7 +668,6 @@ private extension SavedConnection {
     mutating func applyPublicSnapshot(_ snapshot: SavedConnectionPublicSnapshot) {
         serverURL = snapshot.serverURL
         username = snapshot.username
-        remoteGatewayID = snapshot.remoteGatewayID
         selectedProviderID = snapshot.selectedProviderID
         selectedModelID = snapshot.selectedModelID
         selectedVariant = snapshot.selectedVariant

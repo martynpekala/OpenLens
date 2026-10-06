@@ -120,6 +120,30 @@ struct SavedConnectionsStoreTests {
         #expect(restored.first?.lastConnectedAt == Date(timeIntervalSince1970: 15))
     }
 
+    @Test func legacyRemoteProfilesAreDroppedOnLoad() {
+        let direct = SavedConnection(
+            id: "direct",
+            serverURL: "http://192.168.1.50:4096",
+            username: "opencode",
+            password: "secret"
+        )
+        let remote = SavedConnection(
+            id: "remote",
+            serverURL: "https://openlens.example.com",
+            username: "opencode",
+            password: ""
+        )
+        var remoteSnapshot = SavedConnectionPublicSnapshot(connection: remote)
+        remoteSnapshot.remoteGatewayID = "gateway"
+
+        let restored = SavedConnectionsStore.mergeKeychainConnections(
+            [direct, remote],
+            withPublicSnapshots: [SavedConnectionPublicSnapshot(connection: direct), remoteSnapshot]
+        )
+
+        #expect(restored.map(\.id) == ["direct"])
+    }
+
     @Test func remembersRecentProjectDirectoriesNewestFirst() throws {
         let store = SavedConnectionsStore(initialConnections: [])
         let connection = store.saveConnection(

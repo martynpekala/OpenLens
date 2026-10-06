@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 /// Screenshots and photos attached to v2 prompts: images are prepared on the
 /// phone into model-readable data URIs, the complete request is validated
-/// against OpenLens Remote's body limit, and retries resend identical bytes.
+/// against the prompt body limit, and retries resend identical bytes.
 @MainActor
 struct V2PromptImageAttachmentTests {
 
@@ -91,7 +91,7 @@ struct V2PromptImageAttachmentTests {
         #expect(files.first?["name"] as? String == image.name)
     }
 
-    @Test func aPromptOverTheRemoteBodyLimitIsRejectedBeforeSending() async throws {
+    @Test func aPromptOverTheBodyLimitIsRejectedBeforeSending() async throws {
         let server = ImagePromptFakeServer()
         let api = try await Self.makeClient(server: server)
         // Base64 and JSON escaping grow these raw bytes past the 2 MiB body.

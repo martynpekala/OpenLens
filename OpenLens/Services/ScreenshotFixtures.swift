@@ -497,7 +497,7 @@ enum ScreenshotFixtures {
     ## Getting started
 
     1. Start OpenCode on your Mac.
-    2. Pair OpenLens Remote by scanning the QR code.
+    2. Scan the QR code to connect.
     3. Pick a session and start chatting.
     """
 

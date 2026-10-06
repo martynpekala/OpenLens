@@ -1,17 +1,14 @@
 import SwiftUI
 
 /// Native QR code scanner using AVFoundation camera capture.
-/// Parses direct LAN, native OpenCode, and OpenLens Remote pairing codes.
+/// Parses direct LAN and native OpenCode pairing codes.
 enum ScannedOpenLensCode {
     case direct(DeepLinkConnection)
-    case remote(RemotePairingOffer)
     case openCodePairing(OpenCodePairingLink)
 
     init?(url: URL) {
         if let link = OpenCodePairingLink(url: url) {
             self = .openCodePairing(link)
-        } else if let offer = RemotePairingOffer(url: url) {
-            self = .remote(offer)
         } else if let connection = DeepLinkConnection(from: url) {
             self = .direct(connection)
         } else {
