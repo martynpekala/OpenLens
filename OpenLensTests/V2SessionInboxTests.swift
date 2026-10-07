@@ -7,6 +7,241 @@ import Testing
 /// stream gaps.
 @MainActor
 struct V2SessionInboxTests {
+    @Test func cancellingAnAcceptedPromptRefreshesTheSharedQueue() async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Cancel this"), .user("msg_b", "Keep this")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+
+        await chat.cancelQueuedPrompt(prompt)
+
+        let pendingIDs = chat.queuedPrompts.map(\.messageID)
+        #expect(pendingIDs == ["msg_b"])
+        let request = try #require(await server.inboxMutations.first)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.url?.path == "/api/session/ses_1/inbox/msg_a")
+        #expect(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems == nil)
+        #expect(request.httpBody == nil)
+        #expect(chat.messages.isEmpty)
+    }
+
+    @Test func promotingAQueuedPromptUsesItsExistingServerIdentity() async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Queued first"), .user("msg_b", "Use now")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.last)
+
+        await chat.steerQueuedPrompt(prompt)
+
+        let pendingIDs = chat.queuedPrompts.map(\.messageID)
+        #expect(pendingIDs == ["msg_b", "msg_a"])
+        #expect(chat.queuedPrompts.first?.delivery == .steer)
+        #expect(chat.queuedPrompts.last?.delivery == .queue)
+        let request = try #require(await server.inboxMutations.first)
+        #expect(request.httpMethod == "PATCH")
+        #expect(request.url?.path == "/api/session/ses_1/inbox/msg_b")
+        #expect(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems == nil)
+        let body = try JSONSerialization.jsonObject(with: try #require(request.httpBody)) as? [String: String]
+        #expect(body == ["delivery": "steer"])
+        #expect(chat.messages.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func aLostMutationResponseIsConfirmedByTheRecoveredInbox(steer: Bool) async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Update this"), .user("msg_b", "Keep this")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+        await server.setLosesMutationResponse(true)
+
+        if steer {
+            await chat.steerQueuedPrompt(prompt)
+            #expect(chat.queuedPrompts.first?.delivery == .steer)
+        } else {
+            await chat.cancelQueuedPrompt(prompt)
+            let pendingIDs = chat.queuedPrompts.map(\.messageID)
+            #expect(pendingIDs == ["msg_b"])
+        }
+
+        let errorAfterMutation = chat.errorMessage
+        let synchronizedAfterMutation = chat.isStreamSynchronized
+        #expect(errorAfterMutation == nil)
+        #expect(synchronizedAfterMutation)
+    }
+
+    @Test(arguments: [false, true])
+    func aRejectedMutationKeepsThePromptRetryable(steer: Bool) async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Pending")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+        await server.setRejectsMutations(true)
+
+        if steer { await chat.steerQueuedPrompt(prompt) }
+        else { await chat.cancelQueuedPrompt(prompt) }
+
+        let pendingIDs = chat.queuedPrompts.map(\.messageID)
+        let errorAfterFailure = chat.errorMessage
+        #expect(pendingIDs == ["msg_a"])
+        #expect(chat.queuedPrompts.first?.delivery == .queue)
+        #expect(errorAfterFailure?.hasPrefix(steer ? AppText.steerQueuedPromptFailedPrefix : AppText.cancelQueuedPromptFailedPrefix) == true)
+        #expect(chat.canCancelQueuedPrompt(prompt))
+
+        // Choosing the other action after a failed attempt also clears the
+        // resolved queue error when the server confirms the new state.
+        await server.setRejectsMutations(false)
+        if steer { await chat.cancelQueuedPrompt(prompt) }
+        else { await chat.steerQueuedPrompt(prompt) }
+
+        let errorAfterRetry = chat.errorMessage
+        #expect(errorAfterRetry == nil)
+        #expect(await server.inboxMutations.count == 2)
+    }
+
+    @Test(arguments: [false, true])
+    func aPromptConsumedBeforeTheMutationIsRecoveredInTheTranscript(steer: Bool) async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Delivered"), .user("msg_b", "Pending")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+        await server.setInbox("ses_1", [.user("msg_b", "Pending")])
+        await server.setHistory("ses_1", [("msg_a", "Delivered")])
+
+        if steer { await chat.steerQueuedPrompt(prompt) }
+        else { await chat.cancelQueuedPrompt(prompt) }
+
+        let pendingIDs = chat.queuedPrompts.map(\.messageID)
+        let messageIDs = chat.messages.map(\.id)
+        #expect(pendingIDs == ["msg_b"])
+        #expect(messageIDs == ["msg_a"])
+        #expect(!chat.canCancelQueuedPrompt(prompt))
+        #expect(!chat.canSteerQueuedPrompt(prompt))
+        #expect(await server.inboxMutations.count == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func anAcknowledgmentDoesNotOverrideTheRecoveredInbox(steer: Bool) async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Pending")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+        await server.setAcknowledgesWithoutChange(true)
+
+        if steer { await chat.steerQueuedPrompt(prompt) }
+        else { await chat.cancelQueuedPrompt(prompt) }
+
+        let pendingIDs = chat.queuedPrompts.map(\.messageID)
+        #expect(pendingIDs == ["msg_a"])
+        #expect(chat.queuedPrompts.first?.delivery == .queue)
+        #expect(chat.canCancelQueuedPrompt(prompt))
+    }
+
+    @Test func aFailedPostMutationRecoveryRetainsTheSnapshotUntilRetry() async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Pending")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+        await server.setFailsInbox(true)
+
+        await chat.cancelQueuedPrompt(prompt)
+
+        let pendingIDs = chat.queuedPrompts.map(\.messageID)
+        let synchronizedAfterMutation = chat.isStreamSynchronized
+        let errorAfterMutation = chat.errorMessage
+        #expect(pendingIDs == ["msg_a"])
+        #expect(!synchronizedAfterMutation)
+        #expect(errorAfterMutation?.hasPrefix(AppText.sessionInboxLoadFailedPrefix) == true)
+
+        await server.setFailsInbox(false)
+        chat.synchronizeCurrentSessionFromServer()
+        try await Self.waitUntil { chat.isStreamSynchronized }
+        #expect(chat.queuedPrompts.isEmpty)
+    }
+
+    @Test func aPendingMutationDoesNotAllowDuplicateRequestsOrOptimisticRemoval() async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Pending"), .user("msg_b", "Other")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+        let other = try #require(chat.queuedPrompts.last)
+        await server.holdMutations()
+        let mutation = Task { await chat.cancelQueuedPrompt(prompt) }
+        try await Self.waitUntil { await server.isHoldingMutation }
+
+        #expect(chat.queuedPromptMutationID == prompt.id)
+        let pendingIDs = chat.queuedPrompts.map(\.messageID)
+        #expect(pendingIDs == ["msg_a", "msg_b"])
+        #expect(!chat.canCancelQueuedPrompt(other))
+        await chat.cancelQueuedPrompt(prompt)
+        await chat.steerQueuedPrompt(other)
+        #expect(await server.inboxMutations.count == 1)
+
+        await server.releaseMutations()
+        await mutation.value
+        #expect(chat.queuedPromptMutationID == nil)
+        #expect(chat.queuedPrompts.map(\.messageID) == ["msg_b"])
+    }
+
+    @Test func aDelayedMutationCannotAffectTheNextSession() async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_old", "Old session")])
+        await server.setInbox("ses_2", [.user("msg_new", "New session")])
+        let chat = try await Self.openChat(server: server)
+        let prompt = try #require(chat.queuedPrompts.first)
+        await server.holdMutations()
+        let mutation = Task { await chat.cancelQueuedPrompt(prompt) }
+        try await Self.waitUntil { await server.isHoldingMutation }
+
+        await chat.loadSession(Self.session("ses_2"))
+        await server.setRejectsMutations(true)
+        await server.releaseMutations()
+        await mutation.value
+
+        #expect(chat.queuedPrompts.map(\.messageID) == ["msg_new"])
+        let errorAfterMutation = chat.errorMessage
+        #expect(errorAfterMutation == nil)
+        #expect(chat.queuedPromptMutationID == nil)
+    }
+
+    @Test func onlyAcceptedUserEntriesOfferSupportedActions() async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [
+            .user("msg_a", "Queued"), .user("msg_b", "Steered", delivery: "steer"),
+            .synthetic("msg_s", "Automatic", description: "Reminder", delivery: "queue"),
+            .compaction("msg_c"), .move("msg_m", directory: "/other"),
+        ])
+        let chat = try await Self.openChat(server: server)
+        let queued = try #require(chat.queuedPrompts.first { $0.messageID == "msg_a" })
+        let steered = try #require(chat.queuedPrompts.first { $0.messageID == "msg_b" })
+        #expect(chat.canCancelQueuedPrompt(queued))
+        #expect(chat.canSteerQueuedPrompt(queued))
+        #expect(chat.canCancelQueuedPrompt(steered))
+        #expect(!chat.canSteerQueuedPrompt(steered))
+        for entry in chat.queuedPrompts where entry.kind != .user {
+            #expect(!chat.canCancelQueuedPrompt(entry))
+            #expect(!chat.canSteerQueuedPrompt(entry))
+            await chat.cancelQueuedPrompt(entry)
+            await chat.steerQueuedPrompt(entry)
+        }
+        #expect(await server.inboxMutations.isEmpty)
+    }
+
+    @Test func interruptingExecutionPreservesPendingInboxWork() async throws {
+        let server = InboxFakeServer()
+        await server.setInbox("ses_1", [.user("msg_a", "Pending")])
+        let chat = try await Self.openChat(server: server)
+        chat.isLoading = true
+        chat.responseState = .generating
+
+        chat.abort()
+        try await Self.waitUntil { chat.responseState == .stopped }
+
+        #expect(await server.interruptRequests == 1)
+        #expect(await server.inboxIDs("ses_1") == ["msg_a"])
+        #expect(chat.queuedPrompts.map(\.messageID) == ["msg_a"])
+        #expect(await server.inboxMutations.isEmpty)
+    }
+
     @Test func theQueueShowsEveryPendingKindInDeliveryOrder() async throws {
         let server = InboxFakeServer()
         await server.setInbox("ses_1", [
@@ -52,6 +287,12 @@ struct V2SessionInboxTests {
 
         #expect(chat.queuedPrompts.map(\.text) == ["From the desktop", "From the phone"])
         #expect(chat.queuedPrompts.map(\.state) == [.queued, .submitting])
+        let submitting = try #require(chat.queuedPrompts.last)
+        #expect(!chat.canCancelQueuedPrompt(submitting))
+        #expect(!chat.canSteerQueuedPrompt(submitting))
+        await chat.cancelQueuedPrompt(submitting)
+        await chat.steerQueuedPrompt(submitting)
+        #expect(await server.inboxMutations.isEmpty)
 
         await server.releasePrompts()
         try await Self.waitUntil { chat.queuedPrompts.last?.state == .queued }
@@ -360,20 +601,37 @@ private actor InboxFakeServer: OpenCodeTransport {
     private var inboxes: [String: [Entry]] = [:]
     private var histories: [String: [(String, String)]] = [:]
     private var failsInbox = false
+    private var losesMutationResponse = false
+    private var rejectsMutations = false
+    private var acknowledgesWithoutChange = false
+    private var holdsMutations = false
+    private var mutationWaiter: CheckedContinuation<Void, Never>?
     private var heldInboxSession: String?
     private var inboxWaiter: CheckedContinuation<Void, Never>?
     private var holdsPrompts = false
     private var promptWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var inboxReads = 0
     private(set) var commandRequests = 0
+    private(set) var inboxMutations: [URLRequest] = []
+    private(set) var interruptRequests = 0
 
     var isHoldingInbox: Bool { inboxWaiter != nil }
+    var isHoldingMutation: Bool { mutationWaiter != nil }
     var heldPromptCount: Int { promptWaiters.count }
     func inboxIDs(_ sessionID: String) -> [String] { inboxes[sessionID, default: []].map(\.id) }
 
     func setInbox(_ sessionID: String, _ entries: [Entry]) { inboxes[sessionID] = entries }
     func setHistory(_ sessionID: String, _ messages: [(String, String)]) { histories[sessionID] = messages }
     func setFailsInbox(_ fails: Bool) { failsInbox = fails }
+    func setLosesMutationResponse(_ loses: Bool) { losesMutationResponse = loses }
+    func setRejectsMutations(_ rejects: Bool) { rejectsMutations = rejects }
+    func setAcknowledgesWithoutChange(_ acknowledges: Bool) { acknowledgesWithoutChange = acknowledges }
+    func holdMutations() { holdsMutations = true }
+    func releaseMutations() {
+        holdsMutations = false
+        mutationWaiter?.resume()
+        mutationWaiter = nil
+    }
     func holdInbox(_ sessionID: String) { heldInboxSession = sessionID }
     func releaseInbox() {
         heldInboxSession = nil
@@ -406,6 +664,31 @@ private actor InboxFakeServer: OpenCodeTransport {
         case "":
             return respond(200, #"{"data":{"id":"\#(sessionID)","title":"\#(sessionID)","time":{"created":0,"updated":0}}}"#)
         case "inbox":
+            if request.httpMethod == "DELETE", parts.count == 5 {
+                inboxMutations.append(request)
+                if holdsMutations { await withCheckedContinuation { mutationWaiter = $0 } }
+                if rejectsMutations { return respond(409, #"{"_tag":"ConflictError","message":"Cannot update pending input"}"#) }
+                if acknowledgesWithoutChange { return respond(204, "") }
+                inboxes[sessionID, default: []].removeAll { $0.id == parts[4] }
+                if losesMutationResponse { throw URLError(.timedOut) }
+                return respond(204, "")
+            }
+            if request.httpMethod == "PATCH", parts.count == 5 {
+                inboxMutations.append(request)
+                if holdsMutations { await withCheckedContinuation { mutationWaiter = $0 } }
+                if rejectsMutations { return respond(409, #"{"_tag":"ConflictError","message":"Cannot update pending input"}"#) }
+                if acknowledgesWithoutChange { return respond(204, "") }
+                guard let index = inboxes[sessionID, default: []].firstIndex(where: { $0.id == parts[4] }) else {
+                    return respond(409, #"{"_tag":"ConflictError","message":"Pending input was already consumed"}"#)
+                }
+                let entry = inboxes[sessionID, default: []][index]
+                inboxes[sessionID]?[index] = Entry(
+                    json: entry.json.replacingOccurrences(of: #""delivery":"queue""#, with: #""delivery":"steer""#),
+                    id: entry.id
+                )
+                if losesMutationResponse { throw URLError(.timedOut) }
+                return respond(204, "")
+            }
             inboxReads += 1
             if heldInboxSession == sessionID {
                 heldInboxSession = nil
@@ -422,6 +705,9 @@ private actor InboxFakeServer: OpenCodeTransport {
             return respond(200, #"{"data":[\#(messages.joined(separator: ","))],"cursor":{"next":null}}"#)
         case "permission", "form":
             return respond(200, #"{"data":[]}"#)
+        case "interrupt":
+            interruptRequests += 1
+            return respond(200, #"{"interrupted":true}"#)
         case "command":
             commandRequests += 1
             return respond(204, "")

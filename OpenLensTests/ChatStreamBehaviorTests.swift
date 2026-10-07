@@ -25,7 +25,9 @@ struct ChatStreamBehaviorTests {
 
         #expect(client.pendingAssistantMessage?.content == "")
 
-        await waitForMainQueue(milliseconds: 80)
+        await waitForStreamingUpdate {
+            client.pendingAssistantMessage?.streamingTextProjection.copyText() == "Hello"
+        }
 
         #expect(client.pendingAssistantMessage?.content == "")
         #expect(client.pendingAssistantMessage?.streamingTextProjection.copyText() == "Hello")
@@ -78,7 +80,9 @@ struct ChatStreamBehaviorTests {
                 rawEvent: nil
             )
         )
-        await waitForMainQueue(milliseconds: 80)
+        await waitForStreamingUpdate {
+            visibleTranscriptRows(from: client.displayedMessages).first?.value == "First visible text."
+        }
 
         let timelineVersionAfterFirstVisibleText = client.timelineVersion
         let contentVersionAfterFirstVisibleText = client.contentVersion
@@ -105,7 +109,9 @@ struct ChatStreamBehaviorTests {
                 rawEvent: nil
             )
         )
-        await waitForMainQueue(milliseconds: 80)
+        await waitForStreamingUpdate {
+            visibleTranscriptRows(from: client.displayedMessages).first?.value == "First visible text. More text in the same part."
+        }
 
         #expect(client.timelineVersion == timelineVersionAfterFirstVisibleText)
         #expect(client.contentVersion > contentVersionAfterFirstVisibleText)
@@ -4130,7 +4136,9 @@ struct ChatStreamBehaviorTests {
         #expect(client.bufferedStreamingMetricsForTesting.chunks == 200)
         #expect(client.bufferedStreamingMetricsForTesting.isBackpressured)
 
-        await waitForMainQueue(milliseconds: 80)
+        await waitForStreamingUpdate {
+            client.bufferedStreamingMetricsForTesting.chunks < 200
+        }
         #expect(client.bufferedStreamingMetricsForTesting.records == 1)
         #expect(client.bufferedStreamingMetricsForTesting.chunks < 200)
 
@@ -4139,7 +4147,9 @@ struct ChatStreamBehaviorTests {
         #expect(client.bufferedStreamingMetricsForTesting.chunks == 0)
         #expect(!client.bufferedStreamingMetricsForTesting.isBackpressured)
 
-        await waitForMainQueue(milliseconds: 120)
+        await waitForStreamingUpdate {
+            client.messages.last?.content == chunks.joined()
+        }
         #expect(client.messages.last?.content == chunks.joined())
     }
 
@@ -4384,6 +4394,15 @@ struct ChatStreamBehaviorTests {
         )
 
         return client
+    }
+
+    @MainActor
+    private func waitForStreamingUpdate(_ condition: @MainActor () -> Bool) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while !condition(), clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     @MainActor

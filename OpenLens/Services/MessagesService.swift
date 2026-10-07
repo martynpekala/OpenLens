@@ -88,6 +88,16 @@ final class MessagesService {
         return try await client.listSessionInbox(sessionID: sessionID)
     }
 
+    func cancelSessionInboxEntry(sessionID: String, inboxID: String) async throws {
+        guard let client = connection.client else { throw OpenCodeError.notConnected }
+        try await client.cancelSessionInboxEntry(sessionID: sessionID, inboxID: inboxID)
+    }
+
+    func changeSessionInboxDelivery(sessionID: String, inboxID: String, delivery: OCV2PromptInput.Delivery) async throws {
+        guard let client = connection.client else { throw OpenCodeError.notConnected }
+        try await client.changeSessionInboxDelivery(sessionID: sessionID, inboxID: inboxID, delivery: delivery)
+    }
+
     /// Looks up a prompt admitted under `messageID` in the v2 inbox or history.
     func findPromptAdmission(sessionID: String, messageID: String) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {

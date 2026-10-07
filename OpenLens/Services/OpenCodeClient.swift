@@ -488,6 +488,31 @@ actor OpenCodeClient {
         return response.data
     }
 
+    func cancelSessionInboxEntry(sessionID: String, inboxID: String) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Session inbox cancellation requires a v2 OpenCode server.")
+        }
+        try await sendV2RequestDiscardingResponse(
+            method: "DELETE",
+            path: "/api/session/\(sessionID)/inbox",
+            pathParameter: inboxID,
+            includesLocation: false
+        )
+    }
+
+    func changeSessionInboxDelivery(sessionID: String, inboxID: String, delivery: OCV2PromptInput.Delivery) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Session inbox delivery changes require a v2 OpenCode server.")
+        }
+        try await sendV2RequestDiscardingResponse(
+            method: "PATCH",
+            path: "/api/session/\(sessionID)/inbox",
+            pathParameter: inboxID,
+            body: ["delivery": delivery.rawValue],
+            includesLocation: false
+        )
+    }
+
     /// Finds a prompt admitted under `messageID`, mirroring the server's own
     /// reconciliation: the pending inbox first, then the delivered history.
     /// Returns nil only when the server positively reports neither.

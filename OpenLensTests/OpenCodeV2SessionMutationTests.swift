@@ -3,6 +3,22 @@ import Testing
 @testable import OpenLens
 
 struct OpenCodeV2SessionMutationTests {
+    @Test func legacyConnectionsCannotMutateTheV2Inbox() async throws {
+        let transport = V2SessionMutationTransport(responses: [])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+
+        await #expect(throws: OpenCodeError.self) {
+            try await client.cancelSessionInboxEntry(sessionID: "ses_1", inboxID: "msg_a")
+        }
+        await #expect(throws: OpenCodeError.self) {
+            try await client.changeSessionInboxDelivery(sessionID: "ses_1", inboxID: "msg_a", delivery: .steer)
+        }
+        #expect(transport.recordedRequests().isEmpty)
+    }
+
     @Test func v2SessionMutationsUseV2RoutesAndHandleNoContentResponses() async throws {
         let transport = V2SessionMutationTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),

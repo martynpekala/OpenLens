@@ -232,6 +232,12 @@ enum AppText {
         directory.map { "Move session to \($0)" } ?? "Move session"
     }
     static let sessionInboxLoadFailedPrefix = "Failed to load the session queue:"
+    static let cancelQueuedPromptFailedPrefix = "Failed to cancel the pending prompt:"
+    static let steerQueuedPromptFailedPrefix = "Failed to steer the pending prompt:"
+    static let queuedPromptActions = "Pending prompt actions"
+    static let cancelQueuedPrompt = "Cancel pending prompt"
+    static let promoteQueuedPrompt = "Steer at next step"
+    static let updatingQueuedPrompt = "Updating pending prompt"
     static let qrInstruction = "Point camera at QR code"
     static let qrInstructionSubtitle = "Scan an OpenCode pairing QR code"
     static let qrInvalid = "Invalid QR code — scan an OpenCode pairing QR code"

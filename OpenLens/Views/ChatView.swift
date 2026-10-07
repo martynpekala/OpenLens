@@ -2512,6 +2512,7 @@ private struct ChatMessagesListView: View {
                                 prompt: prompt,
                                 position: queuePositions[prompt.id] ?? 0
                             )
+                            .environment(chatClient)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
@@ -2802,6 +2803,7 @@ private struct QueuedPromptBubbleView: View {
 
     @Environment(\.openLensTheme) private var theme
     @Environment(\.chatEasterEgg) private var chatEasterEgg
+    @Environment(ChatClient.self) private var chatClient
 
     var body: some View {
         HStack(alignment: .bottom, spacing: isRetroChat ? 6 : 8) {
@@ -2838,6 +2840,8 @@ private struct QueuedPromptBubbleView: View {
                 }
 
                 SkillMentionText(text: bodyText, chipStyle: isRetroChat ? .retro : .standard(.appAccent))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel([kindTitle, bodyText].compactMap { $0 }.joined(separator: ". "))
                     .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                     .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)
                     .padding(.horizontal, isRetroChat ? 14 : 16)
@@ -2866,15 +2870,42 @@ private struct QueuedPromptBubbleView: View {
 
                 HStack(spacing: 5) {
                     statusIcon
+                        .accessibilityHidden(true)
                     Text(statusText)
+                    if chatClient.queuedPromptMutationID == prompt.id {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .accessibilityLabel(AppText.updatingQueuedPrompt)
+                    } else if chatClient.supportsQueuedPromptActions(prompt) {
+                        promptActions
+                    }
                 }
                 .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(isRetroChat ? RetroChatStyle.magentaAccent : Color.appAccent)
                 .padding(.trailing, 4)
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel([statusText, kindTitle, bodyText].compactMap { $0 }.joined(separator: ". "))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var promptActions: some View {
+        Menu {
+            if chatClient.canSteerQueuedPrompt(prompt) {
+                Button(AppText.promoteQueuedPrompt, systemImage: "arrow.up.forward") {
+                    Task { await chatClient.steerQueuedPrompt(prompt) }
+                }
+            }
+            Button(AppText.cancelQueuedPrompt, systemImage: "xmark", role: .destructive) {
+                Task { await chatClient.cancelQueuedPrompt(prompt) }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .disabled(!chatClient.canCancelQueuedPrompt(prompt))
+        .accessibilityLabel(AppText.queuedPromptActions)
+        .accessibilityIdentifier("queuedPromptActions-\(prompt.messageID)")
     }
 
     @ViewBuilder

@@ -128,6 +128,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Follow-ups that were admitted behind the active turn but have not been
     /// promoted into the visible transcript yet.
     var queuedPrompts: [QueuedPrompt] = []
+    private(set) var queuedPromptMutationID: UUID?
     private(set) var promptSubmissions: [PromptSubmission] = []
     /// True while OpenCode is reverting a selected user message.
     var isUndoingMessage: Bool = false
@@ -3082,6 +3083,93 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     // MARK: - V2 Session Inbox
 
+    func canSteerQueuedPrompt(_ prompt: QueuedPrompt) -> Bool {
+        canCancelQueuedPrompt(prompt)
+            && queuedPrompts.first(where: { $0.id == prompt.id })?.delivery == .queue
+    }
+
+    func steerQueuedPrompt(_ prompt: QueuedPrompt) async {
+        await mutateQueuedPrompt(prompt, action: .steer)
+    }
+
+    func canCancelQueuedPrompt(_ prompt: QueuedPrompt) -> Bool {
+        supportsQueuedPromptActions(prompt) && queuedPromptMutationID == nil
+    }
+
+    func supportsQueuedPromptActions(_ prompt: QueuedPrompt) -> Bool {
+        usesV2SessionAPI && !isDemoMode && !isRecordedReplayMode && !isOfflinePreviewMode
+            && currentSession != nil && connection?.client != nil
+            && queuedPrompts.contains { $0.id == prompt.id && $0.messageID == prompt.messageID && $0.state == .queued && $0.kind == .user }
+    }
+
+    func cancelQueuedPrompt(_ prompt: QueuedPrompt) async {
+        await mutateQueuedPrompt(prompt, action: .cancel)
+    }
+
+    private enum QueuedPromptMutation {
+        case cancel, steer
+
+        var failurePrefix: String {
+            switch self {
+            case .cancel: AppText.cancelQueuedPromptFailedPrefix
+            case .steer: AppText.steerQueuedPromptFailedPrefix
+            }
+        }
+    }
+
+    private func mutateQueuedPrompt(_ prompt: QueuedPrompt, action: QueuedPromptMutation) async {
+        let canMutate = switch action {
+        case .cancel: canCancelQueuedPrompt(prompt)
+        case .steer: canSteerQueuedPrompt(prompt)
+        }
+        guard canMutate, let sessionID = currentSession?.id,
+              let messagesService, let client = connection?.client else { return }
+        let epoch = inboxEpoch
+        let isStale = {
+            Task.isCancelled || self.inboxEpoch != epoch
+                || self.currentSession?.id != sessionID || self.connection?.client !== client
+        }
+        queuedPromptMutationID = prompt.id
+        defer {
+            if queuedPromptMutationID == prompt.id { queuedPromptMutationID = nil }
+        }
+
+        var mutationError: Error?
+        do {
+            switch action {
+            case .cancel:
+                try await messagesService.cancelSessionInboxEntry(sessionID: sessionID, inboxID: prompt.messageID)
+            case .steer:
+                try await messagesService.changeSessionInboxDelivery(sessionID: sessionID, inboxID: prompt.messageID, delivery: .steer)
+            }
+        } catch {
+            mutationError = error
+        }
+        guard !isStale() else { return }
+        // A mutation can race with delivery or lose its response. Recover the
+        // shared inbox and transcript even when the request reports a failure.
+        synchronizeCurrentSessionFromServer()
+        await streamSynchronizationTask?.value
+        guard !isStale() else { return }
+        let reflectsMutation = switch action {
+        case .cancel: !sessionInbox.contains(where: { $0.id == prompt.messageID })
+        case .steer: sessionInbox.first(where: { $0.id == prompt.messageID })?.delivery == .steer
+        }
+        let confirmed = isStreamSynchronized && reflectsMutation
+            && mutationError.map(OpenCodeClient.requestMayHaveReachedServer) == true
+        if let mutationError, !confirmed, isStreamSynchronized || errorMessage == nil {
+            errorMessage = "\(action.failurePrefix) \(mutationError.localizedDescription)"
+        } else if mutationError == nil || confirmed, hasQueuedPromptMutationError {
+            errorMessage = nil
+        }
+    }
+
+    private var hasQueuedPromptMutationError: Bool {
+        guard let errorMessage else { return false }
+        return errorMessage.hasPrefix(AppText.cancelQueuedPromptFailedPrefix)
+            || errorMessage.hasPrefix(AppText.steerQueuedPromptFailedPrefix)
+    }
+
     private enum InboxRecovery {
         /// The queue reflects a server snapshot at least as new as this read.
         case current
@@ -4537,6 +4625,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         isLoading = false
         isQueueingPrompt = false
         queuedPrompts = []
+        queuedPromptMutationID = nil
         responseState = .idle
         stopFlushTimer()
         cancelTimelineInvalidation()
