@@ -33,6 +33,18 @@ Commits: `add6e64`, including the ticket's done status.
 
 Verified with 507 passing simulator tests and a [shared inbox screenshot](screenshots/03-shared-v2-session-inbox.png). Remote was removed in `77b72ac`; this ticket follows the current direct-connection scope. A live two-client V2 server run remains unverified.
 
+## 04: Cancel pending V2 prompts and promote queue to steer
+
+Commits: `5d7ee85`, including the ticket's done status.
+
+- From an accepted user prompt's actions menu, you can cancel pending work, including prompts sent from another client.
+- You can promote a queued prompt to "Steer at next step" using its existing server identity. The phone does not resend its text as a new prompt.
+- After either action, the phone refreshes the shared queue and transcript. If a response is lost, recovered server state can confirm the change. A prompt delivered during the action appears in history instead of remaining in the queue.
+- Failed actions leave pending work available to retry. Duplicate taps are blocked while an action is in progress, and a delayed result from the previous session cannot change the newly opened session.
+- Stopping the active reply preserves remaining pending work. Pending user prompts have individually accessible menus; automatic messages, compaction and session moves keep their existing presentation.
+
+Verified with 519 passing simulator tests, separate standards/spec reviews, and simulator use of both actions against a local V2 fixture. Screenshots show the [actions menu](screenshots/04-pending-prompt-actions.png) and [the queue after promotion](screenshots/04-promoted-prompt.png). Remote was removed in `77b72ac`; this ticket follows the current direct-connection scope. A live two-client V2 server run remains unverified.
+
 ## 13: Send screenshots and supported photos in V2 prompts
 
 Commits: `c685bb2`, marked done in `b61ed5a`.
