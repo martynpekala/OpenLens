@@ -2725,9 +2725,42 @@ nonisolated struct OCV2InboxEntry: Decodable, Equatable, Sendable {
     let type: String
     let delivery: OCV2PromptInput.Delivery?
     let text: String?
+    /// Synthetic entries only.
+    let description: String?
+    /// Names of files attached to a user entry.
+    let fileNames: [String]
+    /// Destination of a move entry.
+    let moveDirectory: String?
+
+    init(
+        id: String,
+        sessionID: String,
+        type: String,
+        delivery: OCV2PromptInput.Delivery?,
+        text: String?,
+        description: String? = nil,
+        fileNames: [String] = [],
+        moveDirectory: String? = nil
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.type = type
+        self.delivery = delivery
+        self.text = text
+        self.description = description
+        self.fileNames = fileNames
+        self.moveDirectory = moveDirectory
+    }
 
     private enum CodingKeys: String, CodingKey { case id, sessionID, type, delivery, payload }
-    private struct Payload: Decodable { let text: String? }
+    private struct Payload: Decodable {
+        struct File: Decodable { let name: String? }
+        struct Location: Decodable { let directory: String? }
+        let text: String?
+        let description: String?
+        let files: [File]?
+        let location: Location?
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -2735,7 +2768,11 @@ nonisolated struct OCV2InboxEntry: Decodable, Equatable, Sendable {
         sessionID = try container.decode(String.self, forKey: .sessionID)
         type = try container.decode(String.self, forKey: .type)
         delivery = try? container.decodeIfPresent(OCV2PromptInput.Delivery.self, forKey: .delivery)
-        text = (try? container.decodeIfPresent(Payload.self, forKey: .payload))??.text
+        let payload = (try? container.decodeIfPresent(Payload.self, forKey: .payload)) ?? nil
+        text = payload?.text
+        description = payload?.description
+        fileNames = payload?.files?.compactMap(\.name) ?? []
+        moveDirectory = payload?.location?.directory
     }
 }
 

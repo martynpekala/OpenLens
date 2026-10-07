@@ -225,6 +225,13 @@ enum AppText {
     static let queuePromptRunsNext = "Runs next"
     static let queuePromptSubmitting = "Adding to queue..."
     static func queuePromptPosition(_ position: Int) -> String { "Position \(position)" }
+    static let queuePromptSteers = "Steers at next step"
+    static let queuedCompaction = "Compact conversation"
+    static let queuedSyntheticDefault = "Automatic message"
+    static func queuedMove(to directory: String?) -> String {
+        directory.map { "Move session to \($0)" } ?? "Move session"
+    }
+    static let sessionInboxLoadFailedPrefix = "Failed to load the session queue:"
     static let qrInstruction = "Point camera at QR code"
     static let qrInstructionSubtitle = "Scan an OpenCode pairing QR code"
     static let qrInvalid = "Invalid QR code — scan an OpenCode pairing QR code"

@@ -476,7 +476,7 @@ private actor SettingsFakeServer: OpenCodeTransport {
         switch components[3] {
         case "message":
             return respond(200, #"{"data":\#(session.messagesJSON),"cursor":{"next":null}}"#)
-        case "permission", "form":
+        case "permission", "form", "inbox":
             return respond(200, #"{"data":[]}"#)
         default:
             return respond(404)

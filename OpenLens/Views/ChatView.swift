@@ -2506,10 +2506,11 @@ private struct ChatMessagesListView: View {
                             timelineRow(item)
                         }
 
-                        ForEach(Array(chatClient.queuedPrompts.enumerated()), id: \.element.id) { index, prompt in
+                        let queuePositions = QueuedPrompt.queuePositions(chatClient.queuedPrompts)
+                        ForEach(chatClient.queuedPrompts) { prompt in
                             QueuedPromptBubbleView(
                                 prompt: prompt,
-                                position: index + 1
+                                position: queuePositions[prompt.id] ?? 0
                             )
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
@@ -2825,8 +2826,18 @@ private struct QueuedPromptBubbleView: View {
                         PromptAttachmentChip(title: reference.displayName, kind: .serverFile)
                     }
                 }
+                ForEach(prompt.fileNames, id: \.self) { name in
+                    PromptAttachmentChip(title: name, kind: .serverFile)
+                }
 
-                SkillMentionText(text: prompt.text, chipStyle: isRetroChat ? .retro : .standard(.appAccent))
+                if let kindTitle {
+                    Text(kindTitle)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .semibold))
+                        .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                        .padding(.trailing, 4)
+                }
+
+                SkillMentionText(text: bodyText, chipStyle: isRetroChat ? .retro : .standard(.appAccent))
                     .font(isRetroChat ? RetroChatStyle.bodyFont : .system(size: 16))
                     .foregroundStyle(isRetroChat ? RetroChatStyle.ink : Color.appPrimary)
                     .padding(.horizontal, isRetroChat ? 14 : 16)
@@ -2863,7 +2874,7 @@ private struct QueuedPromptBubbleView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(statusText). \(prompt.text)")
+        .accessibilityLabel([statusText, kindTitle, bodyText].compactMap { $0 }.joined(separator: ". "))
     }
 
     @ViewBuilder
@@ -2883,10 +2894,33 @@ private struct QueuedPromptBubbleView: View {
         switch prompt.state {
         case .submitting:
             AppText.queuePromptSubmitting
+        case .queued where prompt.delivery == .steer:
+            "\(AppText.queuePromptQueued) · \(AppText.queuePromptSteers)"
         case .queued where position == 1:
             "\(AppText.queuePromptQueued) · \(AppText.queuePromptRunsNext)"
         case .queued:
             "\(AppText.queuePromptQueued) · \(AppText.queuePromptPosition(position))"
+        }
+    }
+
+    /// Labels entries that are not plain prompts.
+    private var kindTitle: String? {
+        switch prompt.kind {
+        case .user, .compaction, .move:
+            nil
+        case let .synthetic(description):
+            description?.nilIfBlank ?? AppText.queuedSyntheticDefault
+        }
+    }
+
+    private var bodyText: String {
+        switch prompt.kind {
+        case .user, .synthetic:
+            prompt.text
+        case .compaction:
+            AppText.queuedCompaction
+        case let .move(directory):
+            AppText.queuedMove(to: directory)
         }
     }
 

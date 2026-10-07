@@ -80,6 +80,14 @@ final class MessagesService {
         )
     }
 
+    /// Durable work admitted to the v2 session and not yet delivered.
+    func listSessionInbox(sessionID: String) async throws -> [OCV2InboxEntry] {
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+        return try await client.listSessionInbox(sessionID: sessionID)
+    }
+
     /// Looks up a prompt admitted under `messageID` in the v2 inbox or history.
     func findPromptAdmission(sessionID: String, messageID: String) async throws -> OCV2PromptAdmission? {
         guard let client = connection.client else {

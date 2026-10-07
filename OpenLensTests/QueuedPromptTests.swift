@@ -3,6 +3,17 @@ import Testing
 @testable import OpenLens
 
 struct QueuedPromptTests {
+    @Test func onlyAcceptedQueueEntriesHaveQueuePositions() {
+        let steer = QueuedPrompt(text: "Steer", state: .queued, delivery: .steer)
+        let first = QueuedPrompt(text: "First", state: .queued)
+        let compaction = QueuedPrompt(text: "", state: .queued, kind: .compaction)
+        let sending = QueuedPrompt(text: "Sending", state: .submitting)
+
+        let positions = QueuedPrompt.queuePositions([steer, first, compaction, sending])
+
+        #expect(positions == [first.id: 1, compaction.id: 2])
+    }
+
     @Test func v2QueuedPromptUsesTheSharedPromptAdmissionContract() async throws {
         let transport = QueuedPromptTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),

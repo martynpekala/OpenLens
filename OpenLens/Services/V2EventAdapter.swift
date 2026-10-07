@@ -5,6 +5,8 @@ import Foundation
 nonisolated struct V2EventAdapter {
     private var tools: [String: [String: Any]] = [:]
     private static let maximumTools = 256
+    /// Emitted when a session's pending inbox changed but its transcript did not.
+    static let inboxChangedEventType = "session.inbox.changed"
 
     private static let contentEvents: Set<String> = [
         "session.step.started", "session.step.streamed", "session.step.ended", "session.step.failed",
@@ -37,7 +39,12 @@ nonisolated struct V2EventAdapter {
         switch type {
         case "permission.asked", "form.created", "form.replied", "form.cancelled", "session.status":
             return make(type, data)
-        case "permission.replied", "session.inbox.delivered", "session.inbox.cancelled",
+        // Inbox changes outside delivery leave the transcript as it is, so
+        // only the queue is read again.
+        case "session.inbox.enqueued", "session.inbox.cancelled", "session.inbox.delivery.changed":
+            guard let sessionID = data["sessionID"] as? String else { return reconcile() }
+            return make(Self.inboxChangedEventType, ["sessionID": sessionID])
+        case "permission.replied", "session.inbox.delivered",
              "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
              "session.revert.committed", "session.revert.staged", "session.revert.cleared",
              "session.message.content.updated", "session.moved", "session.deleted", "session.idle":

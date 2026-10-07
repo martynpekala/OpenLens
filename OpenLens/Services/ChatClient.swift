@@ -12,8 +12,18 @@ enum ChatResponseState: Equatable {
 
 struct QueuedPrompt: Identifiable, Equatable {
     enum State: Equatable {
+        /// Sent by this client; the server has not confirmed admission yet.
         case submitting
+        /// Accepted by the server and waiting in the session inbox.
         case queued
+    }
+
+    /// The supported v2 inbox entry types.
+    enum Kind: Equatable {
+        case user
+        case synthetic(description: String?)
+        case compaction
+        case move(directory: String?)
     }
 
     let id: UUID
@@ -21,19 +31,39 @@ struct QueuedPrompt: Identifiable, Equatable {
     let text: String
     let attachments: [PromptAttachment]
     var state: State
+    var kind: Kind = .user
+    var delivery: OCV2PromptInput.Delivery = .queue
+    /// Files attached by another client, known only by name.
+    var fileNames: [String] = []
 
     init(
         id: UUID = UUID(),
         messageID: String = UUID().uuidString,
         text: String,
         attachments: [PromptAttachment] = [],
-        state: State
+        state: State,
+        kind: Kind = .user,
+        delivery: OCV2PromptInput.Delivery = .queue,
+        fileNames: [String] = []
     ) {
         self.id = id
         self.messageID = messageID
         self.text = text
         self.attachments = attachments
         self.state = state
+        self.kind = kind
+        self.delivery = delivery
+        self.fileNames = fileNames
+    }
+
+    /// One-based positions of accepted queue-mode entries; steers and
+    /// unconfirmed submissions have no position in the queue.
+    static func queuePositions(_ prompts: [QueuedPrompt]) -> [UUID: Int] {
+        var positions: [UUID: Int] = [:]
+        for prompt in prompts where prompt.state == .queued && prompt.delivery == .queue {
+            positions[prompt.id] = positions.count + 1
+        }
+        return positions
     }
 }
 
@@ -827,6 +857,17 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Preserve a local command row until a newly projected matching user
     /// message confirms that the server transcript has caught up.
     @ObservationIgnored private var optimisticV2CommandMessages: [String: OptimisticV2CommandMessage] = [:]
+    /// Last applied snapshot of the v2 session inbox, the source of
+    /// `queuedPrompts`. A read applies only if no newer read has applied and
+    /// the session state was not reset while it was in flight.
+    @ObservationIgnored private var sessionInbox: [OCV2InboxEntry] = []
+    @ObservationIgnored private var inboxReadSequence: UInt = 0
+    @ObservationIgnored private var appliedInboxReadSequence: UInt = 0
+    @ObservationIgnored private var inboxEpoch: UInt = 0
+    /// Entries this client admitted, in admission order, with the last read sequence
+    /// started before admission. Reads started earlier cannot include them, so
+    /// they stay projected until a later read is applied.
+    @ObservationIgnored private var locallyAdmittedInbox: [(entry: OCV2InboxEntry, readSequence: UInt)] = []
     @ObservationIgnored private var locallyStoppedSessionID: String?
     /// A v2 stream has no resume cursor, so a transport or decoding gap must be
     /// reconciled against the session and transcript endpoints. Coalesce gap
@@ -1459,7 +1500,12 @@ final class ChatClient: SSEEventHandlerDelegate {
     func loadMessages(syncModelSelection: Bool = true) async -> Bool {
         guard !isOfflinePreviewMode, let session = currentSession else { return false }
 
+        // Read the inbox before the transcript: an entry delivered in between
+        // then appears in both and is shown once, rather than in neither.
+        var inboxRecovered = false
         do {
+            inboxRecovered = await recoverSessionInbox() == .current
+            guard !Task.isCancelled, currentSession?.id == session.id else { return false }
             let loaded = try await messagesService!.loadMessages(sessionID: session.id)
             guard !Task.isCancelled, currentSession?.id == session.id else { return false }
             let loadedIDs = Set(loaded.map(\.id))
@@ -1474,6 +1520,7 @@ final class ChatClient: SSEEventHandlerDelegate {
             prepareTurnDiffRefresh(for: visibleMessages)
             preserveTurnFileChanges(in: visibleMessages)
             self.messages = visibleMessages
+            projectSessionInbox()
             // v2 sessions carry their canonical selection; transcript history
             // and saved defaults must not override it.
             if syncModelSelection, !usesV2SessionAPI {
@@ -1496,7 +1543,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         let statusRecovered = await refreshCurrentSessionStatus()
         await loadTodos()
-        return statusRecovered && !Task.isCancelled && currentSession?.id == session.id
+        return inboxRecovered && statusRecovered && !Task.isCancelled && currentSession?.id == session.id
     }
 
     func unloadSession(ifMatching sessionID: String) {
@@ -1731,7 +1778,8 @@ final class ChatClient: SSEEventHandlerDelegate {
                 self.isStreamSynchronized = true
                 if let error = self.errorMessage, [
                     "Failed to refresh session status:", "Failed to recover pending interactions:",
-                    "Failed to synchronize chat:", "Failed to load messages:"
+                    "Failed to synchronize chat:", "Failed to load messages:",
+                    AppText.sessionInboxLoadFailedPrefix
                 ].contains(where: { error.hasPrefix($0) }) {
                     self.errorMessage = nil
                 }
@@ -1805,20 +1853,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     private func mergeLoadedMessagesWithLocalMessages(_ loaded: [ChatMessage]) -> [ChatMessage] {
         let loadedIDs = Set(loaded.map(\.id))
         optimisticV2UserMessageIDs.subtract(loadedIDs)
-        for index in promptSubmissions.indices
-        where promptSubmissions[index].state == .uncertain && loadedIDs.contains(promptSubmissions[index].id) {
-            promptSubmissions[index].state = .accepted(admissionID: promptSubmissions[index].id)
-            // The restored text invited a retry; once the transcript proves
-            // admission, resending would create new work, so withdraw it.
-            if inputText == promptSubmissions[index].text,
-               composerAttachments == promptSubmissions[index].attachments {
-                inputText = ""
-                composerAttachments = []
-            }
-            if errorMessage == AppText.promptAdmissionUncertain {
-                dismissError()
-            }
-        }
+        confirmUncertainSubmissions(admittedIDs: loadedIDs)
         let projectedCommandIDs = optimisticV2CommandMessages.compactMap { localID, command in
             let commandWasProjected = loaded.contains { message in
                 message.role == .user &&
@@ -2622,10 +2657,23 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     private func acceptQueuedPrompt(id: UUID) {
         guard let index = queuedPrompts.firstIndex(where: { $0.id == id }) else { return }
-        queuedPrompts[index].state = .queued
         if usesV2SessionAPI {
-            optimisticV2UserMessageIDs.insert(queuedPrompts[index].messageID)
+            // The server owns delivery. Keep the admitted entry until an
+            // inbox read started after admission is applied.
+            let prompt = queuedPrompts[index]
+            let entry = OCV2InboxEntry(
+                id: prompt.messageID,
+                sessionID: currentSession?.id ?? "",
+                type: "user",
+                delivery: .queue,
+                text: prompt.text
+            )
+            locallyAdmittedInbox.removeAll { $0.entry.id == entry.id }
+            locallyAdmittedInbox.append((entry, inboxReadSequence))
+            projectSessionInbox()
+            return
         }
+        queuedPrompts[index].state = .queued
 
         // The active turn can finish while the admission request is in flight.
         // Promote immediately in that race; otherwise finishLoading() performs
@@ -2635,8 +2683,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
+    /// Moves the next local follow-up into the transcript. Only for v1: a v2
+    /// server delivers its inbox itself, so the client never promotes there.
     private func promoteNextQueuedPrompt() {
-        guard queuedPrompts.first?.state == .queued else { return }
+        guard !usesV2SessionAPI, queuedPrompts.first?.state == .queued else { return }
         let prompt = queuedPrompts.removeFirst()
         messages.append(
             ChatMessage(
@@ -3012,6 +3062,125 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
+    /// Marks uncertain submissions the server has shown it admitted. The
+    /// restored composer text invited a retry; resending would now create new
+    /// work, so it is withdrawn.
+    private func confirmUncertainSubmissions(admittedIDs: Set<String>) {
+        for index in promptSubmissions.indices
+        where promptSubmissions[index].state == .uncertain && admittedIDs.contains(promptSubmissions[index].id) {
+            promptSubmissions[index].state = .accepted(admissionID: promptSubmissions[index].id)
+            if inputText == promptSubmissions[index].text,
+               composerAttachments == promptSubmissions[index].attachments {
+                inputText = ""
+                composerAttachments = []
+            }
+            if errorMessage == AppText.promptAdmissionUncertain {
+                dismissError()
+            }
+        }
+    }
+
+    // MARK: - V2 Session Inbox
+
+    private enum InboxRecovery {
+        /// The queue reflects a server snapshot at least as new as this read.
+        case current
+        /// The session changed or was reset while the read was in flight.
+        case discarded
+        case failed
+    }
+
+    /// Reads the v2 session inbox and projects it into `queuedPrompts`.
+    private func recoverSessionInbox() async -> InboxRecovery {
+        guard usesV2SessionAPI, !isDemoMode, !isRecordedReplayMode, !isOfflinePreviewMode else { return .current }
+        guard let sessionID = currentSession?.id, let messagesService else { return .discarded }
+
+        inboxReadSequence &+= 1
+        let sequence = inboxReadSequence
+        let epoch = inboxEpoch
+        let isStale = { Task.isCancelled || self.inboxEpoch != epoch || self.currentSession?.id != sessionID }
+        do {
+            let entries = try await messagesService.listSessionInbox(sessionID: sessionID)
+            if isStale() { return .discarded }
+            guard sequence > appliedInboxReadSequence else { return .current }
+            appliedInboxReadSequence = sequence
+            sessionInbox = entries
+            locallyAdmittedInbox.removeAll { $0.readSequence < sequence }
+            confirmUncertainSubmissions(admittedIDs: Set(entries.map(\.id)))
+            projectSessionInbox()
+            return .current
+        } catch {
+            if isStale() { return .discarded }
+            isStreamSynchronized = false
+            errorMessage = "\(AppText.sessionInboxLoadFailedPrefix) \(error.localizedDescription)"
+            return .failed
+        }
+    }
+
+    /// Reacts to an inbox change from any client. If the read fails, the
+    /// queue may be stale, so the session falls back to full recovery.
+    private func refreshInboxAfterChange() {
+        Task { [weak self] in
+            guard let self else { return }
+            if await self.recoverSessionInbox() == .failed {
+                self.synchronizeCurrentSessionFromServer()
+            }
+        }
+    }
+
+    /// Projects the server inbox, in delivery order, followed by prompts this
+    /// client is still submitting. Entries already visible in the transcript,
+    /// such as an optimistic steer, are not repeated.
+    private func projectSessionInbox() {
+        guard usesV2SessionAPI else { return }
+        let transcriptIDs = Set(messages.map(\.id))
+        let serverIDs = Set(sessionInbox.map(\.id))
+        let localEntries = locallyAdmittedInbox.map(\.entry).filter { !serverIDs.contains($0.id) }
+        // A command's optimistic row has no server admission ID. Matching its
+        // text must not hide authoritative entries with distinct identities.
+        let pending = (sessionInbox + localEntries).filter { !transcriptIDs.contains($0.id) }
+        // The server delivers every steer before the next queued entry.
+        var steers = pending.filter { $0.delivery == .steer }
+        // Mirror SessionInbox.pendingSteers: compact before earlier steers so
+        // their text follows the checkpoint, without crossing a steered move.
+        if let controlIndex = steers.firstIndex(where: { $0.type == "compaction" || $0.type == "move" }),
+           controlIndex > 0, steers[controlIndex].type == "compaction" {
+            let compaction = steers.remove(at: controlIndex)
+            steers.insert(compaction, at: 0)
+        }
+        let ordered = steers + pending.filter { $0.delivery != .steer }
+        let accepted = ordered.compactMap(queuedPrompt(for:))
+        let acceptedIDs = Set(accepted.map(\.messageID))
+        let submitting = queuedPrompts.filter { $0.state == .submitting && !acceptedIDs.contains($0.messageID) }
+        let projected = accepted + submitting
+        guard projected != queuedPrompts else { return }
+        queuedPrompts = projected
+        contentVersion &+= 1
+    }
+
+    private func queuedPrompt(for entry: OCV2InboxEntry) -> QueuedPrompt? {
+        let kind: QueuedPrompt.Kind
+        switch entry.type {
+        case "user": kind = .user
+        case "synthetic": kind = .synthetic(description: entry.description)
+        case "compaction": kind = .compaction
+        case "move": kind = .move(directory: entry.moveDirectory)
+        default: return nil
+        }
+        // Prompts sent from this phone keep their prepared attachments.
+        let submission = promptSubmissions.first { $0.id == entry.id }
+        return QueuedPrompt(
+            id: queuedPrompts.first { $0.messageID == entry.id }?.id ?? UUID(),
+            messageID: entry.id,
+            text: entry.text ?? "",
+            attachments: submission?.attachments ?? [],
+            state: .queued,
+            kind: kind,
+            delivery: entry.delivery ?? .queue,
+            fileNames: submission == nil ? entry.fileNames : []
+        )
+    }
+
     private func restoreComposer(_ text: String, attachments: [PromptAttachment]) {
         if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, composerAttachments.isEmpty {
             inputText = text
@@ -3382,21 +3551,31 @@ final class ChatClient: SSEEventHandlerDelegate {
         sseClient.onEvent = nil
         sseClient.setRawEventRetentionEnabled(isRecordingStream)
         sseClient.onInboundEvent = { [weak self] inboundEvent in
-            if case .raw(let event) = inboundEvent, event.type == "session.reconcile" {
-                let sessionID = (event.properties?.value as? [String: Any])?["sessionID"] as? String
-                if sessionID == nil || sessionID == self?.currentSession?.id {
-                    self?.synchronizeCurrentSessionFromServer()
-                }
-                return
-            }
-            if let rawEvent = inboundEvent.rawEvent {
-                self?.recordIncomingEvent(rawEvent)
-            }
-            self?.sseHandler?.handleInboundEvent(inboundEvent)
+            self?.receiveStreamEvent(inboundEvent)
         }
         sseClient.onSynchronizationGap = { [weak self] _ in
             self?.synchronizeCurrentSessionFromServer()
         }
+    }
+
+    /// Routes one event from the session stream. Reconcile and inbox-change
+    /// events trigger authoritative reads for the open session only.
+    func receiveStreamEvent(_ inboundEvent: SSEInboundEvent) {
+        if case .raw(let event) = inboundEvent,
+           event.type == "session.reconcile" || event.type == V2EventAdapter.inboxChangedEventType {
+            let sessionID = (event.properties?.value as? [String: Any])?["sessionID"] as? String
+            guard sessionID == nil || sessionID == currentSession?.id else { return }
+            if event.type == "session.reconcile" {
+                synchronizeCurrentSessionFromServer()
+            } else {
+                refreshInboxAfterChange()
+            }
+            return
+        }
+        if let rawEvent = inboundEvent.rawEvent {
+            recordIncomingEvent(rawEvent)
+        }
+        sseHandler?.handleInboundEvent(inboundEvent)
     }
 
     // MARK: - Stream Recording
@@ -4345,6 +4524,9 @@ final class ChatClient: SSEEventHandlerDelegate {
         ignoredAssistantMessageIDs.removeAll()
         optimisticV2UserMessageIDs.removeAll()
         optimisticV2CommandMessages.removeAll()
+        sessionInbox = []
+        locallyAdmittedInbox.removeAll()
+        inboxEpoch &+= 1
         promptSubmissions.removeAll { $0.state != .uncertain }
         locallyStoppedSessionID = nil
         demoPlayer?.stop()
