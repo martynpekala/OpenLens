@@ -47,14 +47,16 @@ Verified with 519 passing simulator tests, separate standards/spec reviews, and 
 
 ## 06: Show authoritative V2 execution outcomes
 
-Commit: `c345d35`, including the ticket's done status.
+Commits: `c345d35`, corrected after review in `78e5e40`, including the ticket's done status.
 
 - Session rows and the open chat show whether the server's last execution succeeded, failed or was interrupted, along with when it ended.
 - Active work, waiting for permission and waiting for a form response have their own chat status. A completed assistant step keeps the session working while server execution continues.
 - If execution disappears from the active list without a confirmed result and idle timestamp, the chat shows “Outcome unavailable.” It also prevents an older success from being reused for a newly observed run or published as a successful Live Activity completion.
 - Returning to the app, reconnecting after a stream gap and receiving execution events restore the canonical result. A delayed response from a previous chat cannot change the newly opened session.
+- Session rows reread the server's result when a run ends, when the list returns or foregrounds, and when you change the selected chat in the iPad sidebar. A failed result read keeps the row visible with “Outcome unavailable” and retries; a failed status fetch retains the last known active statuses.
+- If another client answers a permission or form and the run ends before the phone clears the request, the Live Activity still ends with the canonical result or is dismissed when the result is unavailable. Malformed advisory outcome/idle fields leave the session visible with unavailable evidence.
 
-Verified with 515 passing tests in 55 suites on the dedicated AFK simulator on 2026-10-09. Screenshots show [session outcomes](screenshots/06-session-outcomes.png), [successful execution](screenshots/06-chat-succeeded.png), [failed execution](screenshots/06-chat-failed.png), [interruption](screenshots/06-chat-interrupted.png), [active work](screenshots/06-chat-working.png), [permission waiting](screenshots/06-chat-permission.png), [form waiting](screenshots/06-chat-form.png), and [unavailable outcome evidence](screenshots/06-chat-unknown.png). Remote was removed in `77b72ac`; this ticket follows the current direct-connection scope. A live two-client V2 server session and physical-device Live Activity run remain unverified.
+Verified after review with 525 passing tests in 56 suites on the dedicated AFK simulator on 2026-10-09. Screenshots show [session outcomes](screenshots/06-session-outcomes.png), [a freshly recovered result](screenshots/06-refreshed-session-outcomes.png), [a failed result read](screenshots/06-failed-outcome-refresh.png), [successful execution](screenshots/06-chat-succeeded.png), [failed execution](screenshots/06-chat-failed.png), [interruption](screenshots/06-chat-interrupted.png), [active work](screenshots/06-chat-working.png), [permission waiting](screenshots/06-chat-permission.png), [form waiting](screenshots/06-chat-form.png), and [unavailable outcome evidence](screenshots/06-chat-unknown.png). Remote was removed in `77b72ac`; this ticket follows the current direct-connection scope. A live two-client V2 server session, physical-device Live Activity run, and manual iPad selection exercise remain unverified; the selection recovery is covered at the service boundary.
 
 ## 13: Send screenshots and supported photos in V2 prompts
 
