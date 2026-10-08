@@ -45,6 +45,17 @@ Commits: `5d7ee85`, including the ticket's done status.
 
 Verified with 519 passing simulator tests, separate standards/spec reviews, and simulator use of both actions against a local V2 fixture. Screenshots show the [actions menu](screenshots/04-pending-prompt-actions.png) and [the queue after promotion](screenshots/04-promoted-prompt.png). Remote was removed in `77b72ac`; this ticket follows the current direct-connection scope. A live two-client V2 server run remains unverified.
 
+## 06: Show authoritative V2 execution outcomes
+
+Commit: `c345d35`, including the ticket's done status.
+
+- Session rows and the open chat show whether the server's last execution succeeded, failed or was interrupted, along with when it ended.
+- Active work, waiting for permission and waiting for a form response have their own chat status. A completed assistant step keeps the session working while server execution continues.
+- If execution disappears from the active list without a confirmed result and idle timestamp, the chat shows “Outcome unavailable.” It also prevents an older success from being reused for a newly observed run or published as a successful Live Activity completion.
+- Returning to the app, reconnecting after a stream gap and receiving execution events restore the canonical result. A delayed response from a previous chat cannot change the newly opened session.
+
+Verified with 515 passing tests in 55 suites on the dedicated AFK simulator on 2026-10-09. Screenshots show [session outcomes](screenshots/06-session-outcomes.png), [successful execution](screenshots/06-chat-succeeded.png), [failed execution](screenshots/06-chat-failed.png), [interruption](screenshots/06-chat-interrupted.png), [active work](screenshots/06-chat-working.png), [permission waiting](screenshots/06-chat-permission.png), [form waiting](screenshots/06-chat-form.png), and [unavailable outcome evidence](screenshots/06-chat-unknown.png). Remote was removed in `77b72ac`; this ticket follows the current direct-connection scope. A live two-client V2 server session and physical-device Live Activity run remain unverified.
+
 ## 13: Send screenshots and supported photos in V2 prompts
 
 Commits: `c685bb2`, marked done in `b61ed5a`.
