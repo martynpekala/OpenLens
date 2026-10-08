@@ -115,13 +115,11 @@ requires access to that network (directly or through a VPN).
 
 Run the main verification command from the repository root:
 
-If `iPhone 17 Pro` is not installed locally, swap the simulator name for any available iOS Simulator from `xcrun simctl list devices`.
-
 ```bash
-xcodegen generate
-xcodebuild -project OpenLens.xcodeproj -scheme OpenLens -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO test
+./scripts/test-ios.sh
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md#verification) for Python 3/tool requirements, simulator selection, focused test runs, time limits, and recovery logs.
 
 ## Contributing
 
