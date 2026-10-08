@@ -19,14 +19,24 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     /// v2 canonical model and reasoning variant for the next turn. Absent on
     /// v1 servers, and on v2 sessions that use the server default.
     let model: OCV2ModelRef?
+    /// Last completed V2 execution; unknown future values remain decodable.
+    let outcome: String?
 
     /// Convenience: Unix timestamp (seconds) when last updated. Used for sorting.
     var updatedAt: Double { time.updated / 1000.0 }
     /// Convenience: Unix timestamp (seconds) when created.
     var createdAt: Double { time.created / 1000.0 }
 
+    /// An active snapshot alone cannot prove a successful completion.
+    var executionOutcome: OCExecutionState {
+        guard let idle = time.idle, idle.isFinite, idle > 0,
+              let outcome, let state = OCExecutionState(rawValue: outcome),
+              state == .succeeded || state == .failed || state == .interrupted else { return .unknown }
+        return state
+    }
+
     enum CodingKeys: String, CodingKey {
-        case id, projectID, directory, location, parentID, title, version, time, share, revert, agent, model
+        case id, projectID, directory, location, parentID, title, version, time, share, revert, agent, model, outcome
     }
 
     init(
@@ -40,7 +50,8 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         share: OCShareInfo? = nil,
         revert: OCSessionRevert? = nil,
         agent: String? = nil,
-        model: OCV2ModelRef? = nil
+        model: OCV2ModelRef? = nil,
+        outcome: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -53,6 +64,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         self.revert = revert
         self.agent = agent
         self.model = model
+        self.outcome = outcome
     }
 
     init(from decoder: Decoder) throws {
@@ -71,6 +83,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         // app does not understand must not hide the session itself.
         agent = (try? container.decodeIfPresent(String.self, forKey: .agent))?.nilIfBlank
         model = (try? container.decodeIfPresent(OCV2ModelRef.self, forKey: .model)) ?? nil
+        outcome = try container.decodeIfPresent(String.self, forKey: .outcome)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -86,6 +99,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         try container.encodeIfPresent(revert, forKey: .revert)
         try container.encodeIfPresent(agent, forKey: .agent)
         try container.encodeIfPresent(model, forKey: .model)
+        try container.encodeIfPresent(outcome, forKey: .outcome)
     }
 
     func hash(into hasher: inout Hasher) {
@@ -99,6 +113,8 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
             && lhs.revert == rhs.revert
             && lhs.agent == rhs.agent
             && lhs.model == rhs.model
+            && lhs.outcome == rhs.outcome
+            && lhs.time.idle == rhs.time.idle
     }
 
     /// Returns a copy with v2 canonical selection fields replaced.
@@ -106,8 +122,37 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         OCSession(
             id: id, projectID: projectID, directory: directory, parentID: parentID,
             title: title, version: version, time: time, share: share, revert: revert,
-            agent: agent, model: model
+            agent: agent, model: model, outcome: outcome
         )
+    }
+}
+
+nonisolated enum OCExecutionState: String, Sendable {
+    case unknown, working, waitingPermission, waitingForm
+    case succeeded, failed, interrupted
+
+    var label: String {
+        switch self {
+        case .unknown: AppText.executionOutcomeUnavailable
+        case .working: AppText.working
+        case .waitingPermission: AppText.executionWaitingPermission
+        case .waitingForm: AppText.executionWaitingForm
+        case .succeeded: AppText.executionSucceeded
+        case .failed: AppText.responseFailed
+        case .interrupted: AppText.executionInterrupted
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .unknown: "questionmark.circle"
+        case .working: "circle.dashed"
+        case .waitingPermission: "hand.raised"
+        case .waitingForm: "text.bubble"
+        case .succeeded: "checkmark.circle"
+        case .failed: "exclamationmark.triangle"
+        case .interrupted: "stop.circle"
+        }
     }
 }
 
@@ -125,11 +170,13 @@ nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
     let created: Double
     let updated: Double
     let compacting: Double?
+    let idle: Double?
 
-    init(created: Double, updated: Double, compacting: Double? = nil) {
+    init(created: Double, updated: Double, compacting: Double? = nil, idle: Double? = nil) {
         self.created = created
         self.updated = updated
         self.compacting = compacting
+        self.idle = idle
     }
 
     init(from decoder: Decoder) throws {
@@ -137,10 +184,11 @@ nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
         created = try container.decodeIfPresent(Double.self, forKey: .created) ?? 0
         updated = try container.decodeIfPresent(Double.self, forKey: .updated) ?? 0
         compacting = try container.decodeIfPresent(Double.self, forKey: .compacting)
+        idle = try container.decodeIfPresent(Double.self, forKey: .idle)
     }
 
     enum CodingKeys: String, CodingKey {
-        case created, updated, compacting
+        case created, updated, compacting, idle
     }
 }
 

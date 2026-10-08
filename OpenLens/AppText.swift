@@ -485,6 +485,12 @@ enum AppText {
         "\(showMoreSessions) (\(remainingCount))"
     }
 
+    static let executionOutcomeUnavailable = "Outcome unavailable"
+    static let executionWaitingPermission = "Waiting for permission"
+    static let executionWaitingForm = "Waiting for response"
+    static let executionSucceeded = "Succeeded"
+    static let executionInterrupted = "Interrupted"
+
     static func onboardingStep(_ current: Int, _ total: Int) -> String {
         "Step \(current) of \(total)"
     }

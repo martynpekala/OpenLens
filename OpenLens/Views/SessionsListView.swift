@@ -334,7 +334,7 @@ struct SessionsListView: View {
     }
 
     private func sessionRow(_ session: OCSession) -> some View {
-        let isBusy = sessionStatuses[session.id]?.type == .busy
+        let isBusy = sessionStatuses[session.id]?.type == .busy || sessionStatuses[session.id]?.type == .retry
         let isSelected = isSidebar && selectedSessionID == session.id
 
         return HStack(spacing: 12) {
@@ -352,6 +352,8 @@ struct SessionsListView: View {
                     }
                     .font(.system(size: 12, design: .rounded))
                     .foregroundStyle(.green)
+                } else if connection.serverCapabilities?.protocolVersion == .v2 || ScreenshotFixtures.showsExecutionOutcomes {
+                    ExecutionStatusView(state: session.executionOutcome, idleTime: session.time.idle)
                 } else {
                     Text(formattedDate(session.updatedAt))
                         .font(.system(size: 14, design: .rounded))

@@ -177,6 +177,22 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Session status from SSE.
     var sessionStatus: OCSessionStatus?
 
+    private var observedExecution: (sessionID: String, idle: Double?)?
+
+    var showsExecutionState: Bool {
+        usesV2SessionAPI || (ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes)
+    }
+
+    var executionState: OCExecutionState {
+        if pendingPermission != nil { return .waitingPermission }
+        if pendingForm != nil || pendingQuestion != nil { return .waitingForm }
+        if isLoading || sessionStatus?.type == .busy || sessionStatus?.type == .retry { return .working }
+        guard let session = currentSession else { return .unknown }
+        if let observedExecution, observedExecution.sessionID == session.id,
+           (session.time.idle ?? 0) <= (observedExecution.idle ?? 0) { return .unknown }
+        return session.executionOutcome
+    }
+
     /// Pending permission request from the server.
     var pendingPermission: OCPermissionRequest? {
         didSet { syncLiveActivityPendingUserResponse() }
@@ -1200,6 +1216,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     func beginExternalResponse() {
+        observeExecutionStart()
         abortTask?.cancel()
         abortTask = nil
         cancelStoppedStateClear()
@@ -1394,7 +1411,11 @@ final class ChatClient: SSEEventHandlerDelegate {
             lastCompletedActivity = nil
             errorMessage = nil
             // Auto-start demo playback after session is ready
-            demoPlayer?.play(demoScript)
+            if ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes {
+                ScreenshotFixtures.applyExecutionOutcome(to: self)
+            } else {
+                demoPlayer?.play(demoScript)
+            }
             return
         }
 
@@ -1439,7 +1460,11 @@ final class ChatClient: SSEEventHandlerDelegate {
             currentActivity = nil
             lastCompletedActivity = nil
             errorMessage = nil
-            demoPlayer?.play(demoScript)
+            if ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes {
+                ScreenshotFixtures.applyExecutionOutcome(to: self)
+            } else {
+                demoPlayer?.play(demoScript)
+            }
             return
         }
 
@@ -1606,7 +1631,8 @@ final class ChatClient: SSEEventHandlerDelegate {
                 share: session.share,
                 revert: OCSessionRevert(messageID: message.id),
                 agent: session.agent,
-                model: session.model
+                model: session.model,
+                outcome: session.outcome
             )
             await loadMessages()
         } catch {
@@ -1702,6 +1728,14 @@ final class ChatClient: SSEEventHandlerDelegate {
         do {
             let statuses = try await sessionsService.getSessionStatuses()
             guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
+            // The sparse V2 active snapshot proves only that work is absent.
+            // Fetch its result before finalizing a response observed as active.
+            if usesV2SessionAPI, statuses[sessionID] == nil,
+               isLoading || pendingAssistantMessage != nil {
+                let session = try await sessionsService.getSession(id: sessionID)
+                guard !Task.isCancelled, currentSession?.id == sessionID else { return false }
+                currentSession = session
+            }
             reconcileCurrentSessionStatus(statuses[sessionID])
             return true
         } catch {
@@ -1847,6 +1881,11 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func shouldDeferIdleStatusRefresh(now: Date = Date()) -> Bool {
+        if usesV2SessionAPI, let session = currentSession,
+           session.executionOutcome != .unknown,
+           let idle = session.time.idle,
+           let observedExecution, observedExecution.sessionID == session.id,
+           idle > (observedExecution.idle ?? 0) { return false }
         guard let responseStartDate else { return false }
         return now.timeIntervalSince(responseStartDate) < Self.statusRefreshIdleGraceInterval
     }
@@ -2418,6 +2457,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func beginResponse() {
+        observeExecutionStart()
         abortTask?.cancel()
         abortTask = nil
         cancelStoppedStateClear()
@@ -2427,6 +2467,11 @@ final class ChatClient: SSEEventHandlerDelegate {
         errorMessage = nil
         isLoading = true
         haptics.prepareForResponse()
+    }
+
+    private func observeExecutionStart() {
+        guard usesV2SessionAPI, let session = currentSession else { return }
+        observedExecution = (session.id, session.time.idle)
     }
 
     private func markResponseFailed(_ message: String) {
@@ -4628,6 +4673,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         queuedPromptMutationID = nil
         responseState = .idle
         stopFlushTimer()
+        observedExecution = nil
         cancelTimelineInvalidation()
         discardAllBufferedStreamingUpdates()
         streamingMessageIDRemaps.removeAll()
@@ -4803,14 +4849,24 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         responseStartDate = nil
 
-        liveActivityTracker?.end()
-
         if let activity = currentActivity {
             lastCompletedActivity = activity
         }
         currentActivity = nil
         sessionStatus = nil
         markResponseIdleAfterFinish()
+
+        if usesV2SessionAPI {
+            switch executionState {
+            case .succeeded: liveActivityTracker?.end(phase: .finished)
+            case .failed: liveActivityTracker?.end(phase: .failed)
+            case .interrupted: liveActivityTracker?.end(phase: .stopped)
+            case .waitingPermission, .waitingForm: break
+            case .unknown, .working: liveActivityTracker?.dismiss()
+            }
+        } else {
+            liveActivityTracker?.end()
+        }
 
         if completedActiveTurn {
             promoteNextQueuedPrompt()

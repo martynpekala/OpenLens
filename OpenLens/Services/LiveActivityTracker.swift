@@ -74,6 +74,11 @@ final class LiveActivityTracker {
         liveActivity.endActivity(phase: phase)
     }
 
+    /// Incomplete execution evidence must not publish a successful completion.
+    func dismiss() {
+        liveActivity.dismissImmediately()
+    }
+
     private func setPendingUserResponse(_ response: OpenLensActivityAttributes.PendingUserResponse?) {
         guard response != pendingUserResponse else { return }
         pendingUserResponse = response

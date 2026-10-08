@@ -98,7 +98,7 @@ nonisolated struct SSESessionUpdate {
         self.sessionID = sessionID
         self.presentFields = Set(info.keys).intersection(Set([
             "projectID", "directory", "parentID", "title", "version", "time", "share", "revert",
-            "agent", "model",
+            "agent", "model", "outcome",
         ]))
         self.update = SSEPreparedPayload.decode(OCSession.self, from: info).map(Self.boundedSession)
         self.title = StreamDisplayValue.preview(info["title"] as? String, maximumBytes: 512)
@@ -127,7 +127,8 @@ nonisolated struct SSESessionUpdate {
                       StreamDisplayValue.fitsIdentifier($0.providerID),
                       $0.variant == nil || StreamDisplayValue.fitsIdentifier($0.variant) else { return nil }
                 return $0
-            }
+            },
+            outcome: StreamDisplayValue.preview(session.outcome, maximumBytes: 64)
         )
     }
 }

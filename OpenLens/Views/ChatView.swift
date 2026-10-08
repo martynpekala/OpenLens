@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Main chat interface.
-/// Keeps view-local UI state and delegates IO to the coordinator ViewModel + services.
+/// Keeps view-local UI state and delegates IO to shared services.
 /// Side effects are driven by lifecycle hooks (.task, .onChange).
 struct ChatView: View {
     fileprivate static let integerFormatter: NumberFormatter = {
@@ -91,8 +91,18 @@ struct ChatView: View {
                 .ignoresSafeArea()
         }
         .overlay(alignment: .top) {
-            responseStatusOverlay
-                .padding(.top, 8)
+            if !chatClient.showsExecutionState {
+                responseStatusOverlay
+                    .padding(.top, 8)
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if chatClient.showsExecutionState {
+                ExecutionStatusView(state: chatClient.executionState, idleTime: chatClient.currentSession?.time.idle)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background { chatBackground }
+            }
         }
         .safeAreaInset(edge: .bottom) {
             if chatClient.showsComposer {

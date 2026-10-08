@@ -158,7 +158,8 @@ final class SessionsService {
                 share: session.share,
                 revert: session.revert,
                 agent: session.agent,
-                model: session.model
+                model: session.model,
+                outcome: session.outcome
             )
         }
 
@@ -253,7 +254,8 @@ final class SessionsService {
                 share: session.share,
                 revert: session.revert,
                 agent: session.agent,
-                model: session.model
+                model: session.model,
+                outcome: session.outcome
             )
         }
     }

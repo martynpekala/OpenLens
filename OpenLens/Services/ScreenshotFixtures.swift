@@ -1,6 +1,43 @@
 import Foundation
 
 enum ScreenshotFixtures {
+    static var showsExecutionOutcomes: Bool {
+        ProcessInfo.processInfo.arguments.contains("SCREENSHOT_EXECUTION_OUTCOMES")
+    }
+
+    static var executionState: OCExecutionState {
+        let prefix = "SCREENSHOT_EXECUTION_STATE="
+        let value = ProcessInfo.processInfo.arguments.first { $0.hasPrefix(prefix) }
+            .map { String($0.dropFirst(prefix.count)) } ?? "succeeded"
+        return OCExecutionState(rawValue: value) ?? .unknown
+    }
+
+    /// Stable transcript and execution projection for outcome screenshots.
+    static func applyExecutionOutcome(to chat: ChatClient) {
+        let reply: String
+        switch executionState {
+        case .succeeded: reply = "All checks passed. The release build is ready for review."
+        case .failed: reply = "The test run reported a failure. I can investigate it next."
+        case .interrupted: reply = "Execution was interrupted before the remaining checks finished."
+        case .working: reply = "The suite is still running. I'll report the result when execution finishes."
+        case .waitingPermission, .waitingForm: reply = "I need your response before continuing."
+        case .unknown: reply = "The current result could not be confirmed."
+        }
+        chat.messages = [
+            ChatMessage(id: "fixture-user", role: .user, content: "Run the test suite and report the result."),
+            ChatMessage(id: "fixture-assistant", role: .assistant, content: reply)
+        ]
+        switch executionState {
+        case .working:
+            chat.beginExternalResponse()
+        case .waitingPermission:
+            chat.pendingPermission = inboxSnapshot.permissions.first
+        case .waitingForm:
+            chat.pendingForm = inboxSnapshot.forms.first
+        default: break
+        }
+    }
+
     static let launchArgument = "SCREENSHOT_MODE"
     static let tabArgumentPrefix = "SCREENSHOT_TAB="
     static let chatSessionArgument = "SCREENSHOT_CHAT_SESSION"
@@ -89,7 +126,13 @@ enum ScreenshotFixtures {
 
     static let defaultSessionID = "session-screenshot-1"
 
-    static let sessions: [OCSession] = [
+    static let sessions: [OCSession] = showsExecutionOutcomes ? [
+        outcomeSession(id: defaultSessionID, title: "Verify the release build", outcome: executionState.rawValue, minutesAgo: 8),
+        outcomeSession(id: "session-screenshot-2", title: "Improve session recovery", outcome: "succeeded", minutesAgo: 20),
+        outcomeSession(id: "session-screenshot-3", title: "Run integration tests", outcome: "failed", minutesAgo: 30),
+        outcomeSession(id: "session-screenshot-4", title: "Investigate the slow build", outcome: "interrupted", minutesAgo: 40),
+        outcomeSession(id: "session-screenshot-5", title: "Check the latest execution", outcome: nil, minutesAgo: 50)
+    ] : [
         OCSession(
             id: "session-screenshot-1",
             projectID: projectID,
@@ -116,7 +159,18 @@ enum ScreenshotFixtures {
         )
     ]
 
-    static let sessionStatuses: [String: OCSessionStatus] = [
+    private static func outcomeSession(id: String, title: String, outcome: String?, minutesAgo: Double) -> OCSession {
+        let idle = nowMilliseconds - minutesAgo * 60 * 1000
+        return OCSession(
+            id: id, projectID: projectID, directory: projectPath, title: title,
+            time: .init(created: nowMilliseconds - dayMilliseconds, updated: idle, idle: outcome == nil ? nil : idle),
+            outcome: outcome
+        )
+    }
+
+    static let sessionStatuses: [String: OCSessionStatus] = showsExecutionOutcomes ? [
+        "session-screenshot-2": OCSessionStatus(type: .busy, attempt: nil, message: nil, next: nil)
+    ] : [
         "session-screenshot-1": OCSessionStatus(type: .busy, attempt: 1, message: "Generating screenshot-ready copy", next: nil),
         "session-screenshot-2": OCSessionStatus(type: .idle, attempt: nil, message: nil, next: nil),
         "session-screenshot-3": OCSessionStatus(type: .idle, attempt: nil, message: nil, next: nil)

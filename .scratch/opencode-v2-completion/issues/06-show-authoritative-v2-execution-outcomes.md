@@ -4,15 +4,24 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Priority:** P1
 
-- [ ] Canonical session outcome and idle time survive decoding and refresh and are visible in existing session/chat presentation.
-- [ ] Succeeded, failed, and interrupted outcomes remain distinct from active work and pending permissions/forms.
-- [ ] A completed assistant step does not finish the entire session while server execution continues.
-- [ ] An absent active entry with incomplete outcome evidence is not labeled successful.
-- [ ] Stream gaps and foreground refresh restore the outcome without applying stale results to another session.
-- [ ] Work from OpenLens V2 baseline 1dfb5aa or a descendant retaining its dual-protocol services and Remote isolation.
-- [ ] Extend the existing services, environment injection, and view-local state; preserve V1 and chat navigation behavior without adding a ViewModel/Presenter layer.
-- [ ] Verify externally visible behavior with Swift Testing at the existing service/transport boundary and gateway coverage where applicable; run the repository-required checks and include screenshots for visible changes.
+- [x] Canonical session outcome and idle time survive decoding and refresh and are visible in existing session/chat presentation.
+- [x] Succeeded, failed, and interrupted outcomes remain distinct from active work and pending permissions/forms.
+- [x] A completed assistant step does not finish the entire session while server execution continues.
+- [x] An absent active entry with incomplete outcome evidence is not labeled successful.
+- [x] Stream gaps and foreground refresh restore the outcome without applying stale results to another session.
+- [x] Work from OpenLens V2 baseline 1dfb5aa or a descendant retaining its dual-protocol services. Remote isolation is no longer applicable after `77b72ac`.
+- [x] Extend the existing services, environment injection, and view-local state; preserve V1 and chat navigation behavior without adding a ViewModel/Presenter layer.
+- [x] Verify externally visible behavior with Swift Testing at the existing service/transport boundary and gateway coverage where applicable; run the repository-required checks and include screenshots for visible changes.
+
+**Verification:**
+
+- Added `V2ExecutionOutcomeTests`: 11 Swift Testing tests (24 cases, including parameterized coverage) exercise `ChatClient`, `SessionsService`, `MessagesService`, `QuestionService`, the production `OpenCodeClient` with an injected transport, and the existing V2 event adapter/reducer. Tests cover canonical outcome/idle round trips, foreground refresh, all three terminal execution events, stream-gap recovery, active execution surviving a completed assistant step, recovered permissions/forms, missing or unknown outcome evidence, an unchanged idle marker, delayed session/status responses after switching chats, and preservation through partial rename/model events. Live Activity assertions distinguish success, failure and interruption and prevent successful completion without evidence.
+- Test-first runs reproduced discarded outcome/idle fields, stale results after an absent active entry, false successful Live Activity completion, and dropped streamed session outcomes. The first full run exposed an invalid empty-field form fixture; it was replaced with a valid boolean form before rerunning.
+- Ran `/Users/martyn.a.pekala/Developer/afk-agent/runs/20261008-2352/bin/verify` after the final code/fixture changes. **VERIFY RESULT: PASS** — all **515 tests in 55 suites passed on 2026-10-09**, with no failures or skips, on dedicated AFK simulator `C25B01FF-5F58-4572-BD98-548790F43A2C`. Final logs/result bundle: `build/afk-logs/20261009-000446-tests-1.log` and `build/afk-logs/20261009-000446-tests-1.xcresult`. `git diff --check` passed. The branch remains `afk/20261008-2352`.
+- Extended screenshot fixtures with `SCREENSHOT_EXECUTION_OUTCOMES` and optional `SCREENSHOT_EXECUTION_STATE=<state>`, then captured and visually inspected the final verify build using the AFK screenshot command. Session rows show [terminal outcomes and active work](../screenshots/06-session-outcomes.png) and [unavailable evidence](../screenshots/06-session-unknown.png). Chat shows [succeeded](../screenshots/06-chat-succeeded.png), [failed](../screenshots/06-chat-failed.png), [interrupted](../screenshots/06-chat-interrupted.png), [working](../screenshots/06-chat-working.png), [waiting for permission](../screenshots/06-chat-permission.png), [waiting for a form response](../screenshots/06-chat-form.png), and [outcome unavailable](../screenshots/06-chat-unknown.png). Chat screenshots confirm the tab bar remains hidden. Reproduce with `SCREENSHOT_MODE SCREENSHOT_TAB=chat SCREENSHOT_EXECUTION_OUTCOMES`; add `SCREENSHOT_CHAT_SESSION` for chat and a state such as `failed`, `waitingPermission`, or `unknown` for the other variants.
+- Decisions: follow the pinned [V2 2.0.23 Session.Info contract](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/schema/src/session.ts): `outcome` describes the last completed execution at `time.idle`. Keep unknown outcome strings decodable, but show “Outcome unavailable” unless a recognized terminal result has a valid idle timestamp. Active work and pending interactions take precedence over that previous result. Once a new execution is observed, require a newer idle marker before reusing a terminal result; absence from `/api/session/active` alone never proves success. Incomplete evidence dismisses the Live Activity without publishing a successful result. Idle time uses an explicit “ago” label, distinct from execution duration. Existing services, environment injection and view-local state are retained; V1 presentation and `ConnectedRootView` navigation are preserved.
+- Confirmed `1dfb5aa` is an ancestor of this checkout. Remote and its gateway were removed in `77b72ac`, so gateway coverage and Remote isolation are inapplicable, consistent with completed tickets 03/04. No live two-client V2 server session or physical-device Live Activity run was performed; transport behavior and terminal Live Activity phases were verified with injected fixtures/providers.
