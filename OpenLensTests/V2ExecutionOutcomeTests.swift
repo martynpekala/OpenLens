@@ -164,6 +164,46 @@ struct V2ExecutionOutcomeTests {
         #expect(chat.executionState == .working)
     }
 
+    @Test(arguments: [OCExecutionState.waitingPermission, .waitingForm], [false, true])
+    func aServerAnsweredInteractionCannotKeepTheFailedRunsActivityAlive(state: OCExecutionState, usesPolling: Bool) async throws {
+        let server = OutcomeTransport(outcome: "succeeded", active: true)
+        let activity = OutcomeActivityProvider()
+        let chat = try await makeChat(server, activity: activity)
+        await server.setPendingInteraction(state)
+        chat.synchronizeCurrentSessionFromServer()
+        try await waitUntil { chat.isStreamSynchronized }
+        #expect(chat.executionState == state)
+        await server.setPendingInteraction(nil)
+        await server.complete(outcome: "failed", idle: 3000)
+        if usesPolling {
+            #expect(await chat.refreshCurrentSessionStatus())
+            #expect(activity.phases.last == .failed)
+            #expect(await chat.recoverPendingPermission())
+            #expect(await chat.recoverPendingForms())
+        } else {
+            chat.synchronizeCurrentSessionFromServer()
+            try await waitUntil { chat.isStreamSynchronized }
+        }
+        #expect(chat.pendingPermission == nil)
+        #expect(chat.pendingForm == nil)
+        #expect(!chat.isLoading)
+        #expect(chat.executionState == .failed)
+        #expect(activity.phases == [.failed])
+    }
+
+    @Test(arguments: [#"{"outcome":17,"time":{"created":1000,"updated":2000,"idle":1900}}"#,
+                      #"{"outcome":"succeeded","time":{"created":1000,"updated":2000,"idle":"invalid"}}"#,
+                      #"{"outcome":{},"time":{"created":1000,"updated":2000,"idle":[]}}"#])
+    func malformedAdvisoryOutcomeValuesDoNotHideSessions(fields: String) throws {
+        let payload = #"[{"id":"ses_1","title":"Visible",\#(fields.dropFirst().dropLast())}]"#
+        let sessions = try JSONDecoder().decode([OCSession].self, from: Data(payload.utf8))
+        #expect(sessions.count == 1)
+        #expect(sessions.first?.id == "ses_1")
+        #expect(sessions.first?.executionOutcome == .unknown)
+        #expect(sessions.first?.time.created == 1000)
+        #expect(sessions.first?.time.updated == 2000)
+    }
+
     private func makeChat(_ server: OutcomeTransport, activity: any LiveActivityProviding = TestLiveActivityProvider()) async throws -> ChatClient {
         let api = OpenCodeClient(baseURL: URL(string: "https://example.com")!, transport: server)
         let connection = ConnectionManager(testClient: api, capabilities: try await api.probeCapabilities())

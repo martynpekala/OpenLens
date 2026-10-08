@@ -187,6 +187,11 @@ final class ChatClient: SSEEventHandlerDelegate {
         if pendingPermission != nil { return .waitingPermission }
         if pendingForm != nil || pendingQuestion != nil { return .waitingForm }
         if isLoading || sessionStatus?.type == .busy || sessionStatus?.type == .retry { return .working }
+        return completedExecutionOutcome
+    }
+
+    /// Terminal evidence is independent of requests that recovery has yet to clear.
+    private var completedExecutionOutcome: OCExecutionState {
         guard let session = currentSession else { return .unknown }
         if let observedExecution, observedExecution.sessionID == session.id,
            (session.time.idle ?? 0) <= (observedExecution.idle ?? 0) { return .unknown }
@@ -4857,12 +4862,11 @@ final class ChatClient: SSEEventHandlerDelegate {
         markResponseIdleAfterFinish()
 
         if usesV2SessionAPI {
-            switch executionState {
+            switch completedExecutionOutcome {
             case .succeeded: liveActivityTracker?.end(phase: .finished)
             case .failed: liveActivityTracker?.end(phase: .failed)
             case .interrupted: liveActivityTracker?.end(phase: .stopped)
-            case .waitingPermission, .waitingForm: break
-            case .unknown, .working: liveActivityTracker?.dismiss()
+            default: liveActivityTracker?.dismiss()
             }
         } else {
             liveActivityTracker?.end()

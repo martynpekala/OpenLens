@@ -5,6 +5,18 @@ enum ScreenshotFixtures {
         ProcessInfo.processInfo.arguments.contains("SCREENSHOT_EXECUTION_OUTCOMES")
     }
 
+    static var simulatesOutcomeRefresh: Bool {
+        ProcessInfo.processInfo.arguments.contains("SCREENSHOT_EXECUTION_REFRESH") || failsOutcomeRefresh
+    }
+
+    static var failsOutcomeRefresh: Bool {
+        ProcessInfo.processInfo.arguments.contains("SCREENSHOT_EXECUTION_REFRESH_FAILED")
+    }
+
+    static var outcomeRefreshHasCompleted: Bool {
+        simulatesOutcomeRefresh && Date().timeIntervalSince1970 * 1000 - nowMilliseconds > 1500
+    }
+
     static var executionState: OCExecutionState {
         let prefix = "SCREENSHOT_EXECUTION_STATE="
         let value = ProcessInfo.processInfo.arguments.first { $0.hasPrefix(prefix) }
@@ -168,13 +180,16 @@ enum ScreenshotFixtures {
         )
     }
 
-    static let sessionStatuses: [String: OCSessionStatus] = showsExecutionOutcomes ? [
+    static var sessionStatuses: [String: OCSessionStatus] {
+        if outcomeRefreshHasCompleted { return [:] }
+        return showsExecutionOutcomes ? [
         "session-screenshot-2": OCSessionStatus(type: .busy, attempt: nil, message: nil, next: nil)
     ] : [
         "session-screenshot-1": OCSessionStatus(type: .busy, attempt: 1, message: "Generating screenshot-ready copy", next: nil),
         "session-screenshot-2": OCSessionStatus(type: .idle, attempt: nil, message: nil, next: nil),
         "session-screenshot-3": OCSessionStatus(type: .idle, attempt: nil, message: nil, next: nil)
     ]
+    }
 
     static let savedConnection: SavedConnection = {
         var connection = SavedConnection(
@@ -335,7 +350,10 @@ enum ScreenshotFixtures {
     }()
 
     static func session(withID id: String) -> OCSession? {
-        sessions.first { $0.id == id }
+        if outcomeRefreshHasCompleted, id == "session-screenshot-2" {
+            return outcomeSession(id: id, title: "Improve session recovery", outcome: "failed", minutesAgo: 0)
+        }
+        return sessions.first { $0.id == id }
     }
 
     static var defaultSession: OCSession {

@@ -79,11 +79,11 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
         time = try container.decodeIfPresent(OCSessionTime.self, forKey: .time) ?? OCSessionTime(created: 0, updated: 0)
         share = try container.decodeIfPresent(OCShareInfo.self, forKey: .share)
         revert = try container.decodeIfPresent(OCSessionRevert.self, forKey: .revert)
-        // Selection fields are advisory for listing sessions, so a shape the
+        // Selection and outcome fields are advisory for listing sessions, so a shape the
         // app does not understand must not hide the session itself.
         agent = (try? container.decodeIfPresent(String.self, forKey: .agent))?.nilIfBlank
         model = (try? container.decodeIfPresent(OCV2ModelRef.self, forKey: .model)) ?? nil
-        outcome = try container.decodeIfPresent(String.self, forKey: .outcome)
+        outcome = try? container.decodeIfPresent(String.self, forKey: .outcome)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -123,6 +123,15 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
             id: id, projectID: projectID, directory: directory, parentID: parentID,
             title: title, version: version, time: time, share: share, revert: revert,
             agent: agent, model: model, outcome: outcome
+        )
+    }
+
+    /// Retain the row's metadata when its latest result could not be recovered.
+    func withoutExecutionOutcome() -> OCSession {
+        OCSession(
+            id: id, projectID: projectID, directory: directory, parentID: parentID,
+            title: title, version: version, time: time, share: share, revert: revert,
+            agent: agent, model: model, outcome: nil
         )
     }
 }
@@ -184,7 +193,7 @@ nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
         created = try container.decodeIfPresent(Double.self, forKey: .created) ?? 0
         updated = try container.decodeIfPresent(Double.self, forKey: .updated) ?? 0
         compacting = try container.decodeIfPresent(Double.self, forKey: .compacting)
-        idle = try container.decodeIfPresent(Double.self, forKey: .idle)
+        idle = try? container.decodeIfPresent(Double.self, forKey: .idle)
     }
 
     enum CodingKeys: String, CodingKey {

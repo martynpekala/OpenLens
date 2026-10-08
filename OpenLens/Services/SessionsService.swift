@@ -5,6 +5,18 @@ struct WorkspaceActivityDay: Hashable, Sendable {
     let turnCount: Int
 }
 
+struct SessionExecutionSnapshot: Sendable {
+    let sessions: [OCSession]
+    let statuses: [String: OCSessionStatus]
+    let failedOutcomeSessionIDs: Set<String>
+
+    init(sessions: [OCSession], statuses: [String: OCSessionStatus], failedOutcomeSessionIDs: Set<String> = []) {
+        self.sessions = sessions
+        self.statuses = statuses
+        self.failedOutcomeSessionIDs = failedOutcomeSessionIDs
+    }
+}
+
 /// Pure service for session CRUD operations.
 /// No SwiftUI imports, no direct UI mutations.
 /// Returns domain models and throws on failure.
@@ -80,6 +92,10 @@ final class SessionsService {
     }
 
     func getSession(id: String) async throws -> OCSession {
+        if ScreenshotFixtures.isEnabled, ScreenshotFixtures.outcomeRefreshHasCompleted,
+           ScreenshotFixtures.failsOutcomeRefresh, id == "session-screenshot-2" {
+            throw URLError(.networkConnectionLost)
+        }
         if ScreenshotFixtures.isEnabled, let session = ScreenshotFixtures.session(withID: id) {
             return session
         }
@@ -293,6 +309,61 @@ final class SessionsService {
             throw OpenCodeError.notConnected
         }
         return try await client.getSessionStatus()
+    }
+
+    /// Recover terminal and opened-session results independently of the catalog.
+    /// Keep the last active snapshot if status recovery fails; invalidate a result
+    /// if its canonical session cannot be read, and return IDs that need a retry.
+    func refreshSessionOutcomes(
+        in sessions: [OCSession],
+        previousStatuses: [String: OCSessionStatus],
+        openedSessionIDs: Set<String> = [],
+        refreshInactive: Bool = false
+    ) async -> SessionExecutionSnapshot {
+        guard let statuses = try? await getSessionStatuses() else {
+            let retryIDs = refreshInactive ? Set(sessions.map(\.id)) : openedSessionIDs
+            return SessionExecutionSnapshot(sessions: sessions, statuses: previousStatuses, failedOutcomeSessionIDs: retryIDs)
+        }
+        guard !Task.isCancelled else {
+            return SessionExecutionSnapshot(sessions: sessions, statuses: previousStatuses)
+        }
+        guard connection.serverCapabilities?.protocolVersion == .v2
+                || (ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes) else {
+            return SessionExecutionSnapshot(sessions: sessions, statuses: statuses)
+        }
+        let activeIDs = Set(statuses.filter { $0.value.type != .idle }.map(\.key))
+        let endedIDs = Set(previousStatuses.filter { $0.value.type != .idle }.map(\.key)).subtracting(activeIDs)
+        var refreshIDs = openedSessionIDs.union(endedIDs)
+        if refreshInactive { refreshIDs.formUnion(sessions.map(\.id).filter { !activeIDs.contains($0) }) }
+        let candidates = sessions.filter { refreshIDs.contains($0.id) }
+        let freshSessions = await withTaskGroup(of: (String, OCSession?).self) { group in
+            var remaining = candidates.makeIterator()
+            // Bound recovery traffic when returning to a large session catalog.
+            for _ in 0..<4 {
+                guard let session = remaining.next() else { break }
+                group.addTask { (session.id, try? await self.getSession(id: session.id)) }
+            }
+            var fresh: [String: OCSession] = [:]
+            for await (id, session) in group {
+                if Task.isCancelled { group.cancelAll(); continue }
+                if let session, session.id == id { fresh[id] = session }
+                if let next = remaining.next() {
+                    group.addTask { (next.id, try? await self.getSession(id: next.id)) }
+                }
+            }
+            return fresh
+        }
+        guard !Task.isCancelled else {
+            return SessionExecutionSnapshot(sessions: sessions, statuses: previousStatuses)
+        }
+        var failures: Set<String> = []
+        let refreshed = sessions.map { session in
+            guard refreshIDs.contains(session.id) else { return session }
+            if let fresh = freshSessions[session.id] { return fresh }
+            failures.insert(session.id)
+            return session.withoutExecutionOutcome()
+        }
+        return SessionExecutionSnapshot(sessions: refreshed, statuses: statuses, failedOutcomeSessionIDs: failures)
     }
 
     // MARK: - Activity

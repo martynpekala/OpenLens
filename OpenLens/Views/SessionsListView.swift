@@ -31,6 +31,11 @@ struct SessionsListView: View {
         case sidebar
     }
 
+    private struct SessionRefreshScope: Equatable {
+        let selectedSessionID: String?
+        let scenePhase: ScenePhase
+    }
+
     private struct NewSessionRequest: Identifiable {
         let id = UUID()
     }
@@ -71,6 +76,10 @@ struct SessionsListView: View {
     @State private var viewState: ViewState
     @State private var sessions: [OCSession]
     @State private var sessionStatuses: [String: OCSessionStatus]
+    @State private var openedSessionIDs: Set<String> = []
+    @State private var failedOutcomeSessionIDs: Set<String> = []
+    @State private var lastSelectedSessionID: String?
+    @State private var outcomeRefreshGeneration = 0
 
     @State private var newSessionRequest: NewSessionRequest?
     @State private var sessionToDelete: OCSession?
@@ -84,6 +93,7 @@ struct SessionsListView: View {
     /// Resolves the model a new session starts with; nil uses the server default.
     var newSessionModel: @MainActor () async -> OCV2ModelRef?
 
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.connection) private var connection
 
@@ -182,8 +192,19 @@ struct SessionsListView: View {
         } message: { _ in
             Text(AppText.deleteSessionMessage)
         }
-        .task {
-            await loadSessionStatuses()
+        .task(id: SessionRefreshScope(selectedSessionID: selectedSessionID, scenePhase: scenePhase)) {
+            guard scenePhase == .active else { return }
+            let selectedIDs = Set([lastSelectedSessionID, selectedSessionID].compactMap { $0 })
+            lastSelectedSessionID = selectedSessionID
+            openedSessionIDs.formUnion(selectedIDs)
+            await loadSessionStatuses(refreshInactive: true)
+            guard connection.serverCapabilities?.protocolVersion == .v2
+                    || (ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes) else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                await loadSessionStatuses()
+            }
         }
     }
 
@@ -308,6 +329,7 @@ struct SessionsListView: View {
             VStack(spacing: 0) {
                 ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
                     Button {
+                        openedSessionIDs.insert(session.id)
                         onSelect(session)
                     } label: {
                         sessionRow(session)
@@ -424,31 +446,51 @@ struct SessionsListView: View {
     // MARK: - Side Effects (Service calls)
 
     private func loadSessions() async {
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, !isLoading else { return }
+        outcomeRefreshGeneration &+= 1
+        let generation = outcomeRefreshGeneration
         viewState = .loading
+        defer {
+            if generation == outcomeRefreshGeneration, case .loading = viewState {
+                viewState = .loaded
+            }
+        }
         do {
-            async let sessionList = sessionsService.listAllSessions()
-            async let statuses = (try? sessionsService.getSessionStatuses()) ?? [:]
-            let (result, statusMap) = try await (sessionList, statuses)
-            guard !Task.isCancelled else { return }
-            sessions = result
-            sessionStatuses = statusMap
-            pruneExpandedProjects(using: result)
+            let result = try await sessionsService.listAllSessions()
+            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
+            let requestedIDs = openedSessionIDs.union(failedOutcomeSessionIDs)
+            let snapshot = await sessionsService.refreshSessionOutcomes(
+                in: result, previousStatuses: sessionStatuses, openedSessionIDs: requestedIDs, refreshInactive: true
+            )
+            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
+            applyExecutionSnapshot(snapshot, requestedIDs: requestedIDs)
             viewState = .loaded
         } catch is CancellationError {
-            debugPrint("loadSessions cancelled during view teardown")
             return
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
             viewState = .error(error.localizedDescription)
         }
     }
 
-    private func loadSessionStatuses() async {
-        guard !sessions.isEmpty, !Task.isCancelled else { return }
-        let statuses = (try? await sessionsService.getSessionStatuses()) ?? [:]
-        guard !Task.isCancelled else { return }
-        sessionStatuses = statuses
+    private func loadSessionStatuses(refreshInactive: Bool = false) async {
+        guard !sessions.isEmpty, !Task.isCancelled, !isLoading else { return }
+        outcomeRefreshGeneration &+= 1
+        let generation = outcomeRefreshGeneration
+        let requestedIDs = openedSessionIDs.union(failedOutcomeSessionIDs)
+        let snapshot = await sessionsService.refreshSessionOutcomes(
+            in: sessions, previousStatuses: sessionStatuses, openedSessionIDs: requestedIDs, refreshInactive: refreshInactive
+        )
+        guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
+        applyExecutionSnapshot(snapshot, requestedIDs: requestedIDs)
+    }
+
+    private func applyExecutionSnapshot(_ snapshot: SessionExecutionSnapshot, requestedIDs: Set<String>) {
+        sessions = snapshot.sessions
+        sessionStatuses = snapshot.statuses
+        failedOutcomeSessionIDs = snapshot.failedOutcomeSessionIDs
+        openedSessionIDs.subtract(requestedIDs)
+        pruneExpandedProjects(using: snapshot.sessions)
     }
 
     private func retryLoadingSessions() {
@@ -462,6 +504,9 @@ struct SessionsListView: View {
     }
 
     private func handleCreatedSession(_ session: OCSession) {
+        outcomeRefreshGeneration &+= 1
+        openedSessionIDs.insert(session.id)
+        viewState = .loaded
         sessions.insert(session, at: 0)
         pruneExpandedProjects(using: sessions)
         onSelect(session)
@@ -471,6 +516,8 @@ struct SessionsListView: View {
         Task {
             do {
                 try await sessionsService.deleteSession(session)
+                outcomeRefreshGeneration &+= 1
+                if case .loading = viewState { viewState = .loaded }
                 sessions.removeAll { $0.id == session.id }
                 pruneExpandedProjects(using: sessions)
                 onDelete(session)
