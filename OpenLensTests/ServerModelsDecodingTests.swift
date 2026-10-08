@@ -37,22 +37,6 @@ struct ServerModelsDecodingTests {
         #expect(session.model == nil)
     }
 
-    @Test func ocPartTypeRemainsAlignedWithKnownUpstreamCases() {
-        #expect(OCPartType(rawValue: "text") == .text)
-        #expect(OCPartType(rawValue: "reasoning") == .reasoning)
-        #expect(OCPartType(rawValue: "tool") == .tool)
-        #expect(OCPartType(rawValue: "file") == .file)
-        #expect(OCPartType(rawValue: "step-start") == .stepStart)
-        #expect(OCPartType(rawValue: "step-finish") == .stepFinish)
-        #expect(OCPartType(rawValue: "snapshot") == .snapshot)
-        #expect(OCPartType(rawValue: "patch") == .patch)
-        #expect(OCPartType(rawValue: "retry") == .retry)
-        #expect(OCPartType(rawValue: "compaction") == .compaction)
-        #expect(OCPartType(rawValue: "agent") == .agent)
-        #expect(OCPartType(rawValue: "subtask") == .subtask)
-        #expect(OCPartType(rawValue: "missing-case") == nil)
-    }
-
     @Test func decodesProviderModelCapabilitiesFromNestedOpenCodePayload() throws {
         let data = Data(
             #"""

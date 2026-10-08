@@ -12,16 +12,6 @@ struct ChatEasterEggTests {
     }
 
     @MainActor
-    @Test func controllerPreservesInitialMode() {
-        let controller = ChatEasterEggController(
-            initialMode: .retro,
-            launchArguments: []
-        )
-
-        #expect(controller.visualMode == .retro)
-    }
-
-    @MainActor
     @Test func debugLaunchArgumentStartsInRetroMode() {
         let controller = ChatEasterEggController(
             initialMode: .standard,

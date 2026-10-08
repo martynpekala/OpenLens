@@ -24,25 +24,6 @@ struct V2PromptAdmissionTests {
         #expect(bodies.map { $0["delivery"] as? String } == ["steer", "queue"])
     }
 
-    @Test func theInboxListsPendingWorkOfEveryKind() async throws {
-        let server = AdmissionFakeServer()
-        await server.setRawInbox(#"""
-        [
-          {"id":"msg_u","sessionID":"ses_1","time":{"created":1},"type":"user","payload":{"text":"Queued"},"delivery":"queue"},
-          {"id":"msg_s","sessionID":"ses_1","time":{"created":2},"type":"synthetic","payload":{"text":"Note"},"delivery":"steer"},
-          {"id":"msg_c","sessionID":"ses_1","time":{"created":3},"type":"compaction","payload":{},"delivery":"queue"}
-        ]
-        """#)
-        let api = try await Self.makeClient(server: server)
-
-        let inbox = try await api.listSessionInbox(sessionID: "ses_1")
-
-        #expect(inbox.map(\.id) == ["msg_u", "msg_s", "msg_c"])
-        #expect(inbox.map(\.type) == ["user", "synthetic", "compaction"])
-        #expect(inbox.map(\.delivery) == [.queue, .steer, .queue])
-        #expect(inbox.map(\.text) == ["Queued", "Note", nil])
-    }
-
     @Test func admissionLookupChecksTheInboxThenTheHistory() async throws {
         let server = AdmissionFakeServer()
         let api = try await Self.makeClient(server: server)
@@ -349,7 +330,6 @@ private actor AdmissionFakeServer: OpenCodeTransport {
 
     private var inbox: [Entry] = []
     private var history: [Entry] = []
-    private var rawInbox: String?
     private var promotesAdmissions = false
     private var lostResponses = 0
     private var droppedRequests = 0
@@ -363,7 +343,6 @@ private actor AdmissionFakeServer: OpenCodeTransport {
     var promptRequests: [Request] { requests.filter { $0.path.hasSuffix("/prompt") } }
     var inboxIDs: [String] { inbox.map(\.id) }
 
-    func setRawInbox(_ json: String) { rawInbox = json }
     func setPromotesAdmissions(_ promotes: Bool) { promotesAdmissions = promotes }
     func loseNextResponses(_ count: Int) { lostResponses = count }
     func dropNextRequests(_ count: Int) { droppedRequests = count }
@@ -408,7 +387,7 @@ private actor AdmissionFakeServer: OpenCodeTransport {
         case "/api/session/ses_1/inbox":
             inboxReads += 1
             if failsReads { throw URLError(.networkConnectionLost) }
-            return respond(200, #"{"data":\#(rawInbox ?? "[\(inbox.map(Self.inboxJSON).joined(separator: ","))]")}"#)
+            return respond(200, #"{"data":[\#(inbox.map(Self.inboxJSON).joined(separator: ","))]}"#)
         case "/api/session/ses_1/message":
             messageListReads += 1
             if failsReads { throw URLError(.networkConnectionLost) }

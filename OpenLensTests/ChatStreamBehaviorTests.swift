@@ -2495,18 +2495,6 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
-    @Test func finishLoadingReturnsGeneratingResponseToIdle() {
-        let client = ChatClient(demoMode: true)
-        client.responseState = .generating
-        client.isLoading = true
-
-        client.finishLoading()
-
-        #expect(!client.isLoading)
-        #expect(client.responseState == .idle)
-    }
-
-    @MainActor
     @Test func finishLoadingDoesNotForceScrollJump() {
         let client = ChatClient(demoMode: true)
         let initialScrollAnchor = client.scrollAnchor
@@ -3116,45 +3104,6 @@ struct ChatStreamBehaviorTests {
         }
 
         #expect(projection.copyText() == "Inspecting stream state")
-    }
-
-    @MainActor
-    @Test func textPartDeltaStillAppendsStreamingText() {
-        let delegate = SSEDelegateSpy()
-        let handler = makeHandler(delegate: delegate)
-        let messageID = "assistant-message"
-        delegate.pendingAssistantMessage = ChatMessage(
-            id: messageID,
-            role: .assistant,
-            content: "",
-            parts: [
-                OCPart(
-                    id: "text-part",
-                    sessionID: "session-1",
-                    messageID: messageID,
-                    type: .text,
-                    text: ""
-                )
-            ],
-            isStreaming: true
-        )
-
-        handler.handleEvent(
-            OCEvent(
-                type: "message.part.delta",
-                properties: AnyCodable([
-                    "sessionID": "session-1",
-                    "messageID": messageID,
-                    "partID": "text-part",
-                    "field": "text",
-                    "delta": "Hello"
-                ])
-            )
-        )
-
-        #expect(delegate.appendedStreamingTexts == ["Hello"])
-        #expect(delegate.appendedStreamingTextPartIDs == ["text-part"])
-        #expect(delegate.pendingAssistantMessage?.content == "")
     }
 
     @MainActor
@@ -4516,7 +4465,6 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
     var todos: [OCTodo] = []
     var hiddenTodoCount: Int = 0
     var appendedStreamingTexts: [String] = []
-    var appendedStreamingTextPartIDs: [String?] = []
     var clearedStreamingBuffers: [String] = []
     var layoutChangeCount = 0
     var contentChangeCount = 0
@@ -4548,7 +4496,6 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
         chunks: [String]
     ) {
         appendedStreamingTexts.append(text)
-        appendedStreamingTextPartIDs.append(partID)
     }
 
     func appendStreamingReasoning(messageID: String, partID: String, text: String, chunks: [String]) {

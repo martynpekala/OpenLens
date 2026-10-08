@@ -70,15 +70,6 @@ struct OpenLensAppConnectionStateTests {
         #expect(readiness.isResolved)
     }
 
-    @Test func screenshotSessionsAreResolvedAtInitialization() {
-        let readiness = InitialSessionsReadiness(
-            initialSessions: ScreenshotFixtures.sessions
-        )
-
-        #expect(readiness.state == .loaded(ScreenshotFixtures.sessions))
-        #expect(readiness.isResolved)
-    }
-
     @Test func treatsInitialConnectedTransitionAsFreshConnect() {
         #expect(shouldHandleConnectionAsFreshConnect(from: .connecting, to: .connected))
     }

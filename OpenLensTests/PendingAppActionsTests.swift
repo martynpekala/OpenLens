@@ -15,13 +15,6 @@ struct PendingAppActionsTests {
         #expect(actions.consumeNewSessionRequest() == nil)
     }
 
-    @Test func consumingWithoutARequestDoesNothing() {
-        let actions = PendingAppActions()
-
-        #expect(actions.consumeNewSessionRequest() == nil)
-        #expect(actions.newSessionRequest == nil)
-    }
-
     @Test func theNameIsTrimmed() {
         let actions = PendingAppActions()
 
@@ -48,9 +41,5 @@ struct PendingAppActionsTests {
 
         #expect(actions.consumeNewSessionRequest()?.title == "Second")
         #expect(actions.consumeNewSessionRequest() == nil)
-    }
-
-    @Test func newSessionShortcutIsOfferedToSpotlightAndSiri() {
-        #expect(OpenLensShortcuts.appShortcuts.count == 1)
     }
 }

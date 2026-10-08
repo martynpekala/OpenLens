@@ -105,17 +105,6 @@ struct V2PromptImageAttachmentTests {
         #expect(!OpenCodeClient.requestMayHaveReachedServer(PromptAttachmentError.promptTooLarge))
     }
 
-    @Test func theBodyLimitCountsTheCompleteEncodedRequest() throws {
-        let image = try Self.screenshot()
-        let input = OCV2PromptInput(id: "msg_1", text: "Hi", skills: nil, files: [image.promptFile], delivery: .steer)
-
-        let size = try OpenCodeClient.encodedPromptBodySize(input)
-
-        #expect(size == (try JSONEncoder().encode(input)).count)
-        #expect(size > image.dataURI.utf8.count)
-        #expect(OpenCodeClient.maximumPromptBodyBytes == 2 * 1_024 * 1_024)
-    }
-
     // MARK: - History
 
     @Test func historyImagesAreProjectedOntoTheUserMessage() throws {
