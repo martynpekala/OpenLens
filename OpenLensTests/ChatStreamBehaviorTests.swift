@@ -4517,17 +4517,3 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
 
     func questionDidPresent() {}
 }
-
-private final class TestLiveActivityProvider: LiveActivityProviding {
-    var isActive: Bool { false }
-
-    func startActivity(sessionID: String?, directory: String?) {}
-
-    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
-
-    func endActivity(phase: OpenLensActivityAttributes.Phase) {}
-
-    func dismissImmediately() {}
-
-    func previewLiveActivity() {}
-}

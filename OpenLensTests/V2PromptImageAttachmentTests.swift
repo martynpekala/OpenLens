@@ -274,7 +274,7 @@ struct V2PromptImageAttachmentTests {
         let api = OpenCodeClient(baseURL: URL(string: "https://example.com")!, transport: server)
         let connection = ConnectionManager(testClient: api, capabilities: try await api.probeCapabilities())
         let chat = ChatClient(
-            connection: connection, liveActivity: LiveActivityManager(),
+            connection: connection, liveActivity: TestLiveActivityProvider(),
             sessionsService: SessionsService(connection: connection), messagesService: MessagesService(connection: connection),
             providersService: ProvidersService(connection: connection), questionService: QuestionService(connection: connection),
             savedConnectionsStore: SavedConnectionsStore(initialConnections: []), recordedReplayStore: RecordedReplayStore()

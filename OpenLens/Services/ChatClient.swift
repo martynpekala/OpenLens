@@ -1245,7 +1245,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     init(
         connection: ConnectionManager,
-        liveActivity: LiveActivityManager,
+        liveActivity: any LiveActivityProviding,
         sessionsService: SessionsService,
         messagesService: MessagesService,
         providersService: ProvidersService,

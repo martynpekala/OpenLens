@@ -147,7 +147,7 @@ struct SSEClientHTTPStatusTests {
         stream.installActiveConnectionForTesting(session: session, task: task)
         let chat = ChatClient(demoMode: true)
         chat.currentSession = OCSession(id: "ses_live", title: "Live", time: .init(created: 0, updated: 0))
-        let handler = SSEEventHandler(haptics: HapticController(), liveActivityTracker: LiveActivityTracker(liveActivity: LiveActivityManager()))
+        let handler = SSEEventHandler(haptics: HapticController(), liveActivityTracker: LiveActivityTracker(liveActivity: TestLiveActivityProvider()))
         handler.delegate = chat
         var events: [OCEvent] = []
         stream.onEvent = { events.append($0) }

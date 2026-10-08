@@ -119,7 +119,7 @@ struct V2SessionSettingsTests {
         stream.installActiveConnectionForTesting(session: urlSession, task: task)
         let handler = SSEEventHandler(
             haptics: HapticController(),
-            liveActivityTracker: LiveActivityTracker(liveActivity: LiveActivityManager())
+            liveActivityTracker: LiveActivityTracker(liveActivity: TestLiveActivityProvider())
         )
         handler.delegate = chat
         stream.onInboundEvent = { handler.handleInboundEvent($0) }
@@ -315,7 +315,7 @@ struct V2SessionSettingsTests {
         let api = OpenCodeClient(baseURL: URL(string: "https://example.com")!, transport: server)
         let connection = ConnectionManager(testClient: api, capabilities: try await api.probeCapabilities())
         return ChatClient(
-            connection: connection, liveActivity: LiveActivityManager(),
+            connection: connection, liveActivity: TestLiveActivityProvider(),
             sessionsService: SessionsService(connection: connection), messagesService: MessagesService(connection: connection),
             providersService: ProvidersService(connection: connection), questionService: QuestionService(connection: connection),
             savedConnectionsStore: store, recordedReplayStore: RecordedReplayStore()

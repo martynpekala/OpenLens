@@ -20,7 +20,7 @@ struct SessionsServiceTests {
         let store = SavedConnectionsStore(initialConnections: [])
         let chat = ChatClient(
             connection: connection,
-            liveActivity: LiveActivityManager(),
+            liveActivity: TestLiveActivityProvider(),
             sessionsService: SessionsService(connection: connection),
             messagesService: MessagesService(connection: connection),
             providersService: ProvidersService(connection: connection),
