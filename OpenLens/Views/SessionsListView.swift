@@ -31,11 +31,6 @@ struct SessionsListView: View {
         case sidebar
     }
 
-    private struct SessionRefreshScope: Equatable {
-        let selectedSessionID: String?
-        let scenePhase: ScenePhase
-    }
-
     private struct NewSessionRequest: Identifiable {
         let id = UUID()
     }
@@ -78,7 +73,6 @@ struct SessionsListView: View {
     @State private var sessionStatuses: [String: OCSessionStatus]
     @State private var openedSessionIDs: Set<String> = []
     @State private var failedOutcomeSessionIDs: Set<String> = []
-    @State private var lastSelectedSessionID: String?
     @State private var outcomeRefreshGeneration = 0
 
     @State private var newSessionRequest: NewSessionRequest?
@@ -192,11 +186,12 @@ struct SessionsListView: View {
         } message: { _ in
             Text(AppText.deleteSessionMessage)
         }
-        .task(id: SessionRefreshScope(selectedSessionID: selectedSessionID, scenePhase: scenePhase)) {
+        .onChange(of: selectedSessionID, initial: true) { previousID, currentID in
+            // Queue affected rows for the existing poll without restarting catalog recovery.
+            openedSessionIDs.formUnion([previousID, currentID].compactMap { $0 })
+        }
+        .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            let selectedIDs = Set([lastSelectedSessionID, selectedSessionID].compactMap { $0 })
-            lastSelectedSessionID = selectedSessionID
-            openedSessionIDs.formUnion(selectedIDs)
             await loadSessionStatuses(refreshInactive: true)
             guard connection.serverCapabilities?.protocolVersion == .v2
                     || (ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes) else { return }

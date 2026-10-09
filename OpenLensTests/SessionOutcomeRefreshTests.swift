@@ -1,9 +1,58 @@
 import Foundation
+import SwiftUI
 import Testing
+import UIKit
 @testable import OpenLens
 
 @MainActor
 struct SessionOutcomeRefreshTests {
+    @Test func sidebarSelectionOnlyRefreshesPreviousAndCurrentRows() async throws {
+        let server = SessionOutcomeRefreshTransport()
+        let api = OpenCodeClient(baseURL: URL(string: "https://example.com")!, transport: server)
+        let connection = ConnectionManager(testClient: api, capabilities: try await api.probeCapabilities())
+        let selection = SessionOutcomeSelection()
+        let sessions = (1...24).map { listedSession("ses_\($0)") }
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        let host = UIHostingController(rootView: SessionOutcomeSidebarHarness(
+            selection: selection, sessions: sessions
+        )
+            .environment(\.connection, connection)
+            .environment(\.sessionsService, SessionsService(connection: connection))
+            .environment(\.scenePhase, .active))
+        window.rootViewController = host
+        window.isHidden = false
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        // The initial appearance may recover the entire inactive catalog.
+        try await waitForStatusReads(2, server: server)
+        #expect(Set(await server.sessionReads) == Set(sessions.map(\.id)))
+        await server.resetSessionReads()
+
+        selection.id = "ses_2"
+        // Wait through another poll so extra reads from a restarted task are caught.
+        let nextPoll = await server.statusReads + 2
+        try await waitForStatusReads(nextPoll, server: server)
+        let reads = await server.sessionReads
+        #expect(Set(reads) == ["ses_1", "ses_2"])
+        #expect(reads.count == 2)
+    }
+
+    private func waitForStatusReads(_ count: Int, server: SessionOutcomeRefreshTransport) async throws {
+        for _ in 0..<500 {
+            if await server.statusReads >= count {
+                // Allow the canonical reads and snapshot application to finish.
+                try await Task.sleep(for: .milliseconds(100))
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        Issue.record("Timed out waiting for session status polling")
+    }
+
     @Test func endedSessionsReplaceThePreviousRunsResult() async throws {
         let server = SessionOutcomeRefreshTransport()
         let service = try await makeService(server)
@@ -132,6 +181,8 @@ private actor SessionOutcomeRefreshTransport: OpenCodeTransport {
     var waiter: CheckedContinuation<Void, Never>?
     var isWaiting: Bool { waiter != nil }
     var sessionReads: [String] = []
+    var statusReads = 0
+    func resetSessionReads() { sessionReads = [] }
     func setActive(_ ids: Set<String>) { activeIDs = ids }
     func failSessions(_ ids: Set<String>) { failedSessionIDs = ids }
     func failStatus() { failsStatus = true }
@@ -149,6 +200,7 @@ private actor SessionOutcomeRefreshTransport: OpenCodeTransport {
             if !usesV2 { status = 404 }
         case "/global/health": body = #"{"healthy":true,"version":"1.2.0"}"#
         case "/api/session/active", "/session/status":
+            statusReads += 1
             if failsStatus { throw URLError(.networkConnectionLost) }
             let statuses = Dictionary(uniqueKeysWithValues: activeIDs.map { ($0, ["type": "busy"]) })
             let json = try JSONSerialization.data(withJSONObject: usesV2 ? ["data": statuses] : statuses)
@@ -165,6 +217,23 @@ private actor SessionOutcomeRefreshTransport: OpenCodeTransport {
     }
     nonisolated func makeEventStream(request: URLRequest, deliveryQueue: DispatchQueue, callbacks: OpenCodeEventStreamCallbacks) -> any OpenCodeEventStream {
         SessionOutcomeUnusedStream()
+    }
+}
+
+@MainActor @Observable
+private final class SessionOutcomeSelection {
+    var id: String? = "ses_1"
+}
+
+private struct SessionOutcomeSidebarHarness: View {
+    let selection: SessionOutcomeSelection
+    let sessions: [OCSession]
+
+    var body: some View {
+        SessionsListView(
+            initialState: .loaded(sessions), presentationStyle: .sidebar,
+            selectedSessionID: selection.id, onSelect: { selection.id = $0.id }
+        )
     }
 }
 private final class SessionOutcomeUnusedStream: OpenCodeEventStream, @unchecked Sendable {
