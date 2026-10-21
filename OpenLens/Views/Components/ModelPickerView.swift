@@ -214,6 +214,8 @@ struct ModelPickerView: View {
             if activeConfigurationAction == nil {
                 Section {
                     quickActionCards
+                        // The row clips to its own bounds, which cut the cards' outer corners.
+                        .padding(.horizontal, 2)
                         .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 10, trailing: 0))
                         .listRowBackground(Color.clear)
                 } header: {
