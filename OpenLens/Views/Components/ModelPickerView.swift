@@ -345,7 +345,7 @@ struct ModelPickerView: View {
                 RetroChatDoubleBorder(cornerRadius: 7, lineWidth: 1)
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.appAccent.opacity(0.28), lineWidth: 1)
+                    .strokeBorder(Color.appAccent.opacity(0.28), lineWidth: 1)
             }
         }
     }
