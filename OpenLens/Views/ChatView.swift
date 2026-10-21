@@ -2951,7 +2951,7 @@ private struct ChatMessagesListView: View {
             Image(systemName: "arrow.down.circle.fill")
                 .font(.system(size: 34))
                 .symbolRenderingMode(.palette)
-                .foregroundStyle(Color.appOnAccent, Color.appAccent)
+                .foregroundStyle(Color.appBackground, Color.appPrimary)
         }
     }
 
