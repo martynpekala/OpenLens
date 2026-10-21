@@ -616,6 +616,7 @@ struct ChatView: View {
                 if !chatClient.todos.isEmpty {
                     todoChip
                 }
+                HStack(alignment: .center, spacing: 6) {
                 if chatClient.supportsSessionSummary, !chatClient.messages.isEmpty {
                     sessionSummaryChip
                 }
@@ -651,6 +652,7 @@ struct ChatView: View {
                     .accessibilityLabel("Inspect active context")
                     .accessibilityIdentifier("inspect-active-context")
                 }
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -665,9 +667,6 @@ struct ChatView: View {
             HStack(alignment: .center, spacing: 4) {
                 Image(systemName: "sparkles")
                     .font(.system(size: 11, weight: .medium))
-                Text(AppText.sessionSummaryButton)
-                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
             }
             .foregroundStyle(secondaryTextColor)
             .padding(.horizontal, 10)
@@ -675,6 +674,8 @@ struct ChatView: View {
             .chatModeChipChrome(visualMode)
         }
         .buttonStyle(.plain)
+        .alignmentGuide(VerticalAlignment(ModelControlAlignment.self)) { $0[VerticalAlignment.center] }
+        .accessibilityLabel(AppText.sessionSummaryButton)
         .accessibilityIdentifier("session-summary")
     }
 
