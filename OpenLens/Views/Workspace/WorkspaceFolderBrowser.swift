@@ -130,7 +130,7 @@ struct WorkspaceFolderBrowser: View {
                 Button(AppText.tryAgain) {
                     navigate(to: directory)
                 }
-                .buttonStyle(.borderedProminent)
+                .primaryCTAStyle()
             }
         }
     }

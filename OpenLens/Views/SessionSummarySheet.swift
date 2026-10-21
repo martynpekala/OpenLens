@@ -117,11 +117,9 @@ struct SessionSummarySheet: View {
                     }
                     Text(entry.summary == nil ? AppText.sessionSummaryGenerate : AppText.sessionSummaryRegenerate)
                 }
-                .foregroundStyle(Color.appOnAccent)
                 .frame(maxWidth: .infinity, minHeight: 36)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.appAccent)
+            .primaryCTAStyle()
             .disabled(entry.isGenerating || !chatClient.supportsSessionSummary)
         }
     }

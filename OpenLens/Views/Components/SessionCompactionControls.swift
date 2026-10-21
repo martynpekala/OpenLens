@@ -29,7 +29,7 @@ struct SessionCompactionControls: View {
             Button(action: compactAndDismiss) {
                 Text(buttonTitle)
                     .font(isRetro ? RetroChatStyle.bodyFont : .body.weight(.semibold))
-                    .foregroundStyle(isRetro ? Color.white : Color.appOnAccent)
+                    .foregroundStyle(isRetro ? Color.white : Color.appBackground)
                     .frame(maxWidth: .infinity, minHeight: 24)
                     .overlay(alignment: .leading) {
                         if isWorking {
@@ -41,7 +41,7 @@ struct SessionCompactionControls: View {
                     }
             }
             .buttonStyle(.borderedProminent)
-            .tint(isRetro ? nil : Color.appAccent)
+            .tint(isRetro ? nil : Color.appPrimary)
             .controlSize(.large)
             .disabled(!canRequest)
             .accessibilityIdentifier("active-context-compact")
