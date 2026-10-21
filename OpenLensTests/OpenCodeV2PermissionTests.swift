@@ -40,6 +40,83 @@ struct OpenCodeV2PermissionTests {
         #expect(try bodyObject(requests[4])["decision"] as? String == "reject")
     }
 
+    @MainActor @Test func aRejectionExplanationReachesTheAgentThroughTheOwningSessionReply() async throws {
+        let transport = V2PermissionTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 204, body: Data()),
+            .init(statusCode: 204, body: Data()),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+        let connection = ConnectionManager(testClient: client, capabilities: try await client.probeCapabilities())
+        let service = QuestionService(connection: connection)
+        let permission = OCPermissionRequest(id: "per_1", sessionID: "ses_child")
+
+        try await service.respondToPermission(permission, reply: .reject, message: "  Run the unit tests first.  ")
+        try await service.respondToPermission(permission, reply: .reject, message: "   ")
+
+        let requests = transport.recordedRequests()
+        #expect(requests.map(\.path) == [
+            "/api/info",
+            "/api/session/ses_child/permission/per_1/reply",
+            "/api/session/ses_child/permission/per_1/reply",
+        ])
+        let explained = try bodyObject(requests[1])
+        #expect(explained["decision"] as? String == "reject")
+        #expect(explained["message"] as? String == "Run the unit tests first.")
+        let plain = try bodyObject(requests[2])
+        #expect(plain["decision"] as? String == "reject")
+        #expect(plain["message"] == nil)
+    }
+
+    @MainActor @Test func aFailedExplainedRejectionSurfacesTheErrorSoTheReasonCanBeResent() async throws {
+        let transport = V2PermissionTransport(responses: [
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),
+            .init(statusCode: 503, body: Data(#"{"message":"unavailable"}"#.utf8)),
+            .init(statusCode: 204, body: Data()),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "https://opencode.example.com")),
+            transport: transport
+        )
+        let connection = ConnectionManager(testClient: client, capabilities: try await client.probeCapabilities())
+        let service = InboxService(connection: connection)
+        let permission = OCPermissionRequest(id: "per_1", sessionID: "ses_1")
+
+        await #expect(throws: (any Error).self) {
+            try await service.respondToPermission(permission, reply: .reject, message: "Use staging instead.")
+        }
+        try await service.respondToPermission(permission, reply: .reject, message: "Use staging instead.")
+
+        let replies = transport.recordedRequests().dropFirst()
+        #expect(replies.count == 2)
+        #expect(try replies.allSatisfy { try bodyObject($0)["message"] as? String == "Use staging instead." })
+    }
+
+    @Test func v1RejectionsNeverSendTheUnsupportedExplanationField() async throws {
+        let transport = V2PermissionTransport(responses: [
+            .init(statusCode: 404, body: Data(#"{"message":"not found"}"#.utf8)),
+            .init(statusCode: 200, body: OpenCodeContractFixtures.v1HealthResponse),
+            .init(statusCode: 200, body: Data("true".utf8)),
+        ])
+        let client = OpenCodeClient(
+            baseURL: try #require(URL(string: "http://opencode.example.com")),
+            transport: transport
+        )
+        let capabilities = try await client.probeCapabilities()
+        #expect(capabilities.protocolVersion == .v1)
+
+        _ = try await client.replyToPermission(sessionID: "ses_1", requestID: "per_1", reply: .reject, message: "Explain")
+
+        let request = try #require(transport.recordedRequests().last)
+        #expect(request.path == "/permission/per_1/reply")
+        let body = try bodyObject(request)
+        #expect(body["reply"] as? String == "reject")
+        #expect(body["message"] == nil)
+    }
+
     @Test func v2PermissionInboxRecoveryUsesTheLocationScopedRequestRoute() async throws {
         let transport = V2PermissionTransport(responses: [
             .init(statusCode: 200, body: OpenCodeContractFixtures.v2InfoResponse),

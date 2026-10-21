@@ -16,6 +16,7 @@ struct MessageBubbleView: View {
     @Environment(\.openLensTheme) private var theme
     @Environment(\.chatEasterEgg) private var chatEasterEgg
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openChildSession) private var openChildSession
 
     init(
         message: ChatMessage,
@@ -421,6 +422,14 @@ struct MessageBubbleView: View {
                     .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : Color.appSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            if let childSessionID = step.childSessionID, let openChildSession {
+                OpenChildSessionButton(
+                    childSessionID: childSessionID,
+                    usesRetroTypography: isRetroChat,
+                    action: openChildSession
+                )
+            }
         }
         .padding(12)
         .background {
@@ -432,7 +441,7 @@ struct MessageBubbleView: View {
                 .stroke(subagentCardStroke(for: step), lineWidth: isRetroChat ? 1.5 : 1)
         }
         .fixedSize(horizontal: false, vertical: true)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(subagentTranscriptText(step))
     }
 

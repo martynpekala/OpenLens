@@ -518,7 +518,11 @@ struct V2SessionLocationTests {
         let workspace = WorkspaceService(connection: connection)
         #expect(await workspace.loadSlashActions().map(\.token).contains("New-command"))
         #expect(await workspace.loadSlashActions().map(\.token).contains("New-agent"))
-        #expect(await workspace.loadSkills().map(\.id) == ["New-skill"])
+        guard case .loaded(let skills) = await workspace.loadSkillCatalog() else {
+            Issue.record("Expected the moved session's skill catalog")
+            return
+        }
+        #expect(skills.map(\.id) == ["New-skill"])
         #expect(try await workspace.loadRepositoryEntries(at: "", in: chat.sessionDirectory!).map(\.name) == ["New.swift"])
         #expect(Set(await server.ordinaryWorkspaceDirectories) == ["/workspace/New"])
         chat.inputText = "Continue after the move"

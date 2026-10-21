@@ -247,3 +247,37 @@ Commits: `3b9d410`, including the implementation, ticket's done status, tests an
 - After a successful reply or cancellation, the answered form leaves memory and subsequent loads start a fresh read. Reads started before that operation cannot return or save their stale forms; their callers retry in the new revision. Failed operations leave the form available for retry.
 
 Verified after both reviews with **673 passing tests in 63 suites on 2026-10-09**, zero failures or skips, using the full AFK verify wrapper (**VERIFY RESULT: PASS**). The form suite now has **31 tests**: the original seven additions cover service/transport routing, ownership, failures/retries, native-event isolation, safe fallback, forged/unbound locations, route safety and V1 preservation; four first-review regressions cover rediscovery after the production Chat workspace-restoration path, exact reply/cancel location queries, foreign-session exclusion, location retirement, owner-aware de-duplication, failed reads, overlapping loads and canonical-location cache replacement. Two second-review regressions prove discovery after a Chat switch with no prior Inbox load and held-response invalidation across successful reply and cancellation (both parameter cases). The original path-only fixture now answers by requested directory, and the latest tests close the first-load and stale-read gaps left by the first review. This result supersedes the 667- and 671-test verifications. Screenshots show [a departed workspace's global form alongside the current ordinary form](screenshots/19-departed-workspace-inbox.png) from the final verified build, [retained global forms in distinct workspaces](screenshots/19-remembered-inbox.png), [a remembered global alongside the current workspace's ordinary form](screenshots/19-remembered-only-inbox.png), [separate Inbox sections](screenshots/19-inbox.png), [a supported global form](screenshots/19-global-form.png), [external acknowledgement](screenshots/19-global-external.png), [the unsupported fallback](screenshots/19-global-unsupported.png), and [the form-driven Inbox indicator](screenshots/19-inbox-indicator.png). The screenshots illustrate the UI; the service/transport tests establish workspace switching and resolution ordering. Final result log: `build/afk-logs/20261009-211231-tests-1.log`. Micro's owner guards were inspected and build-verified; a hosted Micro submit/cancel ID-collision interaction was not run, and Micro is absent from the current compact TabView. Remote/gateway were removed in `77b72ac`. Live MCP/server or two-client interaction, actual integration login, physical devices, iPad, VoiceOver, enlarged Dynamic Type and dark appearance remain unverified.
+
+## next-workflows/12: Explain why you deny a permission request
+
+Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+
+- In the permission sheet, **Deny with a reason** opens a short note field. **Send denial** rejects the request and passes the note to the agent through the owning session's reply, so it can adjust its next step without a separate prompt.
+- Plain **Deny** works as before. A blank note is not sent. If sending fails, the typed reason stays in the sheet for a retry.
+- The option appears only on V2 servers; V1 replies never include the unsupported field.
+
+## next-workflows/01: Open a subagent's conversation from its card
+
+Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+
+- Delegated-work cards and subagent result rows that name a child session show **Open conversation**. It pushes the child chat onto the current tab; Back returns to the parent.
+- The child opens only after the server confirms it exists and belongs to the open parent. A missing child, a session from elsewhere, an invalid identifier and a transport failure each show their own message instead of an empty conversation. A late response after you leave the parent does nothing.
+- Unsent composer text is now kept per session: moving between parent and child (or any two sessions) restores each draft and never carries one into the wrong conversation. Attachments are still cleared on switch, as before.
+
+## next-workflows/04 (with 05): Search files to attach and retry the skill catalog
+
+Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+
+- The repository attachment picker has a search field at its root. It uses `fs.find` in the session's folder and lists matching files with their paths in the server's ranking; choosing one opens the existing preview and line-range flow. Files inside dot-folders are hidden, as when browsing.
+- Search matches names and paths, not file contents, and says so when nothing matches. No results, a failed search (with **Try Again**) and a server without search are distinct states; clearing the query returns to folder browsing. A late result for an older query is ignored.
+- Typing `@` after a failed skill-catalog request shows **Couldn't load skills** with **Retry** instead of looking like an empty catalog. Retry keeps the draft and attached skills; a catalog already loaded for the location stays usable.
+
+## next-workflows/14: Catch up on a session without changing it
+
+Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+
+- A **Catch up** chip in the chat header (V2 sessions with messages) opens a sheet with **Summary** and **Next step**. **Generate** calls `session.generate`; the text is shown outside the transcript and can be copied or regenerated.
+- Nothing is added to the conversation, no prompt is admitted and no compaction runs. Reopening the sheet shows the cached result without calling the model again; a result older than the transcript is marked as stale.
+- A failed regeneration keeps the previous result and shows the error. A result that arrives after you switch sessions stays with the session that asked for it. The sheet labels the text as model output with token cost, not session status.
+
+Verification for the four entries above: Swift Testing through public ChatClient/service actions with injected HTTP transports (`OpenCodeV2PermissionTests`, `V2ChildSessionNavigationTests`, `RepositoryFileSearchTests`, `V2SessionSummaryTests`), plus the full suite via `./scripts/test-ios.sh` on the local iPhone 18 Pro simulator (`49C08F47-0325-4C9E-A7FE-7AD7016CBEBD`; the UUID configured in the script does not exist on this machine). Per the approved scope, no UI automation, screenshots or live OpenCode server checks were run.

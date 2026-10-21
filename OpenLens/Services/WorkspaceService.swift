@@ -81,6 +81,26 @@ struct RepositoryEntry: Identifiable, Hashable, Sendable {
     var id: String { path }
 }
 
+/// Why a file search could not produce results, kept apart from an empty
+/// result so the picker can point back to folder browsing.
+enum RepositorySearchError: LocalizedError, Equatable {
+    case unsupported
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupported: AppText.repositorySearchUnsupported
+        }
+    }
+}
+
+/// Outcome of reading the skill catalog: an empty catalog is a success,
+/// distinct from a server without skills or a failed request.
+enum SkillCatalogResult: Equatable, Sendable {
+    case loaded([WorkspaceSkillItem])
+    case unsupported
+    case failed(String)
+}
+
 struct WorkspaceFolderSnapshot: Sendable {
     let directory: String
     let folders: [WorkspaceFileItem]
@@ -275,6 +295,25 @@ final class WorkspaceService {
         return Self.repositoryEntries(from: entries, directory: directory)
     }
 
+    /// Files whose path matches `query` inside a session's folder, in the
+    /// server's ranking order. Matches names and paths, not file contents.
+    func searchRepositoryFiles(matching query: String, in directory: String) async throws -> [RepositoryEntry] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        if ScreenshotFixtures.isEnabled {
+            return ScreenshotFixtures.repositoryEntries(at: "")
+                .filter { !$0.isDirectory && $0.path.localizedCaseInsensitiveContains(query) }
+        }
+        guard let client = connection.client else { throw OpenCodeError.notConnected }
+        let entries = try await client.findFiles(query: query, directory: directory)
+        // Browsing hides dot-folders at each level; search reaches into them,
+        // so drop any match inside one to keep both views consistent.
+        return Self.repositoryEntries(from: entries, directory: directory, keepsServerOrder: true)
+            .filter { entry in
+                !entry.isDirectory && !entry.path.split(separator: "/").contains { $0.hasPrefix(".") }
+            }
+    }
+
     func readRepositoryFile(at relativePath: String, in directory: String) async throws -> String {
         if ScreenshotFixtures.isEnabled {
             return ScreenshotFixtures.repositoryFileContent
@@ -315,10 +354,14 @@ final class WorkspaceService {
         }
     }
 
-    static func repositoryEntries(from entries: [OCWorkspaceFileEntry], directory: String) -> [RepositoryEntry] {
+    static func repositoryEntries(
+        from entries: [OCWorkspaceFileEntry],
+        directory: String,
+        keepsServerOrder: Bool = false
+    ) -> [RepositoryEntry] {
         let root = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
         var seen = Set<String>()
-        return entries.compactMap { entry in
+        let mapped: [RepositoryEntry] = entries.compactMap { entry in
             var path = entry.absolute.flatMap { $0.hasPrefix(root + "/") ? String($0.dropFirst(root.count + 1)) : nil }
                 ?? entry.path
             let isDirectory = entry.type?.lowercased() == "directory" || path.hasSuffix("/")
@@ -328,7 +371,8 @@ final class WorkspaceService {
                   seen.insert(path).inserted else { return nil }
             return RepositoryEntry(path: path, name: name, isDirectory: isDirectory)
         }
-        .sorted {
+        guard !keepsServerOrder else { return mapped }
+        return mapped.sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
@@ -415,16 +459,20 @@ final class WorkspaceService {
             }
     }
 
-    func loadSkills() async -> [WorkspaceSkillItem] {
+    /// Only v2 servers list skills; older ones expose them as slash commands.
+    func loadSkillCatalog() async -> SkillCatalogResult {
         if ScreenshotFixtures.isEnabled {
-            return []
+            return .loaded([])
         }
 
-        guard let client = connection.client else { return [] }
+        guard let client = connection.client else {
+            return .failed(OpenCodeError.notConnected.localizedDescription)
+        }
+        guard connection.serverCapabilities?.protocolVersion == .v2 else { return .unsupported }
 
         let contextDirectory = await client.currentContextDirectory() ?? "nil"
         do {
-            return try await client.listSkills()
+            return .loaded(try await client.listSkills()
                 .map { skill in
                     WorkspaceSkillItem(
                         id: skill.id,
@@ -432,10 +480,10 @@ final class WorkspaceService {
                         description: skill.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     )
                 }
-                .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+                .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending })
         } catch {
             Logger.api.error("WorkspaceService failed to load skills for context directory \(contextDirectory, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return []
+            return .failed(error.localizedDescription)
         }
     }
 
