@@ -8,7 +8,7 @@
 
 Pracuj nad dowolnym aktywnym ticketem, którego wszystkie blockery są ukończone. Etapy to kolejność produktowa, nie blokery.
 
-**Ukończone (2026-10-21, etap 1):** 01, 04 (z 05), 12, 14 — zmiany jeszcze niezacommitowane.
+**Ukończone (2026-10-21, etap 1):** 01, 04 (z 05), 12, 14 — commit `4c78f85`.
 
 **Frontier (8 zadań):** 02, 06, 08, 09, 10, 13, 16, 20.
 

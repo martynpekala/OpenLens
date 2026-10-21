@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** done (2026-10-21) — zmiany niezacommitowane; wpis w [ENABLED](../../opencode-v2-completion/ENABLED.md).
+**Status:** done (2026-10-21) w `4c78f85`; wpis w [ENABLED](../../opencode-v2-completion/ENABLED.md).
 
 - [x] Zweryfikowany child ID prowadzi do kanonicznej sesji; brak dostępu lub zasobu daje czytelny błąd zamiast pustej rozmowy.
 - [x] Powrót zachowuje właściwą sesję, szkic i kontekst; permissions/forms nadal należą do faktycznego właściciela.

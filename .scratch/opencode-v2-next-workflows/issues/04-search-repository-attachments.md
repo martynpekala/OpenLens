@@ -6,7 +6,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** done (2026-10-21) — zmiany niezacommitowane; wpis w [ENABLED](../../opencode-v2-completion/ENABLED.md).
+**Status:** done (2026-10-21) w `4c78f85`; wpis w [ENABLED](../../opencode-v2-completion/ENABLED.md).
 
 - [x] Wyszukiwanie używa zweryfikowanej lokalizacji sesji i fs.find, bez obietnicy wyszukiwania treści kodu.
 - [x] Wynik przechodzi istniejący podgląd, walidację ścieżki/zakresu i załączanie do promptu.

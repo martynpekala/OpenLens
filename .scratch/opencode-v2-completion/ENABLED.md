@@ -250,7 +250,7 @@ Verified after both reviews with **673 passing tests in 63 suites on 2026-10-09*
 
 ## next-workflows/12: Explain why you deny a permission request
 
-Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+Commits: `4c78f85` on `feature/opencode-v2-next-workflows-stage-1`, including the ticket's done status; plan in `e17a11e`.
 
 - In the permission sheet, **Deny with a reason** opens a short note field. **Send denial** rejects the request and passes the note to the agent through the owning session's reply, so it can adjust its next step without a separate prompt.
 - Plain **Deny** works as before. A blank note is not sent. If sending fails, the typed reason stays in the sheet for a retry.
@@ -258,7 +258,7 @@ Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
 
 ## next-workflows/01: Open a subagent's conversation from its card
 
-Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+Commits: `4c78f85` on `feature/opencode-v2-next-workflows-stage-1`, including the ticket's done status; plan in `e17a11e`.
 
 - Delegated-work cards and subagent result rows that name a child session show **Open conversation**. It pushes the child chat onto the current tab; Back returns to the parent.
 - The child opens only after the server confirms it exists and belongs to the open parent. A missing child, a session from elsewhere, an invalid identifier and a transport failure each show their own message instead of an empty conversation. A late response after you leave the parent does nothing.
@@ -266,7 +266,7 @@ Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
 
 ## next-workflows/04 (with 05): Search files to attach and retry the skill catalog
 
-Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+Commits: `4c78f85` on `feature/opencode-v2-next-workflows-stage-1`, including the ticket's done status; plan in `e17a11e`.
 
 - The repository attachment picker has a search field at its root. It uses `fs.find` in the session's folder and lists matching files with their paths in the server's ranking; choosing one opens the existing preview and line-range flow. Files inside dot-folders are hidden, as when browsing.
 - Search matches names and paths, not file contents, and says so when nothing matches. No results, a failed search (with **Try Again**) and a server without search are distinct states; clearing the query returns to folder browsing. A late result for an older query is ignored.
@@ -274,7 +274,7 @@ Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
 
 ## next-workflows/14: Catch up on a session without changing it
 
-Commits: not committed yet (implemented 2026-10-21, working tree on `main`).
+Commits: `4c78f85` on `feature/opencode-v2-next-workflows-stage-1`, including the ticket's done status; plan in `e17a11e`.
 
 - A **Catch up** chip in the chat header (V2 sessions with messages) opens a sheet with **Summary** and **Next step**. **Generate** calls `session.generate`; the text is shown outside the transcript and can be copied or regenerated.
 - Nothing is added to the conversation, no prompt is admitted and no compaction runs. Reopening the sheet shows the cached result without calling the model again; a result older than the transcript is marked as stale.
