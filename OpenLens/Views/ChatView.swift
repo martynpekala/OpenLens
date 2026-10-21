@@ -593,23 +593,7 @@ struct ChatView: View {
 
     private var modelSelectionRow: some View {
         HStack(alignment: VerticalAlignment(ModelControlAlignment.self), spacing: 8) {
-            ViewThatFits {
-                HStack(spacing: 6) {
-                    modelSelectorButton
-
-                    if chatClient.showsThinkingEffortPicker {
-                        thinkingEffortMenu
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    modelSelectorButton
-
-                    if chatClient.showsThinkingEffortPicker {
-                        thinkingEffortMenu
-                    }
-                }
-            }
+            modelSelectorButton
 
             Spacer()
             VStack(alignment: .trailing, spacing: 8) {
@@ -690,6 +674,11 @@ struct ChatView: View {
                 Text(chatClient.selectedModelDisplayName)
                     .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(secondaryTextColor)
+                if chatClient.showsThinkingEffortPicker, chatClient.selectedVariant != nil {
+                    Text(chatClient.selectedVariantDisplayName)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(secondaryTextColor.opacity(0.65))
+                }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(secondaryTextColor.opacity(0.75))
@@ -699,10 +688,17 @@ struct ChatView: View {
             .chatModeChipChrome(visualMode)
         }
         .alignmentGuide(VerticalAlignment(ModelControlAlignment.self)) { $0[VerticalAlignment.center] }
+        .contextMenu {
+            if chatClient.showsThinkingEffortPicker {
+                reasoningMenuItems
+            }
+        }
     }
 
-    private var thinkingEffortMenu: some View {
-        Menu {
+    /// Long-pressing the model chip changes reasoning, so effort needs no chip of its own.
+    @ViewBuilder
+    private var reasoningMenuItems: some View {
+        Section(AppText.reasoning) {
             Button {
                 chatClient.selectVariant(nil)
             } label: {
@@ -724,21 +720,6 @@ struct ChatView: View {
                     }
                 }
             }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Image(systemName: "brain")
-                    .font(.system(size: 11, weight: .medium))
-                Text(chatClient.selectedVariantDisplayName)
-                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(secondaryTextColor.opacity(0.75))
-            }
-            .foregroundStyle(secondaryTextColor)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .chatModeChipChrome(visualMode, usesGlassInStandardMode: false)
         }
     }
 
