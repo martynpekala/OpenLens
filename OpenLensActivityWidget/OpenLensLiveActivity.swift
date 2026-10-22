@@ -174,10 +174,17 @@ private extension OpenLensActivityAttributes.PendingUserResponse {
 }
 
 private extension OpenLensActivityAttributes {
-    /// The project folder the turn runs in, shown above the title.
+    /// The project folder the turn runs in.
     var projectName: String {
         let name = directory.map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
         return name.isEmpty || name == "/" ? "OpenCode" : name
+    }
+
+    /// The project and session shown above the title, so activities of sessions running at the
+    /// same time can be told apart.
+    var contextLabel: String {
+        guard let sessionTitle else { return projectName }
+        return "\(projectName) · \(sessionTitle)"
     }
 }
 
@@ -220,7 +227,7 @@ private struct ExpandedIslandContent: View {
                 .padding(.top, 2)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(attributes.projectName)
+                    Text(attributes.contextLabel)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.laSecondary)
                         .lineLimit(1)
@@ -268,7 +275,7 @@ private struct LockScreenView: View {
 
                 if prompt != nil {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(context.attributes.projectName)
+                        Text(context.attributes.contextLabel)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Color.laSecondary)
                             .lineLimit(1)
@@ -295,7 +302,7 @@ private struct LockScreenView: View {
                 )
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(context.attributes.projectName)
+                    Text(context.attributes.contextLabel)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.laSecondary)
                         .lineLimit(1)

@@ -2829,6 +2829,29 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func idleStatusOfAnotherSessionEndsItsTurnWithoutTouchingTheCurrentOne() {
+        let delegate = SSEDelegateSpy()
+        delegate.isLoading = true
+        let handler = makeHandler(delegate: delegate)
+
+        for (sessionID, status) in [("session-2", "busy"), ("session-2", "idle")] {
+            handler.handleEvent(
+                OCEvent(
+                    type: "session.status",
+                    properties: AnyCodable([
+                        "sessionID": sessionID,
+                        "status": ["type": status]
+                    ])
+                )
+            )
+        }
+
+        #expect(delegate.idledBackgroundSessionIDs == ["session-2"])
+        #expect(delegate.isLoading)
+        #expect(delegate.sessionStatus == nil)
+    }
+
+    @MainActor
     @Test func permissionV2AskedShowsPendingPermissionAlert() {
         let delegate = SSEDelegateSpy()
         let handler = makeHandler(delegate: delegate)
@@ -4468,10 +4491,15 @@ private final class SSEDelegateSpy: SSEEventHandlerDelegate {
     var hiddenTodoCount: Int = 0
     var appendedStreamingTexts: [String] = []
     var clearedStreamingBuffers: [String] = []
+    var idledBackgroundSessionIDs: [String] = []
     var layoutChangeCount = 0
     var contentChangeCount = 0
 
     func finishLoading() {}
+
+    func backgroundSessionDidBecomeIdle(sessionID: String) {
+        idledBackgroundSessionIDs.append(sessionID)
+    }
 
     func beginExternalResponse() {
         isLoading = true

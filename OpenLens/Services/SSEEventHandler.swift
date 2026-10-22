@@ -23,6 +23,8 @@ protocol SSEEventHandlerDelegate: AnyObject {
 
     func finishLoading()
     func finishAssistantStep(messageID: String)
+    /// A session other than the current one went idle.
+    func backgroundSessionDidBecomeIdle(sessionID: String)
     func beginExternalResponse()
     /// Applies an explicit server-side message deletion. Implementations can
     /// cancel deferred finalization before mutating their visible history.
@@ -274,7 +276,13 @@ final class SSEEventHandler {
 
     private func handleSessionStatus(_ update: SSESessionStatusUpdate) {
         guard let delegate else { return }
-        guard update.sessionID == delegate.currentSessionID else { return }
+        guard update.sessionID == delegate.currentSessionID else {
+            // Sessions left while working keep their Live Activity until their turn ends.
+            if update.status.type == .idle {
+                delegate.backgroundSessionDidBecomeIdle(sessionID: update.sessionID)
+            }
+            return
+        }
 
         if update.status.type == .busy,
            delegate.shouldIgnoreBusyStatus(sessionID: update.sessionID) {
@@ -293,9 +301,8 @@ final class SSEEventHandler {
 
                 // Start Live Activity for externally-triggered turns (e.g. message
                 // sent from desktop). When the user sends from iOS, ChatClient.send()
-                // already calls start() before this event arrives, so the tracker
-                // will end the previous activity and create a fresh one — which is fine.
-                // A prompt that is already pending carries over into the new activity.
+                // already calls start() before this event arrives, and the session's
+                // running activity is kept. A prompt that is already pending carries over.
                 liveActivityTracker.start(session: delegate.currentSession)
             }
         }
