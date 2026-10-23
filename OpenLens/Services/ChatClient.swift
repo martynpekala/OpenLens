@@ -173,6 +173,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     var isUndoingMessage: Bool = false
     var responseState: ChatResponseState = .idle
     var errorMessage: String?
+    @ObservationIgnored private var draftsBySessionID: [String: String] = [:]
+    /// Generated catch-ups keyed by the session that requested them, so a late
+    /// result lands with its own session rather than the one now open.
+    private(set) var sessionSummaries: [String: SessionSummaryEntry] = [:]
     private(set) var sessionLocationState: SessionLocationState = .ready
     var sessionLocationError: String? {
         if case .failed(let error) = sessionLocationState { return error }
@@ -1734,8 +1738,14 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard !Task.isCancelled, sessionLoadToken == token else { return }
 
         // Attachments picked for one session must never be sent to another.
+        // Unsent text is kept per session so returning from a child or another
+        // conversation restores it, and it never follows into the wrong session.
         if currentSession?.id != session.id {
             composerAttachments = []
+            if let previousSessionID = currentSession?.id {
+                draftsBySessionID[previousSessionID] = inputText.nilIfBlank
+                inputText = draftsBySessionID.removeValue(forKey: session.id) ?? ""
+            }
         }
 
         // Drain any in-flight state from the previous session
@@ -1756,6 +1766,47 @@ final class ChatClient: SSEEventHandlerDelegate {
         let formRecovered = await recoverPendingForms()
         guard !Task.isCancelled, currentSession?.id == session.id else { return }
         isStreamSynchronized = didLoadMessages && permissionRecovered && questionRecovered && formRecovered
+    }
+
+    /// Resolves a subagent's conversation from a card in the current session.
+    /// Returns the canonical child only while its parent is still open and the
+    /// server confirms the delegation; otherwise surfaces why it cannot open.
+    func resolveChildSession(id childID: String) async -> OCSession? {
+        guard let parentID = currentSession?.id else { return nil }
+        guard InteractiveFormSafety.fitsIdentifier(childID), childID != parentID else {
+            errorMessage = AppText.childSessionInvalid
+            return nil
+        }
+        guard let sessionsService else {
+            errorMessage = AppText.childSessionFailedPrefix + " " + OpenCodeError.notConnected.localizedDescription
+            return nil
+        }
+
+        let child: OCSession
+        do {
+            child = try await sessionsService.getSession(id: childID)
+        } catch {
+            guard !Task.isCancelled, currentSession?.id == parentID else { return nil }
+            errorMessage = Self.isMissingResource(error)
+                ? AppText.childSessionMissing
+                : AppText.childSessionFailedPrefix + " " + error.localizedDescription
+            return nil
+        }
+
+        // A late response must not navigate away from a session the user left.
+        guard !Task.isCancelled, currentSession?.id == parentID else { return nil }
+        guard child.id == childID, child.parentID == parentID else {
+            errorMessage = AppText.childSessionNotDelegated
+            return nil
+        }
+        return child
+    }
+
+    private static func isMissingResource(_ error: Error) -> Bool {
+        switch error as? OpenCodeError {
+        case .httpError(statusCode: 404), .apiError(statusCode: 404, _): true
+        default: false
+        }
     }
 
     func restoreProjectContext(for session: OCSession) async {
@@ -4094,6 +4145,70 @@ final class ChatClient: SSEEventHandlerDelegate {
         connection?.serverCapabilities?.protocolVersion == .v2
     }
 
+    var supportsSessionSummary: Bool {
+        usesV2SessionAPI && currentSession != nil
+    }
+
+    /// Identifies the transcript a summary describes. New messages, context
+    /// entries, or a growing reply make an earlier summary stale.
+    var sessionSummaryRevision: String {
+        let lastMessage = messages.last
+        return [
+            String(messages.count),
+            lastMessage?.id ?? "",
+            String(lastMessage?.content.count ?? 0),
+            String(contextEntries.count),
+            contextEntries.last?.id ?? "",
+        ].joined(separator: "|")
+    }
+
+    func sessionSummaryEntry(for kind: SessionSummaryKind) -> SessionSummaryEntry {
+        guard let sessionID = currentSession?.id else { return SessionSummaryEntry() }
+        return sessionSummaries[Self.sessionSummaryKey(sessionID, kind)] ?? SessionSummaryEntry()
+    }
+
+    func isSessionSummaryStale(_ summary: SessionSummary) -> Bool {
+        summary.revision != sessionSummaryRevision
+    }
+
+    /// Runs only on an explicit request: reopening the sheet shows the cached
+    /// result. Nothing is added to the transcript and failures leave it intact.
+    func generateSessionSummary(_ kind: SessionSummaryKind) async {
+        guard let sessionID = currentSession?.id else { return }
+        let key = Self.sessionSummaryKey(sessionID, kind)
+        guard sessionSummaries[key]?.isGenerating != true else { return }
+        guard usesV2SessionAPI, let messagesService else {
+            sessionSummaries[key, default: SessionSummaryEntry()].error = AppText.sessionSummaryUnavailable
+            return
+        }
+
+        let revision = sessionSummaryRevision
+        sessionSummaries[key, default: SessionSummaryEntry()].isGenerating = true
+        sessionSummaries[key]?.error = nil
+        do {
+            let text = try await messagesService.generateSessionText(sessionID: sessionID, prompt: kind.prompt)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw OpenCodeError.invalidPayload(AppText.sessionSummaryEmpty) }
+            sessionSummaries[key]?.summary = SessionSummary(
+                kind: kind, text: trimmed, revision: revision, generatedAt: Date()
+            )
+        } catch {
+            sessionSummaries[key]?.error = Self.isCancellation(error)
+                ? nil
+                : AppText.sessionSummaryFailedPrefix + " " + error.localizedDescription
+        }
+        sessionSummaries[key]?.isGenerating = false
+    }
+
+    private static func sessionSummaryKey(_ sessionID: String, _ kind: SessionSummaryKind) -> String {
+        sessionID + "|" + kind.rawValue
+    }
+
+    /// Only the v2 permission reply carries an explanation for the agent.
+    var supportsPermissionRejectionMessage: Bool {
+        usesV2SessionAPI
+    }
+
     var canSteerPrompt: Bool {
         usesV2SessionAPI
             && isLoading
@@ -4568,7 +4683,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     // MARK: - Permission Response
 
     @discardableResult
-    func respondToPermission(requestID: String, reply: OCPermissionReply) async -> Bool {
+    func respondToPermission(requestID: String, reply: OCPermissionReply, message: String? = nil) async -> Bool {
         guard sessionLocationState == .ready else { return false }
         guard let questionService else {
             errorMessage = "Failed to respond to permission: Not connected."
@@ -4582,7 +4697,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let recoverySessionID = permission.sessionID ?? currentSession?.id
 
         do {
-            try await questionService.respondToPermission(permission, reply: reply)
+            try await questionService.respondToPermission(permission, reply: reply, message: message)
 
             if pendingPermission?.id == requestID {
                 pendingPermission = nil

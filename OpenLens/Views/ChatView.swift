@@ -24,10 +24,12 @@ struct ChatView: View {
     @Environment(\.connection) private var connection
     @Environment(\.workspaceService) private var workspaceService
     @Environment(\.chatEasterEgg) private var chatEasterEgg
+    @Environment(AppRouter.self) private var router: AppRouter?
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
 
     @State private var showModelPicker = false
     @State private var showContextStatus = false
+    @State private var showSessionSummary = false
     @State private var showTodoList = false
     @State private var availableSlashActions: [WorkspaceSlashActionItem] = []
     @State private var selectedSlashAction: WorkspaceSlashActionItem?
@@ -36,6 +38,9 @@ struct ChatView: View {
     @State private var commandLoadToken = UUID()
     @State private var availableSkills: [WorkspaceSkillItem] = []
     @State private var isLoadingSkills = false
+    /// Set when the last catalog request failed, so `@` offers a retry rather
+    /// than reading as "no skills".
+    @State private var skillCatalogFailure: String?
     @State private var skillLoadToken = UUID()
     @State private var displayedResponseState: ChatResponseState = .idle
     @State private var isComposerExpanded = false
@@ -71,6 +76,18 @@ struct ChatView: View {
         prompt: "/undo"
     )
 
+    /// Pushes the child onto the current tab's stack, so Back returns to the
+    /// parent destination, which reloads its own session and draft.
+    private var openChildSessionAction: OpenChildSessionAction? {
+        guard let router, chatClient.currentSession != nil else { return nil }
+        return OpenChildSessionAction { childSessionID in
+            Task {
+                guard let child = await chatClient.resolveChildSession(id: childSessionID) else { return }
+                router.navigate(to: .chatSession(session: child))
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ChatMessagesListView(
@@ -78,6 +95,7 @@ struct ChatView: View {
             )
             .environment(\.chatSkillIDs, availableSkills.map(\.id))
             .environment(\.chatSessionDirectory, chatClient.sessionDirectory)
+            .environment(\.openChildSession, openChildSessionAction)
 
             if let error = chatClient.presentedError {
                 HStack(spacing: 8) {
@@ -173,6 +191,7 @@ struct ChatView: View {
             attachmentSource = nil
             availableSlashActions = []
             availableSkills = []
+            skillCatalogFailure = nil
             chatClient.updateSlashCatalog(commands: [], agents: [])
             chatClient.updateSkillCatalog([])
             guard chatClient.sessionLocationState == .ready else { return }
@@ -214,6 +233,9 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showModelPicker) {
             modelPickerSheet
+        }
+        .sheet(isPresented: $showSessionSummary) {
+            SessionSummarySheet(chatClient: chatClient)
         }
         .sheet(isPresented: $showContextStatus) {
             if chatClient.showsActiveContext || ScreenshotFixtures.showsActiveContextButton {
@@ -571,28 +593,16 @@ struct ChatView: View {
 
     private var modelSelectionRow: some View {
         HStack(alignment: VerticalAlignment(ModelControlAlignment.self), spacing: 8) {
-            ViewThatFits {
-                HStack(spacing: 6) {
-                    modelSelectorButton
-
-                    if chatClient.showsThinkingEffortPicker {
-                        thinkingEffortMenu
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    modelSelectorButton
-
-                    if chatClient.showsThinkingEffortPicker {
-                        thinkingEffortMenu
-                    }
-                }
-            }
+            modelSelectorButton
 
             Spacer()
             VStack(alignment: .trailing, spacing: 8) {
                 if !chatClient.todos.isEmpty {
                     todoChip
+                }
+                HStack(alignment: .center, spacing: 6) {
+                if chatClient.supportsSessionSummary, !chatClient.messages.isEmpty {
+                    sessionSummaryChip
                 }
                 if let contextUsage = chatClient.contextUsageSummary {
                     Button {
@@ -626,11 +636,31 @@ struct ChatView: View {
                     .accessibilityLabel("Inspect active context")
                     .accessibilityIdentifier("inspect-active-context")
                 }
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 2)
+    }
+
+    private var sessionSummaryChip: some View {
+        Button {
+            showSessionSummary = true
+        } label: {
+            HStack(alignment: .center, spacing: 4) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(secondaryTextColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .chatModeChipChrome(visualMode)
+        }
+        .buttonStyle(.plain)
+        .alignmentGuide(VerticalAlignment(ModelControlAlignment.self)) { $0[VerticalAlignment.center] }
+        .accessibilityLabel(AppText.sessionSummaryButton)
+        .accessibilityIdentifier("session-summary")
     }
 
     private var modelSelectorButton: some View {
@@ -644,6 +674,11 @@ struct ChatView: View {
                 Text(chatClient.selectedModelDisplayName)
                     .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(secondaryTextColor)
+                if chatClient.showsThinkingEffortPicker, chatClient.selectedVariant != nil {
+                    Text(chatClient.selectedVariantDisplayName)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(secondaryTextColor.opacity(0.65))
+                }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(secondaryTextColor.opacity(0.75))
@@ -653,10 +688,17 @@ struct ChatView: View {
             .chatModeChipChrome(visualMode)
         }
         .alignmentGuide(VerticalAlignment(ModelControlAlignment.self)) { $0[VerticalAlignment.center] }
+        .contextMenu {
+            if chatClient.showsThinkingEffortPicker {
+                reasoningMenuItems
+            }
+        }
     }
 
-    private var thinkingEffortMenu: some View {
-        Menu {
+    /// Long-pressing the model chip changes reasoning, so effort needs no chip of its own.
+    @ViewBuilder
+    private var reasoningMenuItems: some View {
+        Section(AppText.reasoning) {
             Button {
                 chatClient.selectVariant(nil)
             } label: {
@@ -678,21 +720,6 @@ struct ChatView: View {
                     }
                 }
             }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Image(systemName: "brain")
-                    .font(.system(size: 11, weight: .medium))
-                Text(chatClient.selectedVariantDisplayName)
-                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(secondaryTextColor.opacity(0.75))
-            }
-            .foregroundStyle(secondaryTextColor)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .chatModeChipChrome(visualMode, usesGlassInStandardMode: false)
         }
     }
 
@@ -709,6 +736,15 @@ struct ChatView: View {
                     visualMode: visualMode,
                     onSelect: applySkillMention
                 )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let skillCatalogFailure, showsSkillCatalogFailure {
+                SkillCatalogFailureRow(
+                    message: skillCatalogFailure,
+                    isRetrying: isLoadingSkills,
+                    visualMode: visualMode
+                ) {
+                    Task { await loadSkills(force: true) }
+                }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -1337,6 +1373,10 @@ struct ChatView: View {
         chatClient.currentSession != nil && !filteredSkills.isEmpty
     }
 
+    private var showsSkillCatalogFailure: Bool {
+        chatClient.currentSession != nil && skillMentionQuery != nil && skillCatalogFailure != nil
+    }
+
     @MainActor
     private func loadCommands(force: Bool = false) async {
         guard force || availableSlashActions.isEmpty else { return }
@@ -1368,10 +1408,22 @@ struct ChatView: View {
 
         isLoadingSkills = true
         defer { if skillLoadToken == token { isLoadingSkills = false } }
-        let skills = await workspaceService.loadSkills()
+        let result = await workspaceService.loadSkillCatalog()
         guard !Task.isCancelled, context == catalogContextID, skillLoadToken == token else { return }
-        availableSkills = skills
-        chatClient.updateSkillCatalog(skills.map(\.id))
+        switch result {
+        case let .loaded(skills):
+            availableSkills = skills
+            skillCatalogFailure = nil
+            chatClient.updateSkillCatalog(skills.map(\.id))
+        case .unsupported:
+            availableSkills = []
+            skillCatalogFailure = nil
+            chatClient.updateSkillCatalog([])
+        case let .failed(message):
+            // Keep any catalog already loaded for this context; the draft and
+            // attached skills are untouched so a retry loses nothing.
+            skillCatalogFailure = message
+        }
     }
 
     private func applySkillMention(_ skill: WorkspaceSkillItem) {
@@ -1461,16 +1513,21 @@ struct PermissionRequestSheet: View {
     let permission: OCPermissionRequest
     @Binding var selectedDetent: PresentationDetent
     private let initiallyConfirmsAllowAll: Bool
-    let onRespond: (OCPermissionReply) async -> Bool
+    private let supportsRejectionMessage: Bool
+    let onRespond: (OCPermissionReply, String?) async -> Bool
 
     @State private var pendingReply: OCPermissionReply?
     @State private var confirmsAllowAll: Bool
+    @State private var explainsRejection = false
+    @State private var rejectionMessage = ""
+    @FocusState private var rejectionMessageFocused: Bool
 
     init(
         permission: OCPermissionRequest,
         selectedDetent: Binding<PresentationDetent>,
         initiallyConfirmsAllowAll: Bool = false,
-        onRespond: @escaping (OCPermissionReply) async -> Bool
+        supportsRejectionMessage: Bool = false,
+        onRespond: @escaping (OCPermissionReply, String?) async -> Bool
     ) {
         let safePermission = Self.safeDisplayPermission(permission)
         let canOfferAllowAll = !safePermission.displayScopeWasTruncated
@@ -1478,6 +1535,7 @@ struct PermissionRequestSheet: View {
         self.permission = safePermission
         self._selectedDetent = selectedDetent
         self.initiallyConfirmsAllowAll = initiallyConfirmsAllowAll && canOfferAllowAll
+        self.supportsRejectionMessage = supportsRejectionMessage
         self.onRespond = onRespond
         self._confirmsAllowAll = State(initialValue: initiallyConfirmsAllowAll && canOfferAllowAll)
     }
@@ -1486,7 +1544,8 @@ struct PermissionRequestSheet: View {
         let safePermission = safeDisplayPermission(permission)
         var detents: Set<PresentationDetent> = [
             defaultPresentationDetent,
-            .medium
+            .medium,
+            .large
         ]
 
         if !safePermission.displayScopeWasTruncated {
@@ -1610,12 +1669,15 @@ struct PermissionRequestSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             if confirmsAllowAll && canOfferAllowAll {
                 allowAllConfirmation
+            } else if explainsRejection && supportsRejectionMessage {
+                rejectionExplanation
             } else {
                 permissionRequest
             }
         }
         .padding()
         .animation(.snappy(duration: 0.2), value: confirmsAllowAll)
+        .animation(.snappy(duration: 0.2), value: explainsRejection)
         .background(Color.appBackground)
         .onAppear {
             if initiallyConfirmsAllowAll && canOfferAllowAll {
@@ -1714,6 +1776,70 @@ struct PermissionRequestSheet: View {
                 )
             }
         }
+    }
+
+    private var rejectionExplanation: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 12) {
+                SurfaceIconTile(
+                    icon: "text.bubble",
+                    fill: Color.appTertiary,
+                    foreground: Color.appPrimary
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(AppText.deny)
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
+                        .textCase(.uppercase)
+
+                    Text(title)
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                        .lineLimit(2)
+                }
+            }
+
+            Text(AppText.denialReasonDetail)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.appSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField(AppText.denialReasonPlaceholder, text: $rejectionMessage, axis: .vertical)
+                .font(.system(size: 15))
+                .lineLimit(3...6)
+                .focused($rejectionMessageFocused)
+                .padding(12)
+                .background(Color.appTertiary.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .disabled(isResponding)
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 10) {
+                permissionControlButton(
+                    title: AppText.cancel,
+                    systemImage: "chevron.left",
+                    fill: Color.appTertiary,
+                    foreground: Color.appPrimary
+                ) {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        explainsRejection = false
+                        selectedDetent = Self.defaultPresentationDetent
+                    }
+                }
+
+                // The typed reason stays in state, so a failed send can be retried as-is.
+                permissionReplyButton(
+                    title: AppText.sendDenial,
+                    systemImage: "xmark",
+                    fill: Color.appPrimary,
+                    foreground: Color.appBackground,
+                    reply: .reject,
+                    message: rejectionMessage
+                )
+            }
+        }
+        .onAppear { rejectionMessageFocused = true }
     }
 
     private var allowAllExplanation: String {
@@ -1871,6 +1997,22 @@ struct PermissionRequestSheet: View {
                     }
                 }
             }
+
+            if supportsRejectionMessage {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        explainsRejection = true
+                        selectedDetent = .large
+                    }
+                } label: {
+                    Label(AppText.denyWithReason, systemImage: "text.bubble")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.plain)
+                .disabled(isResponding)
+            }
         }
         .padding(.top, 2)
     }
@@ -1880,7 +2022,8 @@ struct PermissionRequestSheet: View {
         systemImage: String,
         fill: Color,
         foreground: Color,
-        reply: OCPermissionReply
+        reply: OCPermissionReply,
+        message: String? = nil
     ) -> some View {
         permissionControlButton(
             title: title,
@@ -1891,7 +2034,7 @@ struct PermissionRequestSheet: View {
         ) {
             Task {
                 pendingReply = reply
-                let didMovePastCurrentRequest = await onRespond(reply)
+                let didMovePastCurrentRequest = await onRespond(reply, message)
                 if !didMovePastCurrentRequest {
                     pendingReply = nil
                 }
@@ -1989,7 +2132,7 @@ private struct PermissionRequestSheetPreviewHost: View {
                 permission: permission,
                 selectedDetent: $selectedDetent,
                 initiallyConfirmsAllowAll: initiallyConfirmsAllowAll,
-                onRespond: { _ in false }
+                onRespond: { _, _ in false }
             )
             .presentationDetents(
                 PermissionRequestSheet.presentationDetents(for: permission),
@@ -2073,6 +2216,40 @@ private struct ComposerTokenLayout: Layout {
         frames.append(CGRect(x: x, y: rowY, width: fieldWidth ?? fieldSize.width, height: fieldSize.height))
 
         return frames
+    }
+}
+
+private struct SkillCatalogFailureRow: View {
+    let message: String
+    let isRetrying: Bool
+    let visualMode: ChatVisualMode
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(Color.appWarning)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(AppText.skillCatalogFailed)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.appPrimary)
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.appSecondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if isRetrying {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button(AppText.skillCatalogRetry, action: onRetry)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+        }
+        .padding(12)
+        .chatPopoverChrome(visualMode)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -2774,7 +2951,7 @@ private struct ChatMessagesListView: View {
             Image(systemName: "arrow.down.circle.fill")
                 .font(.system(size: 34))
                 .symbolRenderingMode(.palette)
-                .foregroundStyle(Color.appOnAccent, Color.appAccent)
+                .foregroundStyle(Color.appBackground, Color.appPrimary)
         }
     }
 

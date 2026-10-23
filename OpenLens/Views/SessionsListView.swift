@@ -626,7 +626,7 @@ private struct SessionsLoadErrorView: View {
             Text(message)
         } actions: {
             Button(AppText.tryAgain, action: retry)
-                .buttonStyle(.borderedProminent)
+                .primaryCTAStyle()
         }
     }
 }

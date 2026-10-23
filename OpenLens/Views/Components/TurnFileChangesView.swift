@@ -147,7 +147,7 @@ private struct TurnFileDiffSheet: View {
                         Button("Retry") {
                             loadAttempt &+= 1
                         }
-                        .buttonStyle(.borderedProminent)
+                        .primaryCTAStyle()
                     }
                     .padding(.horizontal, 32)
                 }

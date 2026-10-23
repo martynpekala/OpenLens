@@ -96,7 +96,11 @@ final class QuestionService {
     // MARK: - Permission Response
 
     /// Reply to a permission request using its server-owned session identity.
-    func respondToPermission(_ permission: OCPermissionRequest, reply: OCPermissionReply) async throws {
+    func respondToPermission(
+        _ permission: OCPermissionRequest,
+        reply: OCPermissionReply,
+        message: String? = nil
+    ) async throws {
         guard let client = connection.client else {
             throw OpenCodeError.notConnected
         }
@@ -104,7 +108,8 @@ final class QuestionService {
         let _ = try await client.replyToPermission(
             sessionID: permission.sessionID,
             requestID: permission.id,
-            reply: reply
+            reply: reply,
+            message: message
         )
     }
 }

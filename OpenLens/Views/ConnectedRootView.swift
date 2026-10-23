@@ -63,9 +63,10 @@ struct ConnectedRootView: View {
             PermissionRequestSheet(
                 permission: permission,
                 selectedDetent: $permissionSheetDetent,
-                initiallyConfirmsAllowAll: ScreenshotFixtures.opensPermissionAllowAllConfirmation
-            ) { reply in
-                await chatClient.respondToPermission(requestID: permission.id, reply: reply)
+                initiallyConfirmsAllowAll: ScreenshotFixtures.opensPermissionAllowAllConfirmation,
+                supportsRejectionMessage: chatClient.supportsPermissionRejectionMessage
+            ) { reply, message in
+                await chatClient.respondToPermission(requestID: permission.id, reply: reply, message: message)
             }
             .id(permission.id)
             .presentationDetents(

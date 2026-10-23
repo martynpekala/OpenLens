@@ -1,3 +1,4 @@
+import SwiftUI
 import Testing
 @testable import OpenLens
 
@@ -46,7 +47,10 @@ struct PermissionRequestDisplaySafetyTests {
         #expect(sanitized.toolRef == nil)
         #expect(sanitized.displayScopeWasTruncated)
         #expect(!PermissionRequestSheet.offersAlwaysApproval(for: sanitized))
-        #expect(PermissionRequestSheet.presentationDetents(for: sanitized).count == 2)
+        // No Always-allow height; `.large` hosts the optional denial reason.
+        #expect(PermissionRequestSheet.presentationDetents(for: sanitized) == [
+            PermissionRequestSheet.defaultPresentationDetent, .medium, .large,
+        ])
     }
 
     @Test func retainsAlwaysApprovalForACompleteBoundedScope() {

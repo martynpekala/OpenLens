@@ -462,6 +462,18 @@ extension Color {
     static var appDanger: Color { OpenLensDesignSystem.currentTheme.colors.danger.color }
 }
 
+// MARK: - Primary Call To Action
+
+extension View {
+    /// Filled call-to-action that follows the text color rather than the user's
+    /// accent: light with dark text in dark mode, dark with light text in light mode.
+    func primaryCTAStyle() -> some View {
+        buttonStyle(.borderedProminent)
+            .tint(Color.appPrimary)
+            .foregroundStyle(Color.appBackground)
+    }
+}
+
 // MARK: - Surface Shadow
 
 private struct OpenLensShadowModifier: ViewModifier {

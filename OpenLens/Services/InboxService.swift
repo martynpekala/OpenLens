@@ -219,7 +219,11 @@ final class InboxService {
             error: errors.isEmpty ? nil : OpenCodeError.invalidPayload(errors.joined(separator: "\n")), formsRevision: revision)
     }
 
-    func respondToPermission(_ permission: OCPermissionRequest, reply: OCPermissionReply) async throws {
+    func respondToPermission(
+        _ permission: OCPermissionRequest,
+        reply: OCPermissionReply,
+        message: String? = nil
+    ) async throws {
         if ScreenshotFixtures.isEnabled {
             return
         }
@@ -231,7 +235,8 @@ final class InboxService {
         let _ = try await client.replyToPermission(
             sessionID: permission.sessionID,
             requestID: permission.id,
-            reply: reply
+            reply: reply,
+            message: message
         )
     }
 
