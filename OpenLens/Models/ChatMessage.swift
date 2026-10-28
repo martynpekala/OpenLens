@@ -432,6 +432,8 @@ final class ChatMessage: Identifiable {
         let isError: Bool
         let cost: Double?
         var resultState: SubagentResultState? = nil
+        /// Validated child session reported by the delegating tool, when known.
+        var childSessionID: String? = nil
 
         /// A task/subagent card should animate only while it is actively working.
         /// Completed and failed work stays visually stable in the timeline.
@@ -2143,7 +2145,8 @@ final class ChatMessage: Identifiable {
             isCompleted: result != nil || isSubagentPartCompleted(part, taskState: taskState),
             isError: result.map { $0 == .error } ?? (taskState?.status == .error),
             cost: part.cost,
-            resultState: result
+            resultState: result,
+            childSessionID: childID
         )
     }
 

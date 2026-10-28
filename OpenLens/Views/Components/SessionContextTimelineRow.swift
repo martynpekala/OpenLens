@@ -1,11 +1,12 @@
 import SwiftUI
 
 /// A compact contextual record with locally owned disclosure state. Results
-/// remain selectable in place, without creating another navigation destination.
+/// remain selectable in place; a subagent result can also open its child.
 struct SessionContextTimelineRow: View {
     let entry: SessionContextEntry
     @Environment(\.chatEasterEgg) private var chatEasterEgg
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openChildSession) private var openChildSession
     @State private var isExpanded = false
 
     init(entry: SessionContextEntry, initiallyExpanded: Bool = false) {
@@ -33,6 +34,14 @@ struct SessionContextTimelineRow: View {
                 // The native disclosure arrow also needs light-control
                 // contrast on retro's fixed pale paper in dark appearance.
                 .environment(\.colorScheme, isRetroChat ? .light : colorScheme)
+            }
+
+            if let childSessionID = entry.subagentResult?.childID, let openChildSession {
+                OpenChildSessionButton(
+                    childSessionID: childSessionID,
+                    usesRetroTypography: isRetroChat,
+                    action: openChildSession
+                )
             }
         }
         .padding(12)

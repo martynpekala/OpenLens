@@ -520,6 +520,21 @@ actor OpenCodeClient {
         }
     }
 
+    /// Transient text generated from the session's context. The server does
+    /// not append it to history, admit a prompt, or compact the session.
+    func generateSessionText(sessionID: String, prompt: String) async throws -> String {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Generating a summary needs a v2 OpenCode server.")
+        }
+        let response: OCV2Envelope<OCV2GeneratedText> = try await sendV2Request(
+            method: "POST",
+            path: "/api/session/\(sessionID)/generate",
+            body: ["prompt": prompt],
+            includesLocation: false
+        )
+        return response.data.text
+    }
+
     /// Admission only: completion arrives through the shared inbox/timeline.
     /// A successful but unreadable acknowledgement must never invite a new ID.
     func requestCompaction(sessionID: String, messageID: String) async throws -> OCV2InboxEntry? {
@@ -863,6 +878,31 @@ actor OpenCodeClient {
         return try decode(data)
     }
 
+    /// Ranked file-name matches below `directory`. This searches entry paths,
+    /// not file contents, and exists only on v2 servers.
+    func findFiles(query: String, directory: String, limit: Int = 50) async throws -> [OCWorkspaceFileEntry] {
+        guard usesV2 else { throw RepositorySearchError.unsupported }
+        let response: OCV2Located<[OCV2FileSystemEntry]> = try await getV2Located(
+            "/api/fs/find",
+            queryItems: [
+                URLQueryItem(name: "location[directory]", value: directory),
+                URLQueryItem(name: "query", value: query),
+                URLQueryItem(name: "type", value: "file"),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ],
+            includesLocation: false
+        )
+        return response.data.map { entry in
+            OCWorkspaceFileEntry(
+                name: (entry.path as NSString).lastPathComponent,
+                path: entry.path,
+                absolute: nil,
+                type: entry.type,
+                ignored: false
+            )
+        }
+    }
+
     func listFileStatus() async throws -> [OCWorkspaceFileStatus] {
         if usesV2 {
             let response: OCV2Located<[OCV2VCSFileStatus]> = try await getV2Located("/api/vcs/status")
@@ -1039,7 +1079,8 @@ actor OpenCodeClient {
     func replyToPermission(
         sessionID: String?,
         requestID: String,
-        reply: OCPermissionReply
+        reply: OCPermissionReply,
+        message: String? = nil
     ) async throws -> Bool {
         if usesV2 {
             guard let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
@@ -1048,12 +1089,16 @@ actor OpenCodeClient {
             try await sendV2RequestDiscardingResponse(
                 method: "POST",
                 path: "/api/session/\(sessionID)/permission/\(requestID)/reply",
-                body: OCV2PermissionReplyInput(reply: reply),
+                body: OCV2PermissionReplyInput(
+                    reply: reply,
+                    message: message?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+                ),
                 includesLocation: false
             )
             return true
         }
 
+        // V1 has no explanation field, so a message is intentionally dropped.
         return try await post("/permission/\(requestID)/reply", body: [
             "reply": reply.rawValue,
         ] as [String: Any])

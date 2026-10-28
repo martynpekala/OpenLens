@@ -214,6 +214,8 @@ struct ModelPickerView: View {
             if activeConfigurationAction == nil {
                 Section {
                     quickActionCards
+                        // The row clips to its own bounds, which cut the cards' outer corners.
+                        .padding(.horizontal, 2)
                         .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 10, trailing: 0))
                         .listRowBackground(Color.clear)
                 } header: {
@@ -345,7 +347,7 @@ struct ModelPickerView: View {
                 RetroChatDoubleBorder(cornerRadius: 7, lineWidth: 1)
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.appAccent.opacity(0.28), lineWidth: 1)
+                    .strokeBorder(Color.appAccent.opacity(0.28), lineWidth: 1)
             }
         }
     }

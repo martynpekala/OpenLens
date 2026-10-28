@@ -2432,6 +2432,10 @@ nonisolated struct OCV2SessionMessage: Decodable, Sendable {
     }
 }
 
+nonisolated struct OCV2GeneratedText: Decodable, Sendable {
+    let text: String
+}
+
 nonisolated struct OCV2FileSystemEntry: Codable, Sendable {
     let path: String
     let type: String
@@ -2843,8 +2847,13 @@ nonisolated struct OCSkill: Decodable, Identifiable, Sendable {
 /// session mutations before this input is admitted.
 nonisolated struct OCV2PermissionReplyInput: Encodable, Sendable {
     let reply: OCPermissionReply
+    /// Optional explanation forwarded to the agent; omitted from the body when nil.
+    var message: String? = nil
 
-    enum CodingKeys: String, CodingKey { case reply = "decision" }
+    enum CodingKeys: String, CodingKey {
+        case reply = "decision"
+        case message
+    }
 }
 
 nonisolated struct OCV2FormReplyInput: Encodable, Sendable {

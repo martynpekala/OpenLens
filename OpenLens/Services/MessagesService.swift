@@ -121,6 +121,11 @@ final class MessagesService {
         )
     }
 
+    func generateSessionText(sessionID: String, prompt: String) async throws -> String {
+        guard let client = connection.client else { throw OpenCodeError.notConnected }
+        return try await client.generateSessionText(sessionID: sessionID, prompt: prompt)
+    }
+
     func requestCompaction(sessionID: String, messageID: String) async throws -> OCV2InboxEntry? {
         guard let client = connection.client else { throw OpenCodeError.notConnected }
         return try await client.requestCompaction(sessionID: sessionID, messageID: messageID)

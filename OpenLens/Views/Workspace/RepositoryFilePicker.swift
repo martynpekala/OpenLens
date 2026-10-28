@@ -39,20 +39,54 @@ private struct RepositoryFolderList: View {
         case error(String)
     }
 
+    private enum SearchState {
+        case searching
+        case results([RepositoryEntry])
+        case unsupported
+        case error(String)
+    }
+
     let directory: String
     let relativePath: String
     let onAttach: (String, ServerFileReference.LineRange?) -> Void
 
     @Environment(\.workspaceService) private var workspaceService
     @State private var loadState: LoadState = .loading
+    @State private var searchText = ""
+    @State private var searchState: SearchState = .searching
+
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
-        content
+        searchableContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.appBackground)
             .navigationTitle(relativePath.isEmpty ? AppText.repositoryFiles : (relativePath as NSString).lastPathComponent)
             .navigationBarTitleDisplayMode(.inline)
             .task { await load() }
+    }
+
+    /// Search covers the whole folder, so it is offered only at its root;
+    /// browsing stays available whenever the query is cleared.
+    @ViewBuilder
+    private var searchableContent: some View {
+        if relativePath.isEmpty {
+            Group {
+                if searchQuery.isEmpty {
+                    content
+                } else {
+                    searchContent
+                }
+            }
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: AppText.repositorySearchPrompt)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .task(id: searchQuery) { await search(searchQuery) }
+        } else {
+            content
+        }
     }
 
     @ViewBuilder
@@ -85,6 +119,52 @@ private struct RepositoryFolderList: View {
         }
     }
 
+    @ViewBuilder
+    private var searchContent: some View {
+        switch searchState {
+        case .searching:
+            ProgressView()
+                .tint(Color.appAccent)
+        case .unsupported:
+            ContentUnavailableView(AppText.repositorySearchUnsupported, systemImage: "folder")
+        case let .error(message):
+            ContentUnavailableView {
+                Label(AppText.repositorySearchFailed, systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(message)
+            } actions: {
+                Button(AppText.tryAgain) {
+                    let query = searchQuery
+                    Task { await search(query, debounces: false) }
+                }
+            }
+        case let .results(entries):
+            if entries.isEmpty {
+                ContentUnavailableView(
+                    AppText.repositorySearchNoResults,
+                    systemImage: "magnifyingglass",
+                    description: Text(AppText.repositorySearchNoResultsDetail)
+                )
+            } else {
+                List(entries) { entry in
+                    NavigationLink(value: entry) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(entry.name, systemImage: "doc.text")
+                                .foregroundStyle(Color.appPrimary)
+                            Text(entry.path)
+                                .font(.caption)
+                                .foregroundStyle(Color.appSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
+                    }
+                    .listRowBackground(Color.appSurface)
+                }
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
     private func load() async {
         loadState = .loading
         do {
@@ -92,6 +172,26 @@ private struct RepositoryFolderList: View {
         } catch {
             loadState = .error(error.localizedDescription)
         }
+    }
+
+    /// A newer query cancels this task, and results are applied only while
+    /// they still match the field, so a late response never replaces them.
+    private func search(_ query: String, debounces: Bool = true) async {
+        guard !query.isEmpty else { return }
+        searchState = .searching
+        if debounces {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        let state: SearchState
+        do {
+            state = .results(try await workspaceService.searchRepositoryFiles(matching: query, in: directory))
+        } catch RepositorySearchError.unsupported {
+            state = .unsupported
+        } catch {
+            state = .error(error.localizedDescription)
+        }
+        guard !Task.isCancelled, query == searchQuery else { return }
+        searchState = state
     }
 }
 

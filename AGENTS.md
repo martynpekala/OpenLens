@@ -36,6 +36,18 @@
 - Tests are hosted in the iOS app, so they cannot run without a simulator unless the app is signed for "My Mac (Designed for iPad)".
 - Use the local booted `iPhone 18 Pro` simulator (`F323E9E4-4B39-4EB6-A42B-AB9E203A3E9A`) for OpenLens verification unless the user explicitly asks for another destination.
 
+## Token Efficiency
+- Search first, then read only the line ranges you need; do not re-read files that have not changed.
+- Run the narrowest test first (`--only-testing`); run the full suite once at the end.
+- Never run raw `xcodebuild` test/build output into the conversation; use `./scripts/test-ios.sh` and read saved logs only on failure, filtered (`grep -E "error:|failed"`).
+- Wait inside one command (`gh pr checks --watch`, an `until` loop) instead of repeated sleep-and-check turns.
+- Delegate broad, self-contained searches to a subagent on a small, fast model; keep the main model for decisions and edits.
+- Before adding code, check whether the codebase, the Swift standard library, or an Apple framework already solves it. Prefer the smallest working change.
+- Use the simulator accessibility tree/text first; take screenshots only to verify something visual.
+- Lead with the result; skip restating the plan or narrating each tool call.
+- After two failed attempts at the same fix, stop and report what was learned instead of looping.
+- Start a new session for unrelated tasks, carrying over only a short handoff note.
+
 ## Collaboration Notes
 - Keep changes focused on the user-facing reason for the task.
 - Include screenshots for visible UI changes.
