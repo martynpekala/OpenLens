@@ -8,6 +8,8 @@ nonisolated struct OpenLensActivityAttributes: ActivityAttributes {
     var sessionID: String?
     /// Project directory v1 replies are routed to.
     var directory: String?
+    /// Tells apart activities of sessions that run at the same time.
+    var sessionTitle: String?
     /// Preview activities from Settings answer prompts locally instead of calling the server.
     var isPreview = false
 
@@ -96,11 +98,26 @@ extension OpenLensActivityAttributes {
     }
 }
 
+// MARK: - Session Title
+
+extension OpenLensActivityAttributes {
+    private static let maximumSessionTitleCharacters = 60
+
+    /// A session title short enough for the ActivityKit payload, or nil when it is blank.
+    static func boundedSessionTitle(_ title: String?) -> String? {
+        guard let title else { return nil }
+        let trimmed = title.prefix(512).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.count > maximumSessionTitleCharacters else { return trimmed }
+        return trimmed.prefix(maximumSessionTitleCharacters).trimmingCharacters(in: .whitespaces) + "…"
+    }
+}
+
 // MARK: - Preview Data
 
 extension OpenLensActivityAttributes {
     static var preview: OpenLensActivityAttributes {
-        OpenLensActivityAttributes(sessionID: nil, directory: nil, isPreview: true)
+        OpenLensActivityAttributes(sessionID: nil, directory: nil, sessionTitle: "Refresh token rotation", isPreview: true)
     }
 }
 

@@ -1,7 +1,9 @@
 import Foundation
 
-/// Tracks the prompt the Live Activity shows for a single agent turn. Progress is shown with
-/// generic copy only, so the tracker mirrors just the pending permission, question, or form.
+/// Tracks the prompt the Live Activity shows for the session the chat is following. Progress is
+/// shown with generic copy only, so the tracker mirrors just the pending permission, question, or
+/// form. Other sessions keep their own activities: leaving a session detaches the tracker without
+/// ending its activity, and `endActivity(sessionID:phase:)` finishes it once that session goes idle.
 /// Pure value tracking — delegates actual ActivityKit calls to `LiveActivityManager`.
 final class LiveActivityTracker {
 
@@ -14,6 +16,11 @@ final class LiveActivityTracker {
     // MARK: - State
 
     private(set) var pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?
+    /// Session whose activity this tracker drives, while attached.
+    private(set) var sessionID: String?
+    private(set) var isAttached = false
+    /// Sessions left while their activity was running. Their activity ends once they go idle.
+    private(set) var backgroundSessionIDs: Set<String> = []
 
     // MARK: - Dependency
 
@@ -26,12 +33,56 @@ final class LiveActivityTracker {
     // MARK: - Lifecycle
 
     /// Start the Live Activity for a new turn. A prompt that is still pending carries over,
-    /// since the chat only reports prompts when they change.
+    /// since the chat only reports prompts when they change. A session whose turn is already
+    /// shown keeps its activity.
     func start(session: OCSession?) {
-        liveActivity.startActivity(sessionID: session?.id, directory: session?.directory)
+        bind(sessionID: session?.id)
+        liveActivity.startActivity(sessionID: session?.id, directory: session?.directory, title: session?.title)
         if pendingUserResponse != nil {
             pushCurrentState()
         }
+    }
+
+    /// Follow the activity of the session the chat opened, so its turn can end it even when the
+    /// turn started while another session was open. The activity's prompt is replaced with the
+    /// chat's, since a prompt may have been answered elsewhere while the session was not open.
+    func attach(sessionID: String?) {
+        guard !isAttached || self.sessionID != sessionID else { return }
+        bind(sessionID: sessionID)
+        pushCurrentState()
+    }
+
+    private func bind(sessionID: String?) {
+        // A prompt reported while detached already belongs to the session being attached.
+        if isAttached, self.sessionID != sessionID {
+            leaveSession()
+        }
+        self.sessionID = sessionID
+        isAttached = true
+        if let sessionID {
+            backgroundSessionIDs.remove(sessionID)
+        }
+    }
+
+    /// Stop following the current session without ending its activity: it keeps running until
+    /// that session goes idle. Prompts reported while detached are not published.
+    func detach() {
+        if isAttached {
+            leaveSession()
+        }
+        isAttached = false
+    }
+
+    private func leaveSession() {
+        if let sessionID, liveActivity.isActive(sessionID: sessionID) {
+            backgroundSessionIDs.insert(sessionID)
+        }
+        sessionID = nil
+        pendingUserResponse = nil
+    }
+
+    func hasActivity(sessionID: String) -> Bool {
+        liveActivity.isActive(sessionID: sessionID)
     }
 
     func setPendingPermission(_ permission: OCPermissionRequest) {
@@ -69,14 +120,28 @@ final class LiveActivityTracker {
         setPendingUserResponse(nil)
     }
 
-    /// End the Live Activity, showing how the turn ended.
+    /// End the attached session's Live Activity, showing how the turn ended.
     func end(phase: OpenLensActivityAttributes.Phase = .finished) {
-        liveActivity.endActivity(phase: phase)
+        guard isAttached else { return }
+        liveActivity.endActivity(sessionID: sessionID, phase: phase)
     }
 
     /// Incomplete execution evidence must not publish a successful completion.
     func dismiss() {
-        liveActivity.dismissImmediately()
+        guard isAttached else { return }
+        liveActivity.dismissImmediately(sessionID: sessionID)
+    }
+
+    /// End the activity of a session the chat is no longer following once its turn is over.
+    /// A nil phase means the outcome is unknown, so the activity is dismissed instead.
+    func endActivity(sessionID: String, phase: OpenLensActivityAttributes.Phase?) {
+        guard !isAttached || self.sessionID != sessionID else { return }
+        backgroundSessionIDs.remove(sessionID)
+        if let phase {
+            liveActivity.endActivity(sessionID: sessionID, phase: phase)
+        } else {
+            liveActivity.dismissImmediately(sessionID: sessionID)
+        }
     }
 
     private func setPendingUserResponse(_ response: OpenLensActivityAttributes.PendingUserResponse?) {
@@ -86,8 +151,8 @@ final class LiveActivityTracker {
     }
 
     private func pushCurrentState() {
-        guard liveActivity.isActive else { return }
-        liveActivity.update(pendingUserResponse: pendingUserResponse)
+        guard isAttached, liveActivity.isActive(sessionID: sessionID) else { return }
+        liveActivity.update(sessionID: sessionID, pendingUserResponse: pendingUserResponse)
     }
 
     // MARK: - Prompt Details

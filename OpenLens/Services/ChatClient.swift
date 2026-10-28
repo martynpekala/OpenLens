@@ -220,6 +220,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Current session being viewed.
     var currentSession: OCSession? {
         didSet {
+            liveActivityTracker?.attach(sessionID: currentSession?.id)
             if currentSession == nil {
                 activeContextWasV2 = false
             } else if let version = connection?.serverCapabilities?.protocolVersion {
@@ -1328,6 +1329,52 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     var currentSessionID: String? { currentSession?.id }
 
+    /// Ends the Live Activity of a session that is no longer open once its turn is over, so
+    /// turns running in several sessions each finish their own activity.
+    func backgroundSessionDidBecomeIdle(sessionID: String) {
+        guard let liveActivityTracker else { return }
+        guard liveActivityTracker.hasActivity(sessionID: sessionID) else {
+            // Nothing is left on screen; stop watching the session.
+            liveActivityTracker.endActivity(sessionID: sessionID, phase: nil)
+            return
+        }
+        guard usesV2SessionAPI, let sessionsService else {
+            liveActivityTracker.endActivity(sessionID: sessionID, phase: .finished)
+            return
+        }
+
+        Task { [weak self] in
+            let session = try? await sessionsService.getSession(id: sessionID)
+            // Reopening the session hands its activity back to the chat.
+            guard let self, self.currentSessionID != sessionID else { return }
+            self.liveActivityTracker?.endActivity(
+                sessionID: sessionID,
+                phase: session.flatMap { Self.liveActivityPhase(for: $0.executionOutcome) }
+            )
+        }
+    }
+
+    /// Status events from sessions in another project may never reach this stream, so every
+    /// status refresh also ends the activities of sessions left working that have gone idle.
+    private func endIdleBackgroundLiveActivities(statuses: [String: OCSessionStatus]) {
+        guard let liveActivityTracker else { return }
+        for sessionID in liveActivityTracker.backgroundSessionIDs
+        where sessionID != currentSessionID && (statuses[sessionID]?.type ?? .idle) == .idle {
+            backgroundSessionDidBecomeIdle(sessionID: sessionID)
+        }
+    }
+
+    /// How a v2 turn's Live Activity ends. Nil when the outcome is unknown, since incomplete
+    /// execution evidence must not publish a successful completion.
+    private static func liveActivityPhase(for outcome: OCExecutionState) -> OpenLensActivityAttributes.Phase? {
+        switch outcome {
+        case .succeeded: .finished
+        case .failed: .failed
+        case .interrupted: .stopped
+        default: nil
+        }
+    }
+
     func questionDidPresent() {
         startInteractiveRequestTimeout()
     }
@@ -2261,6 +2308,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let revision = connection?.projectContextRevision
         do {
             let statuses = try await sessionsService.getSessionStatuses()
+            endIdleBackgroundLiveActivities(statuses: statuses)
             guard !Task.isCancelled, currentSession?.id == sessionID,
                   generation == streamSynchronizationGeneration,
                   revision == connection?.projectContextRevision else { return false }
@@ -5413,6 +5461,8 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func resetSessionState() {
+        // The previous session's Live Activity keeps running until that session goes idle.
+        liveActivityTracker?.detach()
         stopViewingResults()
         viewedMarkerRefreshTask?.cancel()
         viewedMarkerRefreshTask = nil
@@ -5641,11 +5691,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         markResponseIdleAfterFinish()
 
         if usesV2SessionAPI {
-            switch completedExecutionOutcome {
-            case .succeeded: liveActivityTracker?.end(phase: .finished)
-            case .failed: liveActivityTracker?.end(phase: .failed)
-            case .interrupted: liveActivityTracker?.end(phase: .stopped)
-            default: liveActivityTracker?.dismiss()
+            if let phase = Self.liveActivityPhase(for: completedExecutionOutcome) {
+                liveActivityTracker?.end(phase: phase)
+            } else {
+                liveActivityTracker?.dismiss()
             }
         } else {
             liveActivityTracker?.end()
@@ -5675,15 +5724,17 @@ extension ChatClient {
 #endif
 
 private final class NoopLiveActivityProvider: LiveActivityProviding {
-    var isActive: Bool { false }
+    func isActive(sessionID: String?) -> Bool { false }
 
-    func startActivity(sessionID: String?, directory: String?) {}
+    func startActivity(sessionID: String?, directory: String?, title: String?) {}
 
-    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
+    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(phase: OpenLensActivityAttributes.Phase) {}
+    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) {}
 
-    func dismissImmediately() {}
+    func dismissImmediately(sessionID: String?) {}
+
+    func dismissAll() {}
 
     func previewLiveActivity() {}
 }

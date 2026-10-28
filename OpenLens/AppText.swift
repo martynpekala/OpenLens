@@ -287,7 +287,7 @@ enum AppText {
     static let settingsDebugFeaturesSubtitle = "Keep debug-only tools visible in development builds. Turn this off to match the release app."
     static let settingsLiveActivityDebugTitle = "Test Live Activity"
     static let settingsLiveActivityDebugSubtitle = "Run a local sequence of agent steps on the Lock Screen and Dynamic Island"
-    static let settingsLiveActivityDismissTitle = "Dismiss Live Activity"
+    static let settingsLiveActivityDismissTitle = "Dismiss Live Activities"
     static let settingsForgetDialogTitle = "Forget Connection"
     static let settingsSupportBody = "OpenLens is open source. If the app helps you, visiting the GitHub repo and leaving a star is a simple way to support development."
     static let settingsSupportGitHubCTA = "View and Star on GitHub"

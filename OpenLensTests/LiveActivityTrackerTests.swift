@@ -231,7 +231,6 @@ struct LiveActivityTrackerTests {
 
     @Test func startsActivityForSessionAndCarriesPendingPromptOver() throws {
         let liveActivity = LiveActivitySpy()
-        liveActivity.isActive = false
         let tracker = LiveActivityTracker(liveActivity: liveActivity)
 
         tracker.setPendingPermission(
@@ -246,7 +245,6 @@ struct LiveActivityTrackerTests {
         )
         #expect(liveActivity.updates.isEmpty)
 
-        liveActivity.isActive = true
         tracker.start(session: OCSession(id: "ses_1", directory: "/workspace", title: "Auth", time: .init(created: 0, updated: 0)))
 
         #expect(liveActivity.starts.count == 1)
@@ -287,27 +285,152 @@ struct LiveActivityTrackerTests {
 
         #expect(liveActivity.endings == [.finished, .failed])
     }
+
+    @Test func sessionsLeftWhileWorkingKeepTheirActivityUntilTheyGoIdle() throws {
+        let liveActivity = LiveActivitySpy()
+        let tracker = LiveActivityTracker(liveActivity: liveActivity)
+
+        tracker.attach(sessionID: "ses_a")
+        tracker.start(session: session("ses_a"))
+        tracker.setPendingPermission(permission(id: "per_a", sessionID: "ses_a"))
+
+        // Opening another session must neither end nor clear the first session's activity.
+        tracker.detach()
+        tracker.clearPendingUserResponse()
+        tracker.attach(sessionID: "ses_b")
+        tracker.start(session: session("ses_b"))
+        tracker.setPendingPermission(permission(id: "per_b", sessionID: "ses_b"))
+
+        #expect(liveActivity.activeSessionIDs == ["ses_a", "ses_b"])
+        #expect(liveActivity.updateLog.map(\.sessionID) == ["ses_a", "ses_b"])
+        #expect(liveActivity.updateLog.last?.response?.requestID == "per_b")
+        #expect(tracker.backgroundSessionIDs == ["ses_a"])
+
+        // The open session's turn ends only its own activity.
+        tracker.endActivity(sessionID: "ses_b", phase: .finished)
+        #expect(liveActivity.activeSessionIDs == ["ses_a", "ses_b"])
+
+        tracker.endActivity(sessionID: "ses_a", phase: .failed)
+        #expect(liveActivity.endLog.map(\.sessionID) == ["ses_a"])
+        #expect(liveActivity.endings == [.failed])
+        #expect(tracker.backgroundSessionIDs.isEmpty)
+
+        tracker.end()
+        #expect(liveActivity.endLog.map(\.sessionID) == ["ses_a", "ses_b"])
+        #expect(liveActivity.activeSessionIDs.isEmpty)
+    }
+
+    @Test func backgroundSessionWithUnknownOutcomeIsDismissed() {
+        let liveActivity = LiveActivitySpy()
+        let tracker = LiveActivityTracker(liveActivity: liveActivity)
+
+        tracker.start(session: session("ses_a"))
+        tracker.detach()
+        tracker.endActivity(sessionID: "ses_a", phase: nil)
+
+        #expect(liveActivity.dismissedSessionIDs == ["ses_a"])
+        #expect(liveActivity.endings.isEmpty)
+    }
+
+    @Test func detachedTrackerDoesNotEndAnotherSessionsActivity() {
+        let liveActivity = LiveActivitySpy()
+        let tracker = LiveActivityTracker(liveActivity: liveActivity)
+
+        tracker.start(session: session("ses_a"))
+        tracker.detach()
+        tracker.end(phase: .failed)
+        tracker.dismiss()
+
+        #expect(liveActivity.endings.isEmpty)
+        #expect(liveActivity.dismissedSessionIDs.isEmpty)
+        #expect(liveActivity.activeSessionIDs == ["ses_a"])
+    }
+
+    @Test func reopeningASessionResumesItsActivityAndRefreshesItsPrompt() throws {
+        let liveActivity = LiveActivitySpy()
+        let tracker = LiveActivityTracker(liveActivity: liveActivity)
+
+        tracker.start(session: session("ses_a"))
+        tracker.setPendingPermission(permission(id: "per_a", sessionID: "ses_a"))
+        tracker.detach()
+        tracker.attach(sessionID: "ses_b")
+        tracker.detach()
+
+        // The prompt was answered while the session was not open.
+        tracker.attach(sessionID: "ses_a")
+        tracker.start(session: session("ses_a"))
+
+        #expect(liveActivity.starts.count == 2)
+        #expect(liveActivity.updateLog.last?.sessionID == "ses_a")
+        #expect(liveActivity.updateLog.last?.response == nil)
+        #expect(tracker.backgroundSessionIDs.isEmpty)
+
+        tracker.end()
+        #expect(liveActivity.endLog.map(\.sessionID) == ["ses_a"])
+    }
+
+    @Test func boundsSessionTitleForTheActivityPayload() {
+        #expect(OpenLensActivityAttributes.boundedSessionTitle(nil) == nil)
+        #expect(OpenLensActivityAttributes.boundedSessionTitle("  \n ") == nil)
+        #expect(OpenLensActivityAttributes.boundedSessionTitle("  Fix login  ") == "Fix login")
+        let long = OpenLensActivityAttributes.boundedSessionTitle(String(repeating: "x", count: 10_000))
+        #expect(long?.count == 61)
+        #expect(long?.hasSuffix("…") == true)
+    }
+
+    private func session(_ id: String) -> OCSession {
+        OCSession(id: id, directory: "/workspace", title: id, time: .init(created: 0, updated: 0))
+    }
+
+    private func permission(id: String, sessionID: String) -> OCPermissionRequest {
+        OCPermissionRequest(
+            id: id,
+            sessionID: sessionID,
+            permission: "bash",
+            patterns: ["npm test"],
+            description: "npm test",
+            title: "bash"
+        )
+    }
 }
 
+/// Keeps one activity per session, like `LiveActivityManager`.
 private final class LiveActivitySpy: LiveActivityProviding {
-    var isActive: Bool = true
+    private(set) var activeSessionIDs: Set<String> = []
     private(set) var starts: [(sessionID: String?, directory: String?)] = []
-    private(set) var updates: [OpenLensActivityAttributes.PendingUserResponse?] = []
-    private(set) var endings: [OpenLensActivityAttributes.Phase] = []
+    private(set) var updateLog: [(sessionID: String?, response: OpenLensActivityAttributes.PendingUserResponse?)] = []
+    private(set) var endLog: [(sessionID: String?, phase: OpenLensActivityAttributes.Phase)] = []
+    private(set) var dismissedSessionIDs: [String?] = []
 
-    func startActivity(sessionID: String?, directory: String?) {
+    var updates: [OpenLensActivityAttributes.PendingUserResponse?] { updateLog.map(\.response) }
+    var endings: [OpenLensActivityAttributes.Phase] { endLog.map(\.phase) }
+
+    func isActive(sessionID: String?) -> Bool {
+        activeSessionIDs.contains(sessionID ?? "")
+    }
+
+    func startActivity(sessionID: String?, directory: String?, title: String?) {
         starts.append((sessionID, directory))
+        activeSessionIDs.insert(sessionID ?? "")
     }
 
-    func update(pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {
-        updates.append(pendingUserResponse)
+    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {
+        updateLog.append((sessionID, pendingUserResponse))
     }
 
-    func endActivity(phase: OpenLensActivityAttributes.Phase) {
-        endings.append(phase)
+    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) {
+        endLog.append((sessionID, phase))
+        activeSessionIDs.remove(sessionID ?? "")
     }
 
-    func dismissImmediately() {}
+    func dismissImmediately(sessionID: String?) {
+        dismissedSessionIDs.append(sessionID)
+        activeSessionIDs.remove(sessionID ?? "")
+    }
+
+    func dismissAll() {
+        activeSessionIDs.removeAll()
+    }
 
     func previewLiveActivity() {}
 }

@@ -85,7 +85,7 @@ struct SettingsView: View {
                         Label(AppText.settingsLiveActivityDebugTitle, systemImage: "waveform.path.ecg")
                     }
                     Button {
-                        liveActivity.dismissImmediately()
+                        liveActivity.dismissAll()
                     } label: {
                         Label(AppText.settingsLiveActivityDismissTitle, systemImage: "xmark.circle")
                     }
@@ -110,7 +110,7 @@ struct SettingsView: View {
                         isPresented: $showDisconnectConfirmation
                     ) {
                         Button(AppText.disconnect, role: .destructive) {
-                            liveActivity.dismissImmediately()
+                            liveActivity.dismissAll()
                             connection.manualDisconnect()
                         }
                         Button(AppText.done, role: .cancel) {}
@@ -124,7 +124,7 @@ struct SettingsView: View {
         .scrollEdgeEffectStyle(.soft, for: .bottom)
         .onChange(of: liveActivitiesEnabled) { _, enabled in
             if !enabled {
-                liveActivity.dismissImmediately()
+                liveActivity.dismissAll()
             }
         }
         .task {
