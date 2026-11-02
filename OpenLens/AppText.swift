@@ -63,6 +63,8 @@ enum AppText {
     static let copy = "Copy"
     static let copyCode = "Copy Code"
     static let copyMessage = "Copy Message"
+    static let copyLink = "Copy Link"
+    static func copyAllLinks(_ count: Int) -> String { "Copy All Links (\(count))" }
     static let captureBrowserEmptySubtitle = "Start recording in a live chat, then return here to replay the saved turn."
     static let captureBrowserEmptyTitle = "No Captures"
     static let captureBrowserErrorTitle = "Couldn't Load Captures"
