@@ -2823,6 +2823,54 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func finishedRowsGrowingBelowTheViewportRepinOnlyWhileFollowingLatest() {
+        #expect(ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: false,
+            followLatest: true,
+            interaction: .idle,
+            isAtBottom: false,
+            hasPendingRestoration: false
+        ))
+        // Streaming growth keeps the paced auto-follow.
+        #expect(!ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: true,
+            followLatest: true,
+            interaction: .idle,
+            isAtBottom: false,
+            hasPendingRestoration: false
+        ))
+        // Reading older messages, or still dragging, must never be yanked down.
+        #expect(!ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: false,
+            followLatest: false,
+            interaction: .idle,
+            isAtBottom: false,
+            hasPendingRestoration: false
+        ))
+        #expect(!ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: false,
+            followLatest: true,
+            interaction: .userControlled,
+            isAtBottom: false,
+            hasPendingRestoration: false
+        ))
+        #expect(!ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: false,
+            followLatest: true,
+            interaction: .idle,
+            isAtBottom: false,
+            hasPendingRestoration: true
+        ))
+        #expect(!ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: false,
+            followLatest: true,
+            interaction: .idle,
+            isAtBottom: true,
+            hasPendingRestoration: false
+        ))
+    }
+
+    @MainActor
     @Test func chatScrollPolicyDisablesManualScrollAnimationDuringStreaming() {
         #expect(!ChatScrollPolicy.shouldAnimateManualScroll(isLoading: true))
         #expect(ChatScrollPolicy.shouldAnimateManualScroll(isLoading: false))

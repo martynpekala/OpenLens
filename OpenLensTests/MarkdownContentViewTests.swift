@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import OpenLens
 
@@ -59,6 +60,17 @@ struct MarkdownContentViewTests {
 
         #expect(label?.count == 83)
         #expect(label?.hasSuffix("...") == true)
+    }
+
+    @MainActor
+    @Test func preparedDocumentIsAvailableSynchronouslyFromTheCache() async {
+        let text = "Cached reply \(UUID().uuidString) with **bold** text"
+        #expect(MarkdownContentView.cachedPrepared(for: text) == nil)
+
+        let prepared = await prepareMarkdown(text)
+        let cached = MarkdownContentView.cachedPrepared(for: text)
+
+        #expect(cached?.blocks.count == prepared.blocks.count)
     }
 
     @MainActor

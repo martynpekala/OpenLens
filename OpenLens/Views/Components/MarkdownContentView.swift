@@ -7,7 +7,8 @@ import SwiftUI
 /// The user can tap "Show more" to reveal additional content incrementally.
 struct MarkdownContentView: View {
     /// A parsed, immutable markdown document. It can only be made through
-    /// `prepare`, which runs cache lookup and parsing on `parserQueue`.
+    /// `prepare`, which runs cache lookup and parsing on `parserQueue`, or
+    /// `cachedPrepared`, which returns a document `prepare` already parsed.
     struct Prepared {
         fileprivate let cacheKey: Int
         let blocks: [Block]
@@ -81,6 +82,16 @@ struct MarkdownContentView: View {
             DispatchQueue.main.async {
                 completion(prepared)
             }
+        }
+    }
+
+    /// A document that `prepare` already parsed, without waiting for the
+    /// parser queue. Rows that scroll back into view use it to lay out at
+    /// their final height on the first pass instead of growing a frame later.
+    static func cachedPrepared(for text: String) -> Prepared? {
+        let key = cacheKey(for: text)
+        return blockCache.object(forKey: key).map {
+            Prepared(cacheKey: key.intValue, blocks: $0.blocks)
         }
     }
 
@@ -728,7 +739,10 @@ struct DeferredMarkdownTextView: View {
 
     var body: some View {
         Group {
-            if let prepared {
+            // A lazy row is rebuilt each time it scrolls back into view. Use
+            // the parse cache on that first pass so the row does not lay out
+            // as the shorter preview and then grow under the scroll view.
+            if let prepared = prepared ?? MarkdownContentView.cachedPrepared(for: text) {
                 MarkdownContentView(
                     prepared: prepared,
                     foregroundColor: foregroundColor,
@@ -749,8 +763,10 @@ struct DeferredMarkdownTextView: View {
 
     private var plainText: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Match MarkdownInlineText so short replies keep their height
+            // when the parsed document replaces this preview.
             Text(fallbackPreview)
-                .font(usesRetroTypography ? RetroChatStyle.bodyFont : .system(size: 16))
+                .font(usesRetroTypography ? RetroChatStyle.bodyFont : .system(size: 17))
                 .foregroundStyle(foregroundColor)
 
             if fallbackIsTruncated {
@@ -762,6 +778,16 @@ struct DeferredMarkdownTextView: View {
     }
 
     private func requestPreparation(for text: String) {
+        if let cached = MarkdownContentView.cachedPrepared(for: text) {
+            // Already showing this document: leave state alone so an
+            // appearing row is not invalidated again.
+            guard prepared?.cacheKey != cached.cacheKey else { return }
+            // Cancel any parse still in flight for earlier text.
+            requestID = UUID()
+            prepared = cached
+            return
+        }
+
         let nextRequestID = UUID()
         requestID = nextRequestID
         prepared = nil
