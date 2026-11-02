@@ -30,25 +30,37 @@ struct SkillMentionText: View {
 
     var body: some View {
         let mentions = SkillMention.mentionRanges(in: text, skillIDs: skillIDs)
-        if mentions.isEmpty {
-            Text(text)
-        } else {
-            textWithChips(for: mentions)
-                .textRenderer(
-                    SkillChipRenderer(fill: chipStyle.color.opacity(0.2), stroke: chipStyle.color.opacity(0.5))
-                )
+        Group {
+            if mentions.isEmpty {
+                plainText(text[...])
+            } else {
+                textWithChips(for: mentions)
+                    .textRenderer(
+                        SkillChipRenderer(fill: chipStyle.color.opacity(0.2), stroke: chipStyle.color.opacity(0.5))
+                    )
+            }
         }
+        // Detected links take the chip color, so they stay readable on the
+        // accent-filled user bubble.
+        .tint(chipStyle.color)
     }
 
     private func textWithChips(for mentions: [Range<String.Index>]) -> Text {
         var result = Text(verbatim: "")
         var cursor = text.startIndex
         for mention in mentions {
-            let plain = Text(verbatim: String(text[cursor..<mention.lowerBound]))
+            let plain = plainText(text[cursor..<mention.lowerBound])
             result = Text("\(result)\(plain)\(chip(named: text[mention].dropFirst()))")
             cursor = mention.upperBound
         }
-        return Text("\(result)\(Text(verbatim: String(text[cursor...])))")
+        return Text("\(result)\(plainText(text[cursor...]))")
+    }
+
+    private func plainText(_ segment: Substring) -> Text {
+        guard DetectedLinks.mayContainLink(String(segment)) else {
+            return Text(verbatim: String(segment))
+        }
+        return Text(DetectedLinks.addingLinks(to: AttributedString(segment)))
     }
 
     /// No-break spaces pad the label inside the chip and keep the icon on the

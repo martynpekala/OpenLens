@@ -1445,9 +1445,40 @@ private struct MessageCopyActions: ViewModifier {
                         Label(AppText.copyMessage, systemImage: "doc.on.doc")
                     }
 
+                    DetectedLinkCopyButtons(makeText: makeText)
                 }
         } else {
             content
+        }
+    }
+}
+
+/// Copy actions for the message's detected links. Links are found in this
+/// view's body so the message text is only joined and scanned when the menu
+/// is built, not on every bubble update.
+private struct DetectedLinkCopyButtons: View {
+    private static let individualLinkLimit = 5
+
+    let makeText: () -> String?
+
+    var body: some View {
+        let urls = makeText().map(DetectedLinks.urls(in:)) ?? []
+        if urls.count > Self.individualLinkLimit {
+            Button {
+                UIPasteboard.general.string = urls.map(\.absoluteString).joined(separator: "\n")
+            } label: {
+                Label(AppText.copyAllLinks(urls.count), systemImage: "link")
+            }
+        } else {
+            ForEach(urls, id: \.self) { url in
+                Button {
+                    UIPasteboard.general.string = url.absoluteString
+                } label: {
+                    // A second Text becomes the menu item's subtitle.
+                    Label(AppText.copyLink, systemImage: "link")
+                    Text(DetectedLinks.displayString(for: url))
+                }
+            }
         }
     }
 }

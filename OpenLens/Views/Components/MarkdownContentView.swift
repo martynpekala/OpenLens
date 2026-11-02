@@ -194,13 +194,16 @@ struct MarkdownContentView: View {
         // Skipping the markdown parser here removes a significant CPU spike for
         // long messages while preserving markdown rendering when syntax is present.
         guard needsInlineMarkdownParsing(text) else {
-            return nil
+            return DetectedLinks.mayContainLink(text)
+                ? DetectedLinks.addingLinks(to: AttributedString(text))
+                : nil
         }
 
-        return try? AttributedString(
+        let parsed = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )
+        return parsed.map(DetectedLinks.addingLinks(to:))
     }
 
     private static func needsInlineMarkdownParsing(_ text: String) -> Bool {
