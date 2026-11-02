@@ -2833,6 +2833,15 @@ private struct ChatMessagesListView: View {
                     )
                 } action: { _, state in
                     scrollState = state
+                    if ChatScrollPolicy.shouldRepinToBottom(
+                        isLoading: chatClient.isLoading,
+                        followLatest: followLatest,
+                        interaction: scrollInteraction,
+                        isAtBottom: state.isAtBottom,
+                        hasPendingRestoration: paginationRestoreAnchorID != nil
+                    ) {
+                        scrollToBottom(using: proxy, animated: false, now: Date())
+                    }
                 }
                 .onScrollPhaseChange { _, newPhase, context in
                     let state = ChatScrollPolicy.state(
@@ -3453,6 +3462,24 @@ enum ChatScrollPolicy {
               || bottomOverscroll > settledBottomTolerance,
               contentVersion != lastHandledContentVersion else { return false }
         return now.timeIntervalSince(lastAutoScrollDate) >= minimumInterval
+    }
+
+    /// Finished rows can still grow after a jump to the latest message, for
+    /// example when their Markdown finishes parsing. While the person follows
+    /// the latest message, keep it pinned instead of stranding them above the
+    /// real end. Streaming growth is left to `shouldAutoFollow`'s pacing.
+    static func shouldRepinToBottom(
+        isLoading: Bool,
+        followLatest: Bool,
+        interaction: ChatScrollInteraction,
+        isAtBottom: Bool,
+        hasPendingRestoration: Bool
+    ) -> Bool {
+        !isLoading
+            && followLatest
+            && interaction.allowsProgrammaticScroll
+            && !isAtBottom
+            && !hasPendingRestoration
     }
 
     static func shouldLoadEarlierMessages(
