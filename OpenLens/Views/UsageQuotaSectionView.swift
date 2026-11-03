@@ -1,91 +1,44 @@
 import SwiftUI
 
-/// Settings section for provider coding-plan usage limits: configures the
-/// quota API key and region, then shows remaining usage per window with the
-/// reset moment as the focal point of each row.
+/// Settings section showing provider coding-plan usage limits. The z.ai key
+/// is read automatically from the connected OpenCode server (v2); there is no
+/// manual key entry. Per-window rows lead with the percentage and reset
+/// moment.
 struct UsageQuotaSectionView: View {
     @Environment(\.usageQuotaService) private var usageQuota
     @Environment(\.connection) private var connection
 
-    @State private var apiKeyDraft = ""
-    @State private var region = UsageQuotaService.storedRegion()
     @State private var isKeyConfigured = UsageQuotaService.storedAPIKey() != nil
         || ScreenshotFixtures.usageQuotaScenario != nil
     @State private var importFailureMessage: String?
+    @State private var isBootstrapping = false
+
+    private var isConnected: Bool {
+        connection.client != nil
+    }
 
     var body: some View {
         Section {
-            Picker(selection: $region) {
-                ForEach(UsageQuotaService.Region.allCases) { candidate in
-                    Text(candidate.displayName).tag(candidate)
-                }
-            } label: {
-                preferenceLabel(AppText.settingsUsageRegion, icon: "globe")
-            }
-            .onChange(of: region) { _, newValue in
-                UsageQuotaService.storeRegion(newValue)
-                Task { await usageQuota.refresh(force: true) }
-            }
+            if isKeyConfigured {
+                statusRows
 
-            SecureField(
-                AppText.settingsUsageAPIKey,
-                text: $apiKeyDraft,
-                prompt: Text(
-                    isKeyConfigured
-                        ? String(repeating: "•", count: 8)
-                        : AppText.settingsUsageAPIKeyPlaceholder
-                )
-            )
-            .onSubmit(saveAPIKey)
-
-            if !apiKeyDraft.isEmpty {
-                Button(action: saveAPIKey) {
-                    Label(AppText.saveAPIKey, systemImage: "checkmark.circle")
-                }
-                .tint(Color.appUserAccent)
-            } else if isKeyConfigured {
-                Button(role: .destructive, action: removeAPIKey) {
-                    Label(AppText.settingsUsageRemoveKey, systemImage: "key.slash")
-                }
-            }
-
-            if !isKeyConfigured {
                 Button {
-                    Task { await importKeyFromServer() }
+                    Task { await refreshNow() }
                 } label: {
-                    Label(AppText.settingsUsageImportKey, systemImage: "square.and.arrow.down.on.square")
+                    Label(AppText.settingsUsageRefresh, systemImage: "arrow.clockwise")
                 }
                 .tint(Color.appUserAccent)
-                if let importFailureMessage {
-                    Label {
-                        Text(importFailureMessage)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle")
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                }
+            } else {
+                unavailableRows
             }
-
-            statusRows
-
-            Button {
-                Task { await usageQuota.refresh(force: true) }
-            } label: {
-                Label(AppText.settingsUsageRefresh, systemImage: "arrow.clockwise")
-            }
-            .tint(Color.appUserAccent)
-            .disabled(!isKeyConfigured)
         } header: {
             Text(AppText.settingsUsageLimits)
         } footer: {
-            if !isKeyConfigured {
-                Text(AppText.settingsUsageNoKey)
-            }
+            Text(AppText.settingsUsageZaiOnlyFooter)
         }
         .task {
             guard ScreenshotFixtures.usageQuotaScenario == nil else { return }
-            await usageQuota.refresh()
+            await bootstrap()
         }
     }
 
@@ -94,9 +47,7 @@ struct UsageQuotaSectionView: View {
     @ViewBuilder
     private var statusRows: some View {
         switch usageQuota.state {
-        case .idle:
-            EmptyView()
-        case .loading:
+        case .idle, .loading:
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(0..<2, id: \.self) { _ in
                     VStack(alignment: .leading, spacing: 6) {
@@ -146,16 +97,70 @@ struct UsageQuotaSectionView: View {
         }
     }
 
+    /// Why usage limits cannot be shown right now.
+    @ViewBuilder
+    private var unavailableRows: some View {
+        if isBootstrapping {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(AppText.settingsUsageReadingKey)
+                    .font(.subheadline)
+                    .redacted(reason: .placeholder)
+            }
+            .padding(.vertical, 4)
+        } else if let importFailureMessage {
+            Label {
+                Text(importFailureMessage)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 2)
+        } else if !isConnected {
+            Label {
+                Text(AppText.settingsUsageImportNoServer)
+            } icon: {
+                Image(systemName: "plug.slash")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 2)
+        }
+    }
+
     // MARK: - Actions
 
+    /// Reads the z.ai key from the connected server (when needed), then
+    /// refreshes the quota snapshot. Runs automatically when the section
+    /// appears and from the Refresh button.
+    private func bootstrap() async {
+        if !isKeyConfigured, isConnected {
+            await importKeyFromServer()
+        }
+        if isKeyConfigured {
+            await usageQuota.refresh()
+        }
+    }
+
+    private func refreshNow() async {
+        if !isKeyConfigured, isConnected {
+            await importKeyFromServer()
+        }
+        if isKeyConfigured {
+            await usageQuota.refresh(force: true)
+        }
+    }
+
     /// Pulls the z.ai key from the connected OpenCode server's credential
-    /// store so the user doesn't have to paste it. v2 servers only.
+    /// store. v2 servers only.
     private func importKeyFromServer() async {
-        guard ScreenshotFixtures.usageQuotaScenario == nil else { return }
         guard let client = connection.client else {
             importFailureMessage = AppText.settingsUsageImportNoServer
             return
         }
+        isBootstrapping = true
+        defer { isBootstrapping = false }
+
         do {
             let entries = try await client.getCredentialEntries()
             guard let entry = UsageQuotaService.zaiKeyEntry(in: entries) else {
@@ -163,38 +168,12 @@ struct UsageQuotaSectionView: View {
                 return
             }
             usageQuota.importKey(from: entry)
-            region = UsageQuotaService.storedRegion()
             isKeyConfigured = true
             importFailureMessage = nil
-            await usageQuota.refresh(force: true)
         } catch OpenCodeError.invalidPayload {
             importFailureMessage = AppText.settingsUsageImportUnsupported
         } catch {
             importFailureMessage = AppText.settingsUsageImportFailed
-        }
-    }
-
-    private func saveAPIKey() {
-        let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        UsageQuotaService.storeAPIKey(trimmed)
-        apiKeyDraft = ""
-        isKeyConfigured = true
-        Task { await usageQuota.refresh(force: true) }
-    }
-
-    private func removeAPIKey() {
-        UsageQuotaService.storeAPIKey("")
-        isKeyConfigured = false
-        apiKeyDraft = ""
-        usageQuota.reset()
-    }
-
-    private func preferenceLabel(_ title: String, icon: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .frame(width: 24)
-            Text(title)
         }
     }
 }
