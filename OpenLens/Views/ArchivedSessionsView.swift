@@ -20,6 +20,7 @@ struct ArchivedSessionsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.sessionsService) private var sessionsService
+    @Environment(AppRouter.self) private var router
 
     var body: some View {
         stateContent
@@ -98,7 +99,7 @@ struct ArchivedSessionsView: View {
     private var sessionList: some View {
         List {
             ForEach(sessions) { session in
-                sessionRow(session)
+                sessionRowButton(session)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 12, leading: 24, bottom: 12, trailing: 24))
@@ -139,6 +140,15 @@ struct ArchivedSessionsView: View {
         .contentMargins(.bottom, 16, for: .scrollContent)
     }
 
+    private func sessionRowButton(_ session: OCSession) -> some View {
+        Button {
+            open(session)
+        } label: {
+            sessionRow(session)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func sessionRow(_ session: OCSession) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
@@ -163,6 +173,15 @@ struct ArchivedSessionsView: View {
     }
 
     // MARK: - Side Effects (Service calls)
+
+    /// Opens the archived conversation in the Chat tab. When presented as a
+    /// sheet (sidebar layout) the sheet must be dismissed to reveal it.
+    private func open(_ session: OCSession) {
+        router.selectChatSession(session)
+        if dismissable {
+            dismiss()
+        }
+    }
 
     private func loadSessions() async {
         guard !Task.isCancelled, !isLoading else { return }
@@ -223,4 +242,5 @@ struct ArchivedSessionsView: View {
     NavigationStack {
         ArchivedSessionsView()
     }
+    .environment(AppRouter())
 }
