@@ -979,6 +979,26 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
     let next: Int?
 }
 
+// MARK: - Credentials
+
+/// One stored integration credential from `GET /api/credential` (v2 only).
+/// Values are secrets; never log them.
+nonisolated struct OCCredentialEntry: Codable, Sendable, Equatable {
+    let integrationID: String
+    let label: String?
+    let active: Bool?
+    let value: OCCredentialValue?
+
+    enum CodingKeys: String, CodingKey {
+        case integrationID, label, active, value
+    }
+}
+
+nonisolated struct OCCredentialValue: Codable, Sendable, Equatable {
+    let type: String?
+    let key: String?
+}
+
 // MARK: - Provider / Config
 
 /// Matches the server's provider list item:

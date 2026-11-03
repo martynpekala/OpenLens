@@ -101,6 +101,53 @@ final class UsageQuotaService {
         UserDefaults.standard.set(region.rawValue, forKey: AppPreferenceKeys.usageQuotaRegion)
     }
 
+    // MARK: - Server Key Import
+
+    enum ImportError: Error, Equatable {
+        /// v1 servers do not expose stored credentials.
+        case unsupportedServer
+        /// No credential entry looked like a z.ai/BigModel API key.
+        case noKeyFound
+    }
+
+    /// Picks the best z.ai/BigModel API-key credential from a server
+    /// credential list: active key-type entries win, in list order.
+    static func zaiKeyEntry(in entries: [OCCredentialEntry]) -> OCCredentialEntry? {
+        let candidates = entries.filter { entry in
+            guard entry.value?.type == "key",
+                  let key = entry.value?.key, !key.isEmpty else {
+                return false
+            }
+            let id = entry.integrationID.lowercased()
+            return id.contains("zai") || id.contains("z-ai")
+                || id.contains("bigmodel") || id.contains("zhipu") || id.contains("glm")
+        }
+        return candidates.first { $0.active != false } ?? candidates.first
+    }
+
+    /// Infers the quota region from the integration identifier, when possible.
+    static func region(forIntegrationID id: String) -> Region? {
+        let lowered = id.lowercased()
+        if lowered.contains("bigmodel") || lowered.contains("zhipu") || lowered.contains("cn") {
+            return .zaiChina
+        }
+        if lowered.contains("zai") || lowered.contains("z-ai") || lowered.contains("glm") {
+            return .zaiGlobal
+        }
+        return nil
+    }
+
+    /// Stores a server-provided key (and inferred region) and refreshes.
+    /// The key goes straight into the Keychain and is never logged.
+    func importKey(from entry: OCCredentialEntry) {
+        guard let key = entry.value?.key, !key.isEmpty else { return }
+        Self.storeAPIKey(key)
+        if let region = Self.region(forIntegrationID: entry.integrationID) {
+            Self.storeRegion(region)
+        }
+        lastLoadedAt = nil
+    }
+
     // MARK: - State
 
     private(set) var state: State = .idle
