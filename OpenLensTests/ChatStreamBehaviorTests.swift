@@ -2081,6 +2081,77 @@ struct ChatStreamBehaviorTests {
     }
 
     @MainActor
+    @Test func terminalErrorMessageUpdateSurfacesUsageLimitFailure() {
+        let client = ChatClient(demoMode: true)
+        let handler = makeHandler(delegate: client)
+        let sessionID = "session-1"
+        let messageID = "assistant-message"
+        client.currentSession = OCSession(
+            id: sessionID,
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+
+        let terminalEvent = OCEvent(
+            type: "message.updated",
+            properties: AnyCodable([
+                "info": [
+                    "id": messageID,
+                    "sessionID": sessionID,
+                    "role": "assistant",
+                    "finish": "error",
+                    "error": [
+                        "type": "ProviderError",
+                        "message": "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+                        "status": 429
+                    ]
+                ]
+            ])
+        )
+
+        handler.handleEvent(terminalEvent)
+
+        #expect(client.responseState == .failed)
+        #expect(client.errorMessage?.contains("Usage limit reached") == true)
+        #expect(client.usageLimitInfo?.resetAt != nil)
+        #expect(client.pendingAssistantMessage?.errorMessage?.contains("Usage limit reached") == true)
+
+        // Dismissing, then a duplicate terminal update, does not re-present it.
+        client.dismissError()
+        handler.handleEvent(terminalEvent)
+        #expect(client.presentedError == nil)
+        #expect(client.responseState == .idle)
+    }
+
+    @MainActor
+    @Test func retryStatusExposesNextAttemptAndParsedLimit() {
+        let client = ChatClient(demoMode: true)
+        client.currentSession = OCSession(
+            id: "session-1",
+            title: "Test",
+            time: OCSessionTime(created: 0, updated: 0)
+        )
+
+        client.applyCurrentSessionStatus(
+            OCSessionStatus(
+                type: .retry,
+                attempt: 3,
+                message: "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+                next: 1_762_236_118
+            )
+        )
+
+        let retry = client.retryPresentation
+        #expect(retry != nil)
+        #expect(retry?.attempt == 3)
+        #expect(retry?.nextAttempt == Date(timeIntervalSince1970: 1_762_236_118))
+        #expect(retry?.usageLimit?.resetAt != nil)
+
+        client.applyCurrentSessionStatus(OCSessionStatus(type: .busy, attempt: nil, message: nil, next: nil))
+        #expect(client.retryPresentation == nil)
+    }
+
+    @MainActor
     @Test func idleStatusRefreshClearsLoadingAfterMissedSSEIdle() {
         let client = ChatClient(demoMode: true)
         let sessionID = "session-1"

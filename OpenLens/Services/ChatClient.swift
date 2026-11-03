@@ -173,6 +173,12 @@ final class ChatClient: SSEEventHandlerDelegate {
     var isUndoingMessage: Bool = false
     var responseState: ChatResponseState = .idle
     var errorMessage: String?
+    /// Set when the active failure was detected as a provider usage limit,
+    /// so the banner can show the reset moment instead of a generic error.
+    private(set) var usageLimitInfo: UsageLimitInfo?
+    /// The last assistant message whose terminal error was surfaced, so repeat
+    /// `message.updated` snapshots don't re-present the same failure.
+    @ObservationIgnored private var lastFailedTurnMessageID: String?
     @ObservationIgnored private var draftsBySessionID: [String: String] = [:]
     /// Generated catch-ups keyed by the session that requested them, so a late
     /// result lands with its own session rather than the one now open.
@@ -187,16 +193,27 @@ final class ChatClient: SSEEventHandlerDelegate {
         case location(String)
         case operation(String)
         case viewing(String)
+        case usageLimit(UsageLimitInfo)
 
         var message: String {
             switch self {
             case .location(let message), .operation(let message), .viewing(let message): message
+            case .usageLimit(let info): info.message
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .location, .operation, .viewing: "exclamationmark.triangle.fill"
+            case .usageLimit: "hourglass"
             }
         }
 
         var canRetry: Bool {
-            if case .operation = self { return false }
-            return true
+            switch self {
+            case .operation, .usageLimit: return false
+            case .location, .viewing: return true
+            }
         }
     }
 
@@ -204,6 +221,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// from sending or another operation. A location failure still blocks work.
     var presentedError: PresentedError? {
         if let sessionLocationError { return .location(sessionLocationError) }
+        if let usageLimitInfo { return .usageLimit(usageLimitInfo) }
         if let errorMessage { return .operation(errorMessage) }
         if let resultViewingError { return .viewing(resultViewingError) }
         return nil
@@ -260,6 +278,34 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     /// Session status from SSE.
     var sessionStatus: OCSessionStatus?
+
+    /// What the chat should present while the server retries a failed turn
+    /// (for example a provider usage limit): the provider message, the next
+    /// attempt moment, the attempt count, and the parsed usage limit if any.
+    var retryPresentation: RetryPresentation? {
+        guard let sessionStatus, sessionStatus.type == .retry else { return nil }
+        return RetryPresentation(status: sessionStatus)
+    }
+
+    struct RetryPresentation: Equatable {
+        let message: String?
+        let nextAttempt: Date?
+        let attempt: Int?
+        let usageLimit: UsageLimitInfo?
+
+        init(status: OCSessionStatus) {
+            message = status.message
+            attempt = status.attempt
+            usageLimit = status.message.flatMap { UsageLimitInfo.detect(message: $0) }
+            if let next = status.next, next > 0 {
+                // Epoch seconds; tolerate millisecond timestamps defensively.
+                let seconds = next > 10_000_000_000 ? next / 1000 : next
+                nextAttempt = Date(timeIntervalSince1970: TimeInterval(seconds))
+            } else {
+                nextAttempt = nil
+            }
+        }
+    }
 
     private var observedExecution: (sessionID: String, idle: Double?)?
 
@@ -1443,6 +1489,8 @@ final class ChatClient: SSEEventHandlerDelegate {
         locallyStoppedSessionID = nil
         responseState = .generating
         errorMessage = nil
+        usageLimitInfo = nil
+        lastFailedTurnMessageID = nil
         isLoading = true
         currentActivity = AgentActivity()
         currentActivity?.currentLabel = "Thinking..."
@@ -1665,6 +1713,13 @@ final class ChatClient: SSEEventHandlerDelegate {
                 ScreenshotFixtures.applySubagentTools(to: self)
             } else if ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes {
                 ScreenshotFixtures.applyExecutionOutcome(to: self)
+            } else if ScreenshotFixtures.showsUsageLimitRetry {
+                applyScreenshotUsageLimitRetry()
+            } else if ScreenshotFixtures.showsUsageLimitBanner {
+                markResponseFailed(
+                    "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+                    status: 429
+                )
             } else {
                 demoPlayer?.play(demoScript)
             }
@@ -1727,6 +1782,13 @@ final class ChatClient: SSEEventHandlerDelegate {
                 ScreenshotFixtures.applySubagentTools(to: self)
             } else if ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes {
                 ScreenshotFixtures.applyExecutionOutcome(to: self)
+            } else if ScreenshotFixtures.showsUsageLimitRetry {
+                applyScreenshotUsageLimitRetry()
+            } else if ScreenshotFixtures.showsUsageLimitBanner {
+                markResponseFailed(
+                    "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+                    status: 429
+                )
             } else {
                 demoPlayer?.play(demoScript)
             }
@@ -3128,8 +3190,24 @@ final class ChatClient: SSEEventHandlerDelegate {
         locallyStoppedSessionID = nil
         responseState = .generating
         errorMessage = nil
+        usageLimitInfo = nil
+        lastFailedTurnMessageID = nil
         isLoading = true
         haptics.prepareForResponse()
+    }
+
+    /// Screenshot fixture: the server is retrying a provider usage limit.
+    private func applyScreenshotUsageLimitRetry() {
+        isLoading = true
+        responseState = .generating
+        currentActivity = AgentActivity()
+        currentActivity?.currentLabel = "Retrying…"
+        sessionStatus = OCSessionStatus(
+            type: .retry,
+            attempt: 3,
+            message: "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+            next: Int(Date().timeIntervalSince1970 + 142)
+        )
     }
 
     private func observeExecutionStart() {
@@ -3137,19 +3215,29 @@ final class ChatClient: SSEEventHandlerDelegate {
         observedExecution = (session.id, session.time.idle)
     }
 
-    private func markResponseFailed(_ message: String) {
+    private func markResponseFailed(_ message: String, status: Int? = nil) {
         cancelStoppedStateClear()
         isLoading = false
         responseState = .failed
         errorMessage = message
+        usageLimitInfo = UsageLimitInfo.detect(message: message, status: status)
         currentActivity = nil
         responseStartDate = nil
         sessionStatus = nil
         liveActivityTracker?.end(phase: .failed)
     }
 
+    /// An assistant turn ended with a provider error (for example a usage
+    /// limit). Surfaces the server's reason instead of stopping silently.
+    func assistantTurnDidFail(sessionID: String, messageID: String, error: OCAPIError) {
+        guard lastFailedTurnMessageID != messageID else { return }
+        lastFailedTurnMessageID = messageID
+        markResponseFailed(error.message ?? AppText.responseTurnFailed, status: error.status)
+    }
+
     func dismissError() {
         errorMessage = nil
+        usageLimitInfo = nil
         if responseState == .failed {
             responseState = .idle
         }

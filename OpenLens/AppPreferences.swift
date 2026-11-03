@@ -7,6 +7,7 @@ enum AppPreferenceKeys {
     static let liveActivitiesEnabled = "liveActivitiesEnabled"
     static let quickModelAssignments = "quickModelAssignments"
     static let showThinking = "showThinking"
+    static let usageQuotaRegion = "usageQuotaRegion"
 }
 
 enum AppPreferences {

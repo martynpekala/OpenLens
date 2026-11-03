@@ -461,8 +461,16 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
  struct OCAPIError: Codable, Sendable {
     let name: String?
     let data: OCAPIErrorData?
+    /// HTTP status carried by structured errors (e.g. 429 for quota limits).
+    let status: Int?
 
     nonisolated var message: String? { data?.message }
+
+    init(name: String? = nil, data: OCAPIErrorData? = nil, status: Int? = nil) {
+        self.name = name
+        self.data = data
+        self.status = status
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -470,16 +478,18 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
             ?? container.decodeIfPresent(String.self, forKey: .type)
         data = try container.decodeIfPresent(OCAPIErrorData.self, forKey: .data)
             ?? container.decodeIfPresent(String.self, forKey: .message).map { OCAPIErrorData(message: $0) }
+        status = try container.decodeIfPresent(Int.self, forKey: .status)
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(name, forKey: .name)
         try container.encodeIfPresent(data, forKey: .data)
+        try container.encodeIfPresent(status, forKey: .status)
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, data, type, message
+        case name, data, type, message, status
     }
 }
 

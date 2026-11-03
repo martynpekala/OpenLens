@@ -147,6 +147,33 @@ struct ServerModelsDecodingTests {
         let message = try #require(projection.asMessage(sessionID: "ses_1"))
         #expect(message.info.error?.name == "ProviderError")
         #expect(message.info.error?.message == "Quota exceeded")
+        #expect(message.info.error?.status == 429)
+    }
+
+    @Test func structuredErrorDecodesHTTPStatus() throws {
+        let data = Data(
+            #"{"type":"ProviderError","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58","status":429}"#.utf8
+        )
+
+        let error = try JSONDecoder().decode(OCAPIError.self, from: data)
+
+        #expect(error.name == "ProviderError")
+        #expect(error.status == 429)
+        let info = try #require(UsageLimitInfo.detect(message: error.message ?? "", status: error.status))
+        #expect(info.resetAt != nil)
+    }
+
+    @Test func transcriptConversionCarriesAssistantError() throws {
+        let payload = Data(
+            #"{"info":{"id":"assistant-1","sessionID":"session-1","role":"assistant","finish":"error","error":{"type":"ProviderError","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58","status":429}},"parts":[]}"#.utf8
+        )
+        let serverMessage = try JSONDecoder().decode(OCMessageWithParts.self, from: payload)
+
+        let message = MessagesService.convert(serverMessage)
+
+        #expect(message.finish == "error")
+        #expect(message.errorMessage?.contains("Usage limit reached") == true)
+        #expect(message.errorStatus == 429)
     }
 
     @Test func decodesCurrentPermissionPayload() throws {
