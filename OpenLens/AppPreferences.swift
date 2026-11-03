@@ -8,6 +8,7 @@ enum AppPreferenceKeys {
     static let liveActivitiesEnabled = "liveActivitiesEnabled"
     static let quickModelAssignments = "quickModelAssignments"
     static let showThinking = "showThinking"
+    static let usageQuotaRegion = "usageQuotaRegion"
 }
 
 /// The action a full swipe triggers on a conversation row.
