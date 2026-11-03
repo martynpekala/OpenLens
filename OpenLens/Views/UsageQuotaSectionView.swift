@@ -5,11 +5,13 @@ import SwiftUI
 /// reset moment as the focal point of each row.
 struct UsageQuotaSectionView: View {
     @Environment(\.usageQuotaService) private var usageQuota
+    @Environment(\.connection) private var connection
 
     @State private var apiKeyDraft = ""
     @State private var region = UsageQuotaService.storedRegion()
     @State private var isKeyConfigured = UsageQuotaService.storedAPIKey() != nil
         || ScreenshotFixtures.usageQuotaScenario != nil
+    @State private var importFailureMessage: String?
 
     var body: some View {
         Section {
@@ -44,6 +46,24 @@ struct UsageQuotaSectionView: View {
             } else if isKeyConfigured {
                 Button(role: .destructive, action: removeAPIKey) {
                     Label(AppText.settingsUsageRemoveKey, systemImage: "key.slash")
+                }
+            }
+
+            if !isKeyConfigured {
+                Button {
+                    Task { await importKeyFromServer() }
+                } label: {
+                    Label(AppText.settingsUsageImportKey, systemImage: "square.and.arrow.down.on.square")
+                }
+                .tint(Color.appUserAccent)
+                if let importFailureMessage {
+                    Label {
+                        Text(importFailureMessage)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -127,6 +147,32 @@ struct UsageQuotaSectionView: View {
     }
 
     // MARK: - Actions
+
+    /// Pulls the z.ai key from the connected OpenCode server's credential
+    /// store so the user doesn't have to paste it. v2 servers only.
+    private func importKeyFromServer() async {
+        guard ScreenshotFixtures.usageQuotaScenario == nil else { return }
+        guard let client = connection.client else {
+            importFailureMessage = AppText.settingsUsageImportNoServer
+            return
+        }
+        do {
+            let entries = try await client.getCredentialEntries()
+            guard let entry = UsageQuotaService.zaiKeyEntry(in: entries) else {
+                importFailureMessage = AppText.settingsUsageImportNotFound
+                return
+            }
+            usageQuota.importKey(from: entry)
+            region = UsageQuotaService.storedRegion()
+            isKeyConfigured = true
+            importFailureMessage = nil
+            await usageQuota.refresh(force: true)
+        } catch OpenCodeError.invalidPayload {
+            importFailureMessage = AppText.settingsUsageImportUnsupported
+        } catch {
+            importFailureMessage = AppText.settingsUsageImportFailed
+        }
+    }
 
     private func saveAPIKey() {
         let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)

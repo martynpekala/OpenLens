@@ -169,4 +169,44 @@ struct UsageQuotaServiceTests {
         }
         #expect(kept.windows.first?.percentage == 40)
     }
+
+    // MARK: - Server Key Import
+
+    private func keyEntry(
+        integrationID: String,
+        key: String? = "stored-key",
+        active: Bool? = true
+    ) -> OCCredentialEntry {
+        OCCredentialEntry(
+            integrationID: integrationID,
+            label: "API key",
+            active: active,
+            value: OCCredentialValue(type: "key", key: key)
+        )
+    }
+
+    @Test func zaiKeyEntryPrefersActiveZaiKeyOverOAuthAndInactive() {
+        let oauth = OCCredentialEntry(
+            integrationID: "zai-coding-plan",
+            label: "OAuth",
+            active: true,
+            value: OCCredentialValue(type: "oauth", key: nil)
+        )
+        let inactive = keyEntry(integrationID: "zai-coding-plan", active: false)
+        let active = keyEntry(integrationID: "glm-coding", active: true)
+        let unrelated = keyEntry(integrationID: "openai", active: true)
+
+        let picked = UsageQuotaService.zaiKeyEntry(in: [oauth, inactive, active, unrelated])
+
+        #expect(picked?.integrationID == "glm-coding")
+        #expect(UsageQuotaService.zaiKeyEntry(in: [oauth, unrelated]) == nil)
+        #expect(UsageQuotaService.zaiKeyEntry(in: []) == nil)
+    }
+
+    @Test func regionInferenceFromIntegrationID() {
+        #expect(UsageQuotaService.region(forIntegrationID: "zai-coding-plan") == .zaiGlobal)
+        #expect(UsageQuotaService.region(forIntegrationID: "zhipu-glm") == .zaiChina)
+        #expect(UsageQuotaService.region(forIntegrationID: "bigmodel") == .zaiChina)
+        #expect(UsageQuotaService.region(forIntegrationID: "openai") == nil)
+    }
 }

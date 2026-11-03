@@ -163,6 +163,26 @@ struct ServerModelsDecodingTests {
         #expect(info.resetAt != nil)
     }
 
+    @Test func decodesCredentialEntries() throws {
+        let payload = Data(
+            #"""
+            {"data":[
+              {"id":"cred-1","integrationID":"zai-coding-plan","label":"API key","active":true,
+               "value":{"type":"key","key":"sk-test-zai"}},
+              {"id":"cred-2","integrationID":"anthropic","label":"OAuth","active":true,
+               "value":{"type":"oauth","methodID":"oauth","access":"a","refresh":"r","expires":1}}
+            ]}
+            """#.utf8
+        )
+
+        let envelope = try JSONDecoder().decode(OCV2Envelope<[OCCredentialEntry]>.self, from: payload)
+
+        #expect(envelope.data.count == 2)
+        #expect(envelope.data[0].integrationID == "zai-coding-plan")
+        #expect(envelope.data[0].value?.key == "sk-test-zai")
+        #expect(envelope.data[1].value?.type == "oauth")
+    }
+
     @Test func transcriptConversionCarriesAssistantError() throws {
         let payload = Data(
             #"{"info":{"id":"assistant-1","sessionID":"session-1","role":"assistant","finish":"error","error":{"type":"ProviderError","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58","status":429}},"parts":[]}"#.utf8
