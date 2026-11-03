@@ -27,13 +27,6 @@ final class UsageQuotaService {
             case .zaiChina: "https://open.bigmodel.cn"
             }
         }
-
-        var displayName: String {
-            switch self {
-            case .zaiGlobal: "Z.ai (Global)"
-            case .zaiChina: "BigModel (China)"
-            }
-        }
     }
 
     enum State: Equatable {
@@ -173,12 +166,6 @@ final class UsageQuotaService {
     /// True when an API key is configured, regardless of the last result.
     var isConfigured: Bool {
         !(Self.storedAPIKey() ?? "").isEmpty
-    }
-
-    /// Clears cached state after the stored key changes or is removed.
-    func reset() {
-        lastLoadedAt = nil
-        state = .idle
     }
 
     /// Installs a screenshot-fixture state, bypassing the network.
