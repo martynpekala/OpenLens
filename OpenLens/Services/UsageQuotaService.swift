@@ -96,36 +96,67 @@ final class UsageQuotaService {
 
     // MARK: - Server Key Import
 
+    /// A provider with a queryable plan-usage endpoint. Anthropic and OpenAI
+    /// subscriptions don't expose one yet (their usage surfaces only through
+    /// OAuth-tied sources or inference-response headers); register new
+    /// providers here when that changes.
+    struct UsageQuotaProvider: Sendable {
+        let id: String
+        let displayName: String
+        let matchesIntegrationID: @Sendable (String) -> Bool
+        let regionForIntegrationID: @Sendable (String) -> Region?
+    }
+
+    static let zaiProvider = UsageQuotaProvider(
+        id: "zai",
+        displayName: "z.ai / BigModel GLM",
+        matchesIntegrationID: { integrationID in
+            let lowered = integrationID.lowercased()
+            return lowered.contains("zai") || lowered.contains("z-ai")
+                || lowered.contains("bigmodel") || lowered.contains("zhipu") || lowered.contains("glm")
+        },
+        regionForIntegrationID: { integrationID in
+            let lowered = integrationID.lowercased()
+            if lowered.contains("bigmodel") || lowered.contains("zhipu") || lowered.contains("cn") {
+                return .zaiChina
+            }
+            return .zaiGlobal
+        }
+    )
+
+    /// Every provider whose plan usage can be queried today.
+    static let supportedProviders = [zaiProvider]
+
     enum ImportError: Error, Equatable {
         /// v1 servers do not expose stored credentials.
         case unsupportedServer
-        /// No credential entry looked like a z.ai/BigModel API key.
+        /// No credential entry matched a supported provider.
         case noKeyFound
     }
 
-    /// Picks the best z.ai/BigModel API-key credential from a server
-    /// credential list: active key-type entries win, in list order.
-    static func zaiKeyEntry(in entries: [OCCredentialEntry]) -> OCCredentialEntry? {
-        let candidates = entries.filter { entry in
-            guard entry.value?.type == "key",
-                  let key = entry.value?.key, !key.isEmpty else {
-                return false
+    /// Picks the best API-key credential across supported providers: active
+    /// key-type entries win, in list order.
+    static func supportedKeyEntry(in entries: [OCCredentialEntry]) -> OCCredentialEntry? {
+        for provider in supportedProviders {
+            let candidates = entries.filter { entry in
+                guard entry.value?.type == "key",
+                      let key = entry.value?.key, !key.isEmpty,
+                      provider.matchesIntegrationID(entry.integrationID) else {
+                    return false
+                }
+                return true
             }
-            let id = entry.integrationID.lowercased()
-            return id.contains("zai") || id.contains("z-ai")
-                || id.contains("bigmodel") || id.contains("zhipu") || id.contains("glm")
+            if let entry = candidates.first(where: { $0.active != false }) ?? candidates.first {
+                return entry
+            }
         }
-        return candidates.first { $0.active != false } ?? candidates.first
+        return nil
     }
 
     /// Infers the quota region from the integration identifier, when possible.
     static func region(forIntegrationID id: String) -> Region? {
-        let lowered = id.lowercased()
-        if lowered.contains("bigmodel") || lowered.contains("zhipu") || lowered.contains("cn") {
-            return .zaiChina
-        }
-        if lowered.contains("zai") || lowered.contains("z-ai") || lowered.contains("glm") {
-            return .zaiGlobal
+        for provider in supportedProviders where provider.matchesIntegrationID(id) {
+            return provider.regionForIntegrationID(id)
         }
         return nil
     }

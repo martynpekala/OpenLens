@@ -185,7 +185,7 @@ struct UsageQuotaServiceTests {
         )
     }
 
-    @Test func zaiKeyEntryPrefersActiveZaiKeyOverOAuthAndInactive() {
+    @Test func supportedKeyEntryPrefersActiveKeyOverOAuthAndInactive() {
         let oauth = OCCredentialEntry(
             integrationID: "zai-coding-plan",
             label: "OAuth",
@@ -196,11 +196,11 @@ struct UsageQuotaServiceTests {
         let active = keyEntry(integrationID: "glm-coding", active: true)
         let unrelated = keyEntry(integrationID: "openai", active: true)
 
-        let picked = UsageQuotaService.zaiKeyEntry(in: [oauth, inactive, active, unrelated])
+        let picked = UsageQuotaService.supportedKeyEntry(in: [oauth, inactive, active, unrelated])
 
         #expect(picked?.integrationID == "glm-coding")
-        #expect(UsageQuotaService.zaiKeyEntry(in: [oauth, unrelated]) == nil)
-        #expect(UsageQuotaService.zaiKeyEntry(in: []) == nil)
+        #expect(UsageQuotaService.supportedKeyEntry(in: [oauth, unrelated]) == nil)
+        #expect(UsageQuotaService.supportedKeyEntry(in: []) == nil)
     }
 
     @Test func regionInferenceFromIntegrationID() {
@@ -208,5 +208,10 @@ struct UsageQuotaServiceTests {
         #expect(UsageQuotaService.region(forIntegrationID: "zhipu-glm") == .zaiChina)
         #expect(UsageQuotaService.region(forIntegrationID: "bigmodel") == .zaiChina)
         #expect(UsageQuotaService.region(forIntegrationID: "openai") == nil)
+    }
+
+    @Test func providerRegistryIsZaiOnlyToday() {
+        #expect(UsageQuotaService.supportedProviders.map(\.id) == ["zai"])
+        #expect(UsageQuotaService.supportedProviders.first?.displayName == "z.ai / BigModel GLM")
     }
 }
