@@ -149,6 +149,7 @@ struct ConnectedRootView: View {
                 initialState: initialSessions,
                 onSelect: selectChatSession,
                 onDelete: handleDeletedSession,
+                onArchive: handleArchivedSession,
                 newSessionModel: { await chatClient.newSessionModelPreference() }
             )
         case .micro:
@@ -167,6 +168,11 @@ struct ConnectedRootView: View {
     }
 
     private func handleDeletedSession(_ session: OCSession) {
+        router.clearChatSession(ifMatching: session.id)
+        chatClient.unloadSession(ifMatching: session.id)
+    }
+
+    private func handleArchivedSession(_ session: OCSession) {
         router.clearChatSession(ifMatching: session.id)
         chatClient.unloadSession(ifMatching: session.id)
     }
@@ -215,6 +221,7 @@ private struct ConnectedSidebarLayout: View {
                 selectedSessionID: router.selectedChatSessionID,
                 onSelect: selectChatSession,
                 onDelete: handleDeletedSession,
+                onArchive: handleArchivedSession,
                 newSessionModel: { await chatClient.newSessionModelPreference() }
             )
         }
@@ -277,6 +284,11 @@ private struct ConnectedSidebarLayout: View {
         router.clearChatSession(ifMatching: session.id)
         chatClient.unloadSession(ifMatching: session.id)
     }
+
+    private func handleArchivedSession(_ session: OCSession) {
+        router.clearChatSession(ifMatching: session.id)
+        chatClient.unloadSession(ifMatching: session.id)
+    }
 }
 
 private struct ConnectedSidebarNavigation: View {
@@ -331,6 +343,8 @@ private struct ConnectedDestinationView: View {
         switch destination {
         case .chatSession(let session):
             SessionChatDestinationView(chatClient: chatClient, session: session)
+        case .archivedSessions:
+            ArchivedSessionsView()
         case .sessionInsights(let sessionID):
             InsightsRootView(chatClient: chatClient, sessionID: sessionID)
         case .reviewMessage, .reviewFile, .workspacePath:
