@@ -163,7 +163,7 @@ struct UsageQuotaSectionView: View {
 
         do {
             let entries = try await client.getCredentialEntries()
-            guard let entry = UsageQuotaService.zaiKeyEntry(in: entries) else {
+            guard let entry = UsageQuotaService.supportedKeyEntry(in: entries) else {
                 importFailureMessage = AppText.settingsUsageImportNotFound
                 return
             }
