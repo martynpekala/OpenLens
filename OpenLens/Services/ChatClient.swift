@@ -465,6 +465,16 @@ final class ChatClient: SSEEventHandlerDelegate {
         let costTiers: [OCModelCost]
         var id: String { "\(providerID)/\(modelID)" }
 
+        /// True only when pricing is known and every tier is $0. Missing cost data is unknown, not free.
+        var isFree: Bool {
+            let tiers = costTiers + (cost.map { [$0] } ?? [])
+            guard !tiers.isEmpty else { return false }
+            return tiers.allSatisfy { tier in
+                tier.input == 0 && tier.output == 0
+                    && (tier.cacheRead ?? 0) == 0 && (tier.cacheWrite ?? 0) == 0
+            }
+        }
+
         // Hashable conformance ignoring cost/limit (non-Hashable)
         func hash(into hasher: inout Hasher) {
             hasher.combine(id)
