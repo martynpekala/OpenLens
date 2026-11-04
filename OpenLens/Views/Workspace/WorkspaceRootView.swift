@@ -60,6 +60,7 @@ struct WorkspaceRootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.connection) private var connection
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.workspaceNames) private var workspaceNames
     @Environment(\.savedConnections) private var savedConnections
 
     @State private var viewState: ViewState = .idle
@@ -179,6 +180,8 @@ struct WorkspaceRootView: View {
 
     private var content: some View {
         Form {
+            workspaceIdentitySection
+
             if let errorMessage {
                 Section {
                     Label {
@@ -206,7 +209,7 @@ struct WorkspaceRootView: View {
                 Menu {
                     Picker("Project", selection: projectSelection) {
                         ForEach(workspaceOptions) { option in
-                            Text(option.title)
+                            Text(pickerTitle(for: option))
                                 .tag(option.id)
                         }
                     }
@@ -240,6 +243,50 @@ struct WorkspaceRootView: View {
                 Task { await switchWorkspace(to: option) }
             }
         )
+    }
+
+    // MARK: - Workspace Identity
+
+    /// Names the active folder: the full path for reference first, then an
+    /// optional personalized name that replaces the folder name everywhere.
+    @ViewBuilder
+    private var workspaceIdentitySection: some View {
+        if let directory = activeWorkspaceDirectory {
+            Section {
+                pathRow("Path", value: snapshot.pathInfo?.directory?.nilIfBlank ?? directory)
+
+                LabeledContent("Name") {
+                    TextField(
+                        WorkspaceSelectionBuilder.displayName(for: directory),
+                        text: workspaceNameBinding(for: directory)
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .frame(maxWidth: 240, alignment: .trailing)
+                    .lineLimit(1)
+                }
+            } header: {
+                Text("Workspace")
+            } footer: {
+                Text("Personalize this folder to recognize it faster. The name appears in Sessions and the chat header; leave it empty to use the folder name.")
+            }
+        }
+    }
+
+    private func workspaceNameBinding(for directory: String) -> Binding<String> {
+        Binding(
+            get: { workspaceNames.customName(forDirectory: directory) ?? "" },
+            set: { workspaceNames.setCustomName($0, forDirectory: directory) }
+        )
+    }
+
+    /// The directory the active workspace is identified by — the same key the
+    /// Sessions list and chat header use for personalized names.
+    private var activeWorkspaceDirectory: String? {
+        WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.directory)
+            ?? WorkspaceSelectionBuilder.normalizedDirectory(snapshot.currentProject?.worktree)
+            ?? WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.worktree)
     }
 
     // MARK: - Source Control
@@ -924,7 +971,15 @@ struct WorkspaceRootView: View {
     /// Names the active folder the way the picker lists it. The server calls a
     /// folder outside a git repository by its `global` project, rooted at `/`.
     private var currentWorkspaceTitle: String {
-        currentWorkspaceOption?.title ?? currentProjectName
+        workspaceNames.customName(forDirectory: activeWorkspaceDirectory)
+            ?? currentWorkspaceOption?.title
+            ?? currentProjectName
+    }
+
+    /// The picker row title: the personalized name when assigned, otherwise the
+    /// folder name the option was built with.
+    private func pickerTitle(for option: WorkspaceSelectionOption) -> String {
+        workspaceNames.customName(forDirectory: option.directory) ?? option.title
     }
 
     private func switchWorkspace(to option: WorkspaceSelectionOption) async {

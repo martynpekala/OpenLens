@@ -72,6 +72,7 @@ struct SessionsListView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.connection) private var connection
+    @Environment(\.workspaceNames) private var workspaceNames
 
     init(
         initialState: InitialState,
@@ -679,6 +680,11 @@ struct SessionsListView: View {
     }
 
     private func projectTitle(for session: OCSession) -> String {
+        if let directory = normalizedDirectory(for: session),
+           let customName = workspaceNames.customName(forDirectory: directory) {
+            return customName
+        }
+
         if let directory = normalizedDirectory(for: session) {
             let lastComponent = URL(fileURLWithPath: directory).lastPathComponent
             if !lastComponent.isEmpty {

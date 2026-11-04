@@ -182,6 +182,8 @@ struct OpenLensApp: App {
     private let reviewService: ReviewService
     private let inboxService: InboxService
     private let workspaceService: WorkspaceService
+
+    private let workspaceNameStore: WorkspaceNameStore
     private let sessionInsightsService: SessionInsightsService
     private let gitHubStarsService: GitHubStarsService
     private let usageQuotaService: UsageQuotaService
@@ -332,6 +334,7 @@ struct OpenLensApp: App {
         let review = ReviewService(connection: connection)
         let inbox = InboxService(connection: connection)
         let workspace = WorkspaceService(connection: connection)
+        let workspaceNames = WorkspaceNameStore()
         let sessionInsights = SessionInsightsService()
         let gitHubStars = GitHubStarsService()
         let usageQuota = UsageQuotaService()
@@ -353,6 +356,7 @@ struct OpenLensApp: App {
         self.reviewService = review
         self.inboxService = inbox
         self.workspaceService = workspace
+        self.workspaceNameStore = workspaceNames
         self.sessionInsightsService = sessionInsights
         self.gitHubStarsService = gitHubStars
         self.usageQuotaService = usageQuota
@@ -502,6 +506,7 @@ struct OpenLensApp: App {
             .environment(\.reviewService, reviewService)
             .environment(\.inboxService, inboxService)
             .environment(\.workspaceService, workspaceService)
+            .environment(\.workspaceNames, workspaceNameStore)
             .environment(\.sessionInsightsService, sessionInsightsService)
             .environment(\.gitHubStarsService, gitHubStarsService)
             .environment(\.usageQuotaService, usageQuotaService)

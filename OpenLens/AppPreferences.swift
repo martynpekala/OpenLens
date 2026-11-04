@@ -9,6 +9,7 @@ enum AppPreferenceKeys {
     static let quickModelAssignments = "quickModelAssignments"
     static let showThinking = "showThinking"
     static let usageQuotaRegion = "usageQuotaRegion"
+    static let workspaceCustomNames = "workspaceCustomNames"
 }
 
 /// The action a full swipe triggers on a conversation row.
