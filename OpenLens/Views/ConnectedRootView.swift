@@ -177,15 +177,21 @@ private struct ConnectedSidebarLayout: View {
     let initialSessions: SessionsListView.InitialState
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isSidebarVisible = true
 
     var body: some View {
         HStack(spacing: 0) {
             sidebar
                 .frame(width: 320)
+                .frame(width: isSidebarVisible ? 320 : 0, alignment: .leading)
+                .clipped()
+                .allowsHitTesting(isSidebarVisible)
+                .accessibilityHidden(!isSidebarVisible)
 
             Rectangle()
                 .fill(Color.appSeparator)
-                .frame(width: 1)
+                .frame(width: isSidebarVisible ? 1 : 0)
                 .ignoresSafeArea()
 
             detail
@@ -256,9 +262,27 @@ private struct ConnectedSidebarLayout: View {
     ) -> some View {
         NavigationStack(path: pathBinding(for: tab)) {
             root()
+                .toolbar { sidebarToolbar }
                 .navigationDestination(for: RouterDestination.self) { destination in
                     ConnectedDestinationView(chatClient: chatClient, destination: destination)
+                        .toolbar { sidebarToolbar }
                 }
+        }
+    }
+
+    private var sidebarToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+                    isSidebarVisible.toggle()
+                }
+            } label: {
+                Label(
+                    isSidebarVisible ? AppText.hideSidebar : AppText.showSidebar,
+                    systemImage: "sidebar.left"
+                )
+            }
+            .accessibilityIdentifier("sidebar.toggle")
         }
     }
 
@@ -395,6 +419,5 @@ private struct ChatDetailPlaceholderView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appBackground)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .navigationBar)
     }
 }
