@@ -151,6 +151,33 @@ final class ChatClient: SSEEventHandlerDelegate {
         contextEntries = transcript.contextEntries
         transcriptEntryOrder = transcript.entryOrder
         messages = transcript.messages
+        surfaceFailedExecution(in: transcript)
+    }
+
+    /// A native v2 turn that ends in a provider error (for example a usage
+    /// limit) records the reason only on its closing `idle` entry; the live
+    /// stream carries no error, so the canonical transcript is the source.
+    private func surfaceFailedExecution(in transcript: SessionTranscript) {
+        guard let lastID = transcript.entryOrder.last,
+              let entry = transcript.contextEntries.first(where: { $0.id == lastID }),
+              entry.kind == .idle, entry.idleOutcome == "failed",
+              lastFailedTurnMessageID != entry.id else { return }
+        // The closing idle entry may omit the error; the failed assistant
+        // message of the same turn carries it too.
+        let messagesByID = Dictionary(transcript.messages.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var failure: (message: String, status: Int?)? = entry.idleError?.message.map { ($0, entry.idleError?.status) }
+        if failure == nil {
+            for id in transcript.entryOrder.dropLast().reversed() {
+                guard let message = messagesByID[id] else { continue }
+                if message.role == .user { break }
+                if let text = message.errorMessage { failure = (text, message.errorStatus); break }
+            }
+        }
+        guard let failure else { return }
+        lastFailedTurnMessageID = entry.id
+        // Same terminal path as legacy failed turns: it also ends the loading
+        // state, which keeps the chat from re-pinning to the bottom forever.
+        markResponseFailed(failure.message, status: failure.status)
     }
 
     func timelineItems(showsThinking: Bool) -> [ChatTimelineItem] {
