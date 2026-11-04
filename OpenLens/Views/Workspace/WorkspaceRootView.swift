@@ -83,6 +83,7 @@ struct WorkspaceRootView: View {
     @State private var showsCommands = false
     @State private var activityRefreshToken = 0
     @State private var selectedDiffFile: ReviewFileChange?
+    @State private var showsAllChangedFiles = false
     @State private var pendingWorkspaceAction: PendingWorkspaceAction?
     @State private var showsBranchPrompt = false
     @State private var branchNameDraft = ""
@@ -112,6 +113,7 @@ struct WorkspaceRootView: View {
             browserPath = "."
             selectedDiffFile = nil
             pendingWorkspaceAction = nil
+            showsAllChangedFiles = false
         }
         .task(id: chatClient.currentSession?.id) {
             guard chatClient.currentSession != nil else { return }
@@ -359,19 +361,36 @@ struct WorkspaceRootView: View {
         }
     }
 
+    // MARK: - Changed Files
+
+    /// Collapsed changed-file rows; big working trees otherwise clobber the
+    /// page's scroll performance.
+    private static let changedFilesCollapsedLimit = 5
+    private static let changedFilesExpansionAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.9)
+
     private var changedFilesSection: some View {
         Section {
             if snapshot.workingTree.isEmpty {
                 Text(workingTreeEmptyStateText)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(snapshot.workingTree) { file in
+                ForEach(visibleWorkingTree) { file in
                     Button {
                         selectedDiffFile = file
                     } label: {
                         changedFileRow(file)
                     }
                     .tint(.primary)
+                }
+
+                if hiddenWorkingTreeCount > 0 {
+                    Button {
+                        withAnimation(Self.changedFilesExpansionAnimation) {
+                            showsAllChangedFiles.toggle()
+                        }
+                    } label: {
+                        Text(showsAllChangedFiles ? "Show less" : "Show all \(snapshot.workingTree.count) files")
+                    }
                 }
             }
         } header: {
@@ -381,6 +400,16 @@ struct WorkspaceRootView: View {
                 Text("\(workingTreeFileCountLabel). Open any file to inspect its full diff.")
             }
         }
+    }
+
+    private var visibleWorkingTree: [ReviewFileChange] {
+        showsAllChangedFiles
+            ? snapshot.workingTree
+            : Array(snapshot.workingTree.prefix(Self.changedFilesCollapsedLimit))
+    }
+
+    private var hiddenWorkingTreeCount: Int {
+        max(snapshot.workingTree.count - Self.changedFilesCollapsedLimit, 0)
     }
 
     private func changedFileRow(_ file: ReviewFileChange) -> some View {
