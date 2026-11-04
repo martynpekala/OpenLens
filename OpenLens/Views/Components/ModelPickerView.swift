@@ -571,7 +571,11 @@ struct ModelPickerView: View {
     }
 
     private var filteredModels: [ChatClient.SelectableModel] {
-        Self.models(matching: searchQuery, from: groupedModels.flatMap(\.models))
+        let candidates = groupedModels.flatMap(\.models)
+        return Self.models(
+            matching: searchQuery,
+            from: activeConfigurationAction == .free ? candidates.filter(\.isFree) : candidates
+        )
     }
 
     private var filteredRecentModels: [ChatClient.SelectableModel] {

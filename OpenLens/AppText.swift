@@ -22,6 +22,7 @@ enum AppText {
     static let browseCapturesSubtitle = "Replay saved assistant turns without a live server"
     static let cancel = "Cancel"
     static let code = "Code"
+    static let free = "Free"
     static let connect = "Connect"
     static let connected = "Connected"
     static let connecting = "Connecting..."
