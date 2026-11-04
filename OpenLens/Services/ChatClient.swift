@@ -3441,6 +3441,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
             var requestStarted = false
             do {
+                try await ensureSessionUnarchived(session)
                 try await awaitSessionSettingsChanges(for: session.id)
                 if tracksAdmission {
                     await reconcileUncertainSubmissions(in: session.id, before: queuedPrompt.messageID)
@@ -4419,6 +4420,17 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
+    /// Sending in an archived conversation restores it first, so the new turn
+    /// is not filed away with it. The canonical restored snapshot becomes
+    /// current, keeping later sends from repeating the mutation; a failed
+    /// restore stops the send rather than hiding the turn in the archive.
+    private func ensureSessionUnarchived(_ session: OCSession) async throws {
+        guard session.isArchived, let sessionsService else { return }
+        let restored = try await sessionsService.unarchiveSession(session)
+        guard currentSession?.id == session.id else { return }
+        currentSession = restored
+    }
+
     private func sendPromptAsync(
         text: String,
         agent: String? = nil,
@@ -4431,6 +4443,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let tracksAdmission = usesV2SessionAPI && messageID != nil
         var requestStarted = false
         do {
+            try await ensureSessionUnarchived(session)
             if let agent {
                 enqueueSessionSettingsChange(.agent(agent), for: session.id)
             }
@@ -4520,6 +4533,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let session = context.session
 
         do {
+            try await ensureSessionUnarchived(session)
             try await awaitSessionSettingsChanges(for: session.id)
             try requireCurrentWorkLocation(context)
             try await messagesService!.sendCommand(
