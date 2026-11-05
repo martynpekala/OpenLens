@@ -74,6 +74,25 @@ extension MultiServerSuite {
             #expect(fixture.registry.contexts.allSatisfy { $0.connection.state == .connected })
         }
 
+        @Test func activatingAServerRecordsItAsTheLastActiveConnection() throws {
+            let fixture = Self.makeFixture(hosts: ["a.example", "b.example"])
+            #expect(fixture.store.lastActiveConnectionID == "a.example")
+
+            fixture.registry.activate(id: "b.example")
+
+            #expect(fixture.store.lastActiveConnectionID == "b.example")
+        }
+
+        @Test func connectingAnotherServerInTheBackgroundDoesNotChangeTheLastActiveConnection() async throws {
+            let fixture = Self.makeFixture(hosts: ["a.example", "b.example"])
+            fixture.registry.activate(id: "a.example")
+
+            await fixture.registry.connectAll()
+            try await Self.waitUntil { fixture.registry.liveConnectionCount == 2 }
+
+            #expect(fixture.store.lastActiveConnectionID == "a.example")
+        }
+
         @Test func removingAServerDisconnectsItAndLeavesTheOtherUntouched() async throws {
             let fixture = Self.makeFixture(hosts: ["a.example", "b.example"])
             await fixture.registry.connectAll()
@@ -88,6 +107,16 @@ extension MultiServerSuite {
             #expect(fixture.store.connections.map(\.id) == ["b.example"])
             #expect(kept.connection.state == .connected)
             #expect(fixture.registry.activeContext.id == "b.example")
+        }
+
+        @Test func removingAServerTellsTheObserverWhichOneWentAway() {
+            let fixture = Self.makeFixture(hosts: ["a.example", "b.example"])
+            var removedIDs: [String] = []
+            fixture.registry.onServerRemoved = { removedIDs.append($0) }
+
+            fixture.registry.remove(id: "a.example")
+
+            #expect(removedIDs == ["a.example"])
         }
 
         @Test func connectAllWithOneSavedProfileConnectsExactlyThatProfile() async throws {

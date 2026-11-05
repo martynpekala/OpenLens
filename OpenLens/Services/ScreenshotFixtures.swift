@@ -358,6 +358,11 @@ enum ScreenshotFixtures {
     static let formSheetEnvironmentKey = "OPENLENS_SCREENSHOT_FORM_SHEET"
     static let permissionAllowAllConfirmationEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let settingsSectionEnvironmentKey = "OPENLENS_SCREENSHOT_SETTINGS_SECTION"
+    static let multiServerArgument = "SCREENSHOT_MULTI_SERVER"
+    static let multiServerEnvironmentKey = "OPENLENS_SCREENSHOT_MULTI_SERVER"
+    /// Id of the second demo server that multi-server screenshot mode adds beside the default one.
+    static let secondServerID = "second-server"
+    static let defaultServerID = "default"
 
     static var isEnabled: Bool {
         let processInfo = ProcessInfo.processInfo
@@ -377,6 +382,12 @@ enum ScreenshotFixtures {
 
         guard let rawValue else { return nil }
         return AppTab(rawValue: String(rawValue).lowercased())
+    }
+
+    /// Adds a second demo server so the registry holds two contexts.
+    static var holdsTwoServers: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains(multiServerArgument) || processInfo.environment[multiServerEnvironmentKey] == "1")
     }
 
     static var opensDefaultChatSession: Bool {

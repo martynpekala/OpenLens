@@ -4,6 +4,17 @@ func shouldHideConnectedRootTabBar(selectedTab: AppTab, chatPath: [RouterDestina
     selectedTab == .chat && !chatPath.isEmpty
 }
 
+/// What a tab's root view is identified by inside its `NavigationStack`. Sessions and Settings
+/// outlive a server switch; the tabs that show one server's data are rebuilt for the new server.
+func scopeID(for tab: AppTab, activeServerID: String?) -> String {
+    switch tab {
+    case .chat, .settings:
+        tab.rawValue
+    case .review, .workspace, .micro:
+        "\(tab.rawValue):\(activeServerID ?? "")"
+    }
+}
+
 func shouldUseConnectedRootSidebarLayout(horizontalSizeClass: UserInterfaceSizeClass?) -> Bool {
     horizontalSizeClass == .regular
 }
@@ -126,6 +137,7 @@ struct ConnectedRootView: View {
     private func tabNavigationView(for tab: AppTab) -> some View {
         NavigationStack(path: pathBinding(for: tab)) {
             tabRootView(for: tab)
+                .id(scopeID(for: tab, activeServerID: router.activeServerID))
                 .navigationDestination(for: RouterDestination.self) { destination in
                     ConnectedDestinationView(chatClient: chatClient, destination: destination)
                 }
@@ -263,6 +275,7 @@ private struct ConnectedSidebarLayout: View {
     ) -> some View {
         NavigationStack(path: pathBinding(for: tab)) {
             root()
+                .id(scopeID(for: tab, activeServerID: router.activeServerID))
                 .navigationDestination(for: RouterDestination.self) { destination in
                     ConnectedDestinationView(chatClient: chatClient, destination: destination)
                 }
@@ -341,8 +354,8 @@ private struct ConnectedDestinationView: View {
     @ViewBuilder
     var body: some View {
         switch destination {
-        case .chatSession(let session):
-            SessionChatDestinationView(chatClient: chatClient, session: session)
+        case .chatSession(let session, let serverID):
+            SessionChatDestinationView(chatClient: chatClient, session: session, serverID: serverID)
         case .archivedSessions:
             ArchivedSessionsView()
         case .sessionInsights(let sessionID):
@@ -356,14 +369,21 @@ private struct ConnectedDestinationView: View {
 private struct SessionChatDestinationView: View {
     @Bindable var chatClient: ChatClient
     let session: OCSession
+    let serverID: String
 
     @State private var isReady = false
+
+    /// Keys the load on server *and* session, not `session.id` alone: a switch to another server
+    /// leaves the session id unchanged, and the new server's client must not render the old one's
+    /// state. Deliberately not the whole destination -- that carries the full `OCSession`, so
+    /// re-pushing the same session with a newer `time.updated` would reload an open chat.
+    private var loadIdentity: String { "\(serverID)/\(session.id)" }
 
     var body: some View {
         Group {
             if isReady {
                 ChatView(chatClient: chatClient, initialSession: session)
-                    .id(session.id)
+                    .id("\(serverID)/\(session.id)")
             } else {
                 ProgressView()
                     .tint(Color.appSecondary)
@@ -372,7 +392,7 @@ private struct SessionChatDestinationView: View {
         }
         .background(Color.appBackground)
         .toolbar(.visible, for: .navigationBar)
-        .task(id: session.id) {
+        .task(id: loadIdentity) {
             isReady = false
             if chatClient.currentSession?.id != session.id {
                 await chatClient.loadSession(session)

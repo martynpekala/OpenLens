@@ -309,13 +309,17 @@ struct OpenLensApp: App {
             )
         )
 
-        var initialRouter = AppRouter()
+        let initialRouter = AppRouter()
+        // Paths are kept per server, so the router must name the server before anything is seeded.
+        // The prepared screenshot context is built below with this id; otherwise it is corrected
+        // to the registry's choice once the registry exists.
+        initialRouter.activate(serverID: ScreenshotFixtures.defaultServerID)
         if screenshotModeEnabled,
            ScreenshotFixtures.opensDefaultChatSession
             || ScreenshotFixtures.opensPermissionSheet
             || ScreenshotFixtures.opensFormSheet {
             initialRouter.selectedTab = .chat
-            initialRouter.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
+            initialRouter.chatPath = [initialRouter.chatSessionDestination(for: ScreenshotFixtures.defaultSession)]
         }
         if screenshotModeEnabled, ScreenshotFixtures.opensArchivedSessions {
             initialRouter.selectedTab = .chat
@@ -386,7 +390,7 @@ struct OpenLensApp: App {
                 branch: ScreenshotFixtures.branchName
             )
             preparedContext = ServerContext(
-                id: "default",
+                id: ScreenshotFixtures.defaultServerID,
                 connection: demoConnection,
                 liveActivity: liveActivity,
                 savedConnectionsStore: savedConnections,
@@ -394,12 +398,33 @@ struct OpenLensApp: App {
                 chatClient: demoChatClient
             )
         }
-        self._serverRegistry = State(initialValue: ServerRegistry(
+        var additionalContexts: [ServerContext] = []
+        if screenshotModeEnabled, ScreenshotFixtures.holdsTwoServers {
+            let secondConnection = ConnectionManager()
+            secondConnection.savedConnectionsStore = savedConnections
+            secondConnection.configureDemoState(projectName: "Second Server", branch: "server-b")
+            let secondClient = ChatClient(demoMode: true)
+            additionalContexts = [ServerContext(
+                id: ScreenshotFixtures.secondServerID,
+                connection: secondConnection,
+                liveActivity: liveActivity,
+                savedConnectionsStore: savedConnections,
+                recordedReplayStore: recordedReplayStore,
+                chatClient: secondClient
+            )]
+        }
+        let registry = ServerRegistry(
             savedConnectionsStore: savedConnections,
             liveActivity: liveActivity,
             recordedReplayStore: recordedReplayStore,
-            preparedContext: preparedContext
-        ))
+            preparedContext: preparedContext,
+            additionalPreparedContexts: additionalContexts
+        )
+        registry.onServerRemoved = { [initialRouter] id in initialRouter.forgetServer(id) }
+        if !screenshotModeEnabled, let activeID = registry.activeServerID {
+            initialRouter.activate(serverID: activeID)
+        }
+        self._serverRegistry = State(initialValue: registry)
 
         if streamStressModeEnabled {
             let preview = turnDiffPreviewModeEnabled
@@ -518,6 +543,10 @@ struct OpenLensApp: App {
             .environment(\.requestReviewPrompt, {
                 presentSystemReviewPrompt()
             })
+            .onChange(of: serverRegistry.activeServerID) { _, newID in
+                // Backstop for changes that bypass `switchServer`, such as removing the active server.
+                if let newID { router.activate(serverID: newID) }
+            }
             .task(id: activeConnectionKey) {
                 await prepareInitialSessions(for: connection.state)
             }
@@ -583,6 +612,8 @@ struct OpenLensApp: App {
 
                 if newState == .connected {
                     onboardingCompleted = true
+                    // A draft context only gets its saved profile once it connects.
+                    serverRegistry.recordActiveServerAsLastActive()
                 }
 
                 if isSameServer, shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
@@ -704,7 +735,7 @@ struct OpenLensApp: App {
         }
 
         router.selectedTab = .chat
-        router.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
+        router.chatPath = [router.chatSessionDestination(for: ScreenshotFixtures.defaultSession)]
     }
 
     private var previewPresentationBinding: Binding<Bool> {
@@ -721,6 +752,19 @@ struct OpenLensApp: App {
                 }
             }
         )
+    }
+
+    /// Switches the visible server. The registry and the router change together in one
+    /// transaction with animations off, so no frame shows one server's client with the other's
+    /// paths, and the stacks do not animate a push or pop for the change.
+    @MainActor
+    private func switchServer(to serverID: String) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            guard serverRegistry.activate(id: serverID) else { return }
+            router.activate(serverID: serverID)
+        }
     }
 
     /// `openlens://connect` while connected: save the server, connect it next to the current one
@@ -746,7 +790,7 @@ struct OpenLensApp: App {
         if context.id != serverRegistry.activeContext.id {
             // The new server needs its own first sessions load before the root shows it.
             initialSessionsReadiness.reset()
-            serverRegistry.activate(id: context.id)
+            switchServer(to: context.id)
         }
         router.selectedTab = .chat
         await openDeepLinkedSessionIfNeeded()
@@ -764,7 +808,7 @@ struct OpenLensApp: App {
         do {
             let session = try await sessionsService.getSession(id: sessionID)
             router.selectedTab = .chat
-            router.chatPath = [.chatSession(session: session)]
+            router.chatPath = [router.chatSessionDestination(for: session)]
             pendingSessionNavigationID = nil
         } catch {
             pendingSessionNavigationID = nil
@@ -795,7 +839,7 @@ struct OpenLensApp: App {
     /// Opens the session a Live Activity belongs to, unless its chat is already on screen.
     private func openLiveActivitySession(_ sessionID: String) {
         if router.selectedTab == .chat,
-           case .chatSession(let session)? = router.chatPath.last,
+           case .chatSession(let session, _)? = router.chatPath.last,
            session.id == sessionID {
             return
         }

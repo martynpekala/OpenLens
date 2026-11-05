@@ -101,6 +101,8 @@ extension MultiServerSuite {
             let store = SavedConnectionsStore(initialConnections: [], userDefaults: defaults)
 
             let saved = store.saveConnection(serverURL: "http://one:4096", username: "u", password: "")
+            #expect(store.lastActiveConnectionID == nil)
+            store.setLastActiveConnection(id: saved.id)
             #expect(store.lastActiveConnectionID == saved.id)
 
             store.clearActiveConnection()
@@ -112,10 +114,21 @@ extension MultiServerSuite {
             #expect(relaunched.activeConnectionID == nil)
         }
 
+        @Test func savingAConnectionDoesNotMakeItTheLastActiveOne() {
+            let store = SavedConnectionsStore(initialConnections: [], userDefaults: makeDefaults())
+            let first = store.saveConnection(serverURL: "http://one:4096", username: "u", password: "")
+            store.setLastActiveConnection(id: first.id)
+
+            store.saveConnection(serverURL: "http://two:4096", username: "u", password: "")
+
+            #expect(store.lastActiveConnectionID == first.id)
+        }
+
         @Test func forgettingTheLastActiveConnectionClearsIt() {
             let defaults = makeDefaults()
             let store = SavedConnectionsStore(initialConnections: [], userDefaults: defaults)
             let saved = store.saveConnection(serverURL: "http://one:4096", username: "u", password: "")
+            store.setLastActiveConnection(id: saved.id)
 
             store.removeConnection(id: saved.id)
 

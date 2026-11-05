@@ -56,6 +56,7 @@ extension MultiServerSuite {
             let defaults = try Self.makeDefaults()
             let seed = SavedConnectionsStore(initialConnections: [], userDefaults: defaults)
             let savedA = seed.saveConnection(serverURL: Self.serverA.serverURL, username: "u", password: "")
+            seed.setLastActiveConnection(id: savedA.id)
 
             var a = savedA
             a.lastConnectedAt = Date(timeIntervalSince1970: 1_000)
@@ -71,7 +72,8 @@ extension MultiServerSuite {
         @Test func reconnectFallsBackToTheMostRecentConnectionWhenTheLastActiveOneNoLongerResolves() async throws {
             let defaults = try Self.makeDefaults()
             let seed = SavedConnectionsStore(initialConnections: [], userDefaults: defaults)
-            seed.saveConnection(serverURL: Self.serverA.serverURL, username: "u", password: "")
+            let savedA = seed.saveConnection(serverURL: Self.serverA.serverURL, username: "u", password: "")
+            seed.setLastActiveConnection(id: savedA.id)
 
             // A was forgotten since: the persisted id points at nothing.
             let store = SavedConnectionsStore(initialConnections: [Self.serverB], userDefaults: defaults)

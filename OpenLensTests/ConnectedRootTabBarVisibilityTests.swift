@@ -12,7 +12,7 @@ struct ConnectedRootTabBarVisibilityTests {
     @Test func hidesTabBarWhenChatSessionIsPresented() {
         #expect(shouldHideConnectedRootTabBar(
             selectedTab: .chat,
-            chatPath: [.chatSession(session: session)]
+            chatPath: [.chatSession(session: session, serverID: "a")]
         ))
     }
 
@@ -26,7 +26,7 @@ struct ConnectedRootTabBarVisibilityTests {
     @Test func showsTabBarWhenChatSessionIsBackgrounded() {
         #expect(!shouldHideConnectedRootTabBar(
             selectedTab: .settings,
-            chatPath: [.chatSession(session: session)]
+            chatPath: [.chatSession(session: session, serverID: "a")]
         ))
     }
 
@@ -41,7 +41,7 @@ struct ConnectedRootTabBarVisibilityTests {
         router.selectChatSession(session)
         router.selectChatSession(replacement)
 
-        #expect(router.chatPath == [.chatSession(session: replacement)])
+        #expect(router.chatPath == [.chatSession(session: replacement, serverID: router.activeServerID)])
         #expect(router.selectedChatSessionID == replacement.id)
     }
 
@@ -61,7 +61,7 @@ struct ConnectedRootTabBarVisibilityTests {
 
         router.clearChatSession(ifMatching: "another-session")
 
-        #expect(router.chatPath == [.chatSession(session: session)])
+        #expect(router.chatPath == [.chatSession(session: session, serverID: router.activeServerID)])
     }
 
     @Test func regularWidthUsesPersistentSidebarInsteadOfTabBar() {

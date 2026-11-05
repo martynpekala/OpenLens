@@ -84,7 +84,7 @@ struct ChatView: View {
         return OpenChildSessionAction { childSessionID in
             Task {
                 guard let child = await chatClient.resolveChildSession(id: childSessionID) else { return }
-                router.navigate(to: .chatSession(session: child))
+                router.navigate(to: router.chatSessionDestination(for: child))
             }
         }
     }

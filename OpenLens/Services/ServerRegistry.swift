@@ -36,6 +36,9 @@ final class ServerRegistry {
     private(set) var contexts: [ServerContext]
     var activeServerID: String?
 
+    /// Called with the id of a server that was just removed, so per-server state kept elsewhere
+    /// (such as the router's paths) can be dropped.
+    @ObservationIgnored var onServerRemoved: ((String) -> Void)?
     @ObservationIgnored private let savedConnectionsStore: SavedConnectionsStore
     @ObservationIgnored private let liveActivity: any LiveActivityProviding
     @ObservationIgnored private let recordedReplayStore: RecordedReplayStore
@@ -51,6 +54,8 @@ final class ServerRegistry {
     /// - Parameters:
     ///   - preparedContext: A context the composition root built itself (the screenshot/demo
     ///     path). When given it is the only context and saved profiles are not materialised.
+    ///   - additionalPreparedContexts: More ready-made contexts held beside `preparedContext`,
+    ///     for the multi-server screenshot path.
     ///   - makeTransport: Fakes the network for every connection the registry builds.
     ///   - localNetworkAccessProbe: Replaces the real local-network probe, for tests.
     init(
@@ -59,7 +64,8 @@ final class ServerRegistry {
         recordedReplayStore: RecordedReplayStore,
         makeTransport: (@Sendable (URL) -> any OpenCodeTransport)? = nil,
         localNetworkAccessProbe: (any LocalNetworkAccessProbing)? = nil,
-        preparedContext: ServerContext? = nil
+        preparedContext: ServerContext? = nil,
+        additionalPreparedContexts: [ServerContext] = []
     ) {
         self.savedConnectionsStore = savedConnectionsStore
         self.liveActivity = liveActivity
@@ -69,7 +75,7 @@ final class ServerRegistry {
         self.contexts = []
 
         if let preparedContext {
-            contexts = [preparedContext]
+            contexts = [preparedContext] + additionalPreparedContexts
             activeServerID = preparedContext.id
             return
         }
@@ -82,6 +88,7 @@ final class ServerRegistry {
             .flatMap { id in savedConnectionsStore.connections.first { $0.id == id } }
             ?? savedConnectionsStore.mostRecent
         activeServerID = preferred.flatMap { context(forProfileID: $0.id)?.id } ?? contexts[0].id
+        recordActiveServerAsLastActive()
     }
 
     // MARK: - Lookup
@@ -152,7 +159,16 @@ final class ServerRegistry {
     func activate(id: String) -> Bool {
         guard context(id: id) != nil else { return false }
         activeServerID = id
+        recordActiveServerAsLastActive()
         return true
+    }
+
+    /// Persists the active server as the one to reopen on the next launch. Call again once a
+    /// draft context has connected, because only then does it have a saved profile to name.
+    func recordActiveServerAsLastActive() {
+        let context = activeContext
+        guard let profileID = context.profile?.id ?? context.connection.connectionID else { return }
+        savedConnectionsStore.setLastActiveConnection(id: profileID)
     }
 
     // MARK: - Saved profiles
@@ -192,7 +208,9 @@ final class ServerRegistry {
         ensureAContextExists()
         if activeServerID == id {
             activeServerID = contexts[0].id
+            recordActiveServerAsLastActive()
         }
+        onServerRemoved?(id)
     }
 
     // MARK: - Building contexts

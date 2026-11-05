@@ -298,6 +298,14 @@ final class SavedConnectionsStore {
 
     // MARK: - Public API
 
+    /// Records which server the user is on. The registry owns this: saving a profile does not
+    /// make it the active one, because several servers connect at once and the last to connect is
+    /// not necessarily the one on screen. Ignored when the id names no saved profile.
+    func setLastActiveConnection(id: String) {
+        guard connections.contains(where: { $0.id == id }) else { return }
+        lastActiveConnectionID = id
+    }
+
     /// The currently active connection (if any).
     var activeConnection: SavedConnection? {
         guard let id = activeConnectionID else { return nil }
@@ -325,7 +333,6 @@ final class SavedConnectionsStore {
             connections[index].lastConnectedAt = Date()
             let connection = connections[index]
             activeConnectionID = connection.id
-            lastActiveConnectionID = connection.id
             persistSoon()
             return connection
         } else {
@@ -339,7 +346,6 @@ final class SavedConnectionsStore {
             )
             connections.insert(connection, at: 0)
             activeConnectionID = connection.id
-            lastActiveConnectionID = connection.id
             persistSoon()
             return connection
         }
