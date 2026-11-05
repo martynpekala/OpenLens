@@ -170,18 +170,14 @@ struct OpenLensApp: App {
     private static let turnDiffPreviewLaunchArgument = "CHAT_TURN_DIFF_PREVIEW_MODE"
     private let screenshotModeEnabled: Bool
     private let streamStressModeEnabled: Bool
-    @State private var connection: ConnectionManager
-    
+    /// Until the registry lands there is exactly one server context. Its id is a placeholder:
+    /// the saved profile this manager connects to is only known after a connect succeeds.
+    private static let singleServerContextID = "default"
+    @State private var serverContext: ServerContext
+
     @State private var router = AppRouter()
 
     private let liveActivity: LiveActivityManager
-    private let sessionsService: SessionsService
-    private let messagesService: MessagesService
-    private let providersService: ProvidersService
-    private let questionService: QuestionService
-    private let reviewService: ReviewService
-    private let inboxService: InboxService
-    private let workspaceService: WorkspaceService
 
     private let workspaceNameStore: WorkspaceNameStore
     private let sessionInsightsService: SessionInsightsService
@@ -192,7 +188,9 @@ struct OpenLensApp: App {
     private let chatEasterEgg: ChatEasterEggController
     private let pendingAppActions: PendingAppActions
 
-    @State private var chatClient: ChatClient
+    private var connection: ConnectionManager { serverContext.connection }
+    private var chatClient: ChatClient { serverContext.chatClient }
+    private var sessionsService: SessionsService { serverContext.sessionsService }
 
     /// When non-nil, presents a preview ChatView over the connect screen.
     @State private var activePreviewSource: ChatPreviewSource?
@@ -331,13 +329,6 @@ struct OpenLensApp: App {
 
         let liveActivity = LiveActivityManager()
 
-        let sessions = SessionsService(connection: connection)
-        let messages = MessagesService(connection: connection)
-        let providers = ProvidersService(connection: connection)
-        let questions = QuestionService(connection: connection)
-        let review = ReviewService(connection: connection)
-        let inbox = InboxService(connection: connection)
-        let workspace = WorkspaceService(connection: connection)
         let workspaceNames = WorkspaceNameStore()
         let sessionInsights = SessionInsightsService()
         let gitHubStars = GitHubStarsService()
@@ -353,13 +344,6 @@ struct OpenLensApp: App {
 
         self.savedConnectionsStore = savedConnections
         self.liveActivity = liveActivity
-        self.sessionsService = sessions
-        self.messagesService = messages
-        self.providersService = providers
-        self.questionService = questions
-        self.reviewService = review
-        self.inboxService = inbox
-        self.workspaceService = workspace
         self.workspaceNameStore = workspaceNames
         self.sessionInsightsService = sessionInsights
         self.gitHubStarsService = gitHubStars
@@ -368,8 +352,7 @@ struct OpenLensApp: App {
         self.chatEasterEgg = chatEasterEgg
         self.pendingAppActions = pendingAppActions
 
-        self._connection = State(initialValue: connection)
-
+        var demoChatClient: ChatClient?
         if screenshotModeEnabled {
             let demoClient = ChatClient(demoMode: true)
             demoClient.providers = ScreenshotFixtures.providersResult.providers
@@ -389,19 +372,16 @@ struct OpenLensApp: App {
                 demoClient.pendingForm = ScreenshotFixtures.inboxSnapshot.forms.first
                 demoClient.showFormSheet = demoClient.pendingForm != nil
             }
-            self._chatClient = State(initialValue: demoClient)
-        } else {
-            self._chatClient = State(initialValue: ChatClient(
-                connection: connection,
-                liveActivity: liveActivity,
-                sessionsService: sessions,
-                messagesService: messages,
-                providersService: providers,
-                questionService: questions,
-                savedConnectionsStore: savedConnections,
-                recordedReplayStore: recordedReplayStore
-            ))
+            demoChatClient = demoClient
         }
+        self._serverContext = State(initialValue: ServerContext(
+            id: Self.singleServerContextID,
+            connection: connection,
+            liveActivity: liveActivity,
+            savedConnectionsStore: savedConnections,
+            recordedReplayStore: recordedReplayStore,
+            chatClient: demoChatClient
+        ))
 
         if streamStressModeEnabled {
             let preview = turnDiffPreviewModeEnabled
@@ -503,13 +483,13 @@ struct OpenLensApp: App {
             .scrollEdgeEffectStyle(.soft, for: .top)
             .environment(\.liveActivity, liveActivity)
             .environment(\.savedConnections, savedConnectionsStore)
-            .environment(\.sessionsService, sessionsService)
-            .environment(\.messagesService, messagesService)
-            .environment(\.providersService, providersService)
-            .environment(\.questionService, questionService)
-            .environment(\.reviewService, reviewService)
-            .environment(\.inboxService, inboxService)
-            .environment(\.workspaceService, workspaceService)
+            .environment(\.sessionsService, serverContext.sessionsService)
+            .environment(\.messagesService, serverContext.messagesService)
+            .environment(\.providersService, serverContext.providersService)
+            .environment(\.questionService, serverContext.questionService)
+            .environment(\.reviewService, serverContext.reviewService)
+            .environment(\.inboxService, serverContext.inboxService)
+            .environment(\.workspaceService, serverContext.workspaceService)
             .environment(\.workspaceNames, workspaceNameStore)
             .environment(\.sessionInsightsService, sessionInsightsService)
             .environment(\.gitHubStarsService, gitHubStarsService)
