@@ -10,6 +10,8 @@ nonisolated struct OpenLensActivityAttributes: ActivityAttributes {
     var directory: String?
     /// Tells apart activities of sessions that run at the same time.
     var sessionTitle: String?
+    /// Server whose credentials replies use; nil for activities started before multi-server support.
+    var serverID: String?
     /// Preview activities from Settings answer prompts locally instead of calling the server.
     var isPreview = false
 
@@ -117,7 +119,7 @@ extension OpenLensActivityAttributes {
 
 extension OpenLensActivityAttributes {
     static var preview: OpenLensActivityAttributes {
-        OpenLensActivityAttributes(sessionID: nil, directory: nil, sessionTitle: "Refresh token rotation", isPreview: true)
+        OpenLensActivityAttributes(sessionID: nil, directory: nil, sessionTitle: "Refresh token rotation", serverID: nil, isPreview: true)
     }
 }
 

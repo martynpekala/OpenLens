@@ -168,22 +168,24 @@ final class ConnectionManager: ConnectionProviding {
             self.serverURL = baseURL
             self.selectedProjectDirectory = restoredProjectDirectory?.nilIfBlank
 
-            SharedConnectionStore.save(
-                baseURL: baseURL.absoluteString, authHeader: authHeader,
-                protocolVersion: capabilities.protocolVersion.rawValue
-            )
-
             await refreshProjectMetadata()
 
-            savedConnectionsStore?.saveConnection(
+            // `saveConnection` returns the profile it created or updated, so the id comes from it
+            // rather than a read-back of `activeConnectionID` -- there is then no path where the
+            // App Group goes unwritten. This runs after `refreshProjectMetadata()`; no Live
+            // Activity can exist this early in a connect.
+            if let saved = savedConnectionsStore?.saveConnection(
                 serverURL: urlString,
                 username: username,
                 password: password
-            )
-            if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
+            ) {
                 savedConnectionsStore?.updateProjectSelection(
-                    connectionID: activeConnectionID,
+                    connectionID: saved.id,
                     directory: self.selectedProjectDirectory
+                )
+                SharedConnectionStore.save(
+                    serverID: saved.id, baseURL: baseURL.absoluteString, authHeader: authHeader,
+                    protocolVersion: capabilities.protocolVersion.rawValue
                 )
             }
 
@@ -235,8 +237,13 @@ final class ConnectionManager: ConnectionProviding {
         selectedProjectDirectory = nil
         connectionMethod = nil
         localNetworkAccessRequired = false
+        let disconnectedServerID = savedConnectionsStore?.activeConnectionID
         savedConnectionsStore?.clearActiveConnection()
-        SharedConnectionStore.clear()
+        if let disconnectedServerID {
+            SharedConnectionStore.clear(serverID: disconnectedServerID)
+        } else {
+            SharedConnectionStore.clearAll()
+        }
     }
 
     private func configureSSECallbacks(_ sse: SSEClient) {

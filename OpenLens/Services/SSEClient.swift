@@ -794,7 +794,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     // MARK: - Private state (protected by `queue`)
 
-    private let queue = DispatchQueue(label: "com.opencode.SSEClient", qos: .userInitiated)
+    private let queue: DispatchQueue
 
     private var baseURL: URL
     private var authHeader: String?
@@ -935,6 +935,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         contextDirectory: String? = nil,
         transport: (any OpenCodeTransport)? = nil
     ) {
+        self.queue = DispatchQueue(label: "com.opencode.SSEClient.\(baseURL.host() ?? "unknown")", qos: .userInitiated)
         self.baseURL = baseURL
         self.authHeader = authHeader
         self.protocolVersion = protocolVersion

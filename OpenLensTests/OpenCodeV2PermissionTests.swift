@@ -171,6 +171,27 @@ struct OpenCodeV2PermissionTests {
         #expect(body == [usesV2 ? "decision" : "reply": approve ? "once" : "reject"])
     }
 
+    @Test func liveActivityRepliesTargetTheServerTheActivityBelongsTo() throws {
+        let suiteName = "OpenCodeV2PermissionTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        SharedConnectionStore.save(serverID: "A", baseURL: "https://a.example", authHeader: "Basic A", protocolVersion: "v2", defaults: defaults)
+        SharedConnectionStore.save(serverID: "B", baseURL: "https://b.example", authHeader: "Basic B", protocolVersion: "v1", defaults: defaults)
+
+        let prompt = OpenLensActivityAttributes.PendingUserResponse(
+            kind: .permission, detail: "bash: npm test", requestID: "per_1", sessionID: "ses_1"
+        )
+        let credentials = try #require(SharedConnectionStore.credentials(for: "A", defaults: defaults))
+        let request = try SharedConnectionStore.replyRequest(
+            to: prompt, with: .allow, directory: nil,
+            baseURL: #require(URL(string: credentials.baseURL)), authHeader: credentials.authHeader, usesV2: credentials.usesV2
+        )
+
+        #expect(request.url?.absoluteString == "https://a.example/api/session/ses_1/permission/per_1/reply")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Basic A")
+    }
+
     @Test func liveActivityQuestionRepliesSendTheChosenLabelOverV1() throws {
         let prompt = OpenLensActivityAttributes.PendingUserResponse(
             kind: .question, detail: "Rotate tokens?", requestID: "que_1", sessionID: "ses_1",
