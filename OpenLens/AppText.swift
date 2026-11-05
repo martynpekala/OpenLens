@@ -4,6 +4,8 @@ enum AppText {
     // MARK: Servers
     static let servers = "Servers"
     static let sessionsAllServers = "All servers"
+    static let sessionsAllWorkspaces = "All workspaces"
+    static let workspaces = "Workspaces"
     static func serverBadgeAccessibility(_ name: String) -> String { "Server \(name)" }
     static func sessionsServerUnavailable(_ server: String?) -> String {
         server.map { "Couldn't load sessions from \($0)." } ?? "Couldn't load sessions."

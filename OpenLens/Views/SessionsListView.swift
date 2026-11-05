@@ -55,6 +55,8 @@ struct SessionsListView: View {
     @State private var seedSessions: [OCSession]
     /// Which server the list shows; nil is every server.
     @State private var serverFilterID: String?
+    /// Which workspace the list shows; nil is every workspace. Scoped to the server filter.
+    @State private var workspaceFilterID: String?
     @State private var openedSessionIDs: Set<String> = []
     @State private var outcomeRefreshGeneration = 0
 
@@ -206,13 +208,34 @@ struct SessionsListView: View {
         }
     }
 
-    private var aggregation: SessionAggregation {
+    private func aggregation(for sources: [Source], workspaceFilterID: String?) -> SessionAggregation {
         SessionGrouping.aggregate(
-            results: results(for: shownSources),
+            results: results(for: sources),
             tags: serverTags,
             showsServerTags: showsServerTags,
             statuses: statusesByServer,
+            workspaceFilterID: workspaceFilterID,
             customName: { workspaceNames.customName(forDirectory: $0) }
+        )
+    }
+
+    private var aggregation: SessionAggregation {
+        aggregation(for: shownSources, workspaceFilterID: effectiveWorkspaceFilterID)
+    }
+
+    /// Workspaces of the servers in view, so choosing a server narrows the choices.
+    private var workspaceOptions: [SessionWorkspaceOption] {
+        SessionGrouping.workspaceOptions(in: aggregation(for: shownSources, workspaceFilterID: nil).entries)
+    }
+
+    private var effectiveWorkspaceFilterID: String? {
+        SessionGrouping.resolvedWorkspaceFilter(workspaceFilterID, options: workspaceOptions)
+    }
+
+    private var isFilterInteractive: Bool {
+        sessionFilterIsInteractive(
+            serverCount: switchTargets.targets.count,
+            workspaceCount: SessionGrouping.workspaceOptions(in: aggregation(for: sources, workspaceFilterID: nil).entries).count
         )
     }
 
@@ -314,11 +337,13 @@ struct SessionsListView: View {
         if isSidebar {
             VStack(spacing: 0) {
                 SessionsSidebarHeader(
-                    serverFilter: switchTargets.isInteractive
+                    serverFilter: isFilterInteractive
                         ? SessionsSidebarHeader.ServerFilter(
                             title: serverFilterTitle,
                             targets: switchTargets.targets,
-                            selection: serverFilterSelection
+                            selection: serverFilterSelection,
+                            workspaces: workspaceMenuOptions,
+                            workspaceSelection: workspaceFilterSelection
                         )
                         : nil,
                     onCreate: presentNewSessionSheet,
@@ -337,7 +362,7 @@ struct SessionsListView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationTitle(AppText.sessions)
                 .toolbar {
-                    if switchTargets.isInteractive {
+                    if isFilterInteractive {
                         ToolbarItem(placement: .principal) {
                             serverFilterMenu
                         }
@@ -361,15 +386,25 @@ struct SessionsListView: View {
         }
     }
 
-    /// With several saved servers the capsule filters the list instead of naming one host.
+    /// The capsule filters the list by server and by workspace instead of naming one host.
     private var serverFilterMenu: some View {
         Menu {
-            Picker(AppText.servers, selection: serverFilterSelection) {
-                Text(AppText.sessionsAllServers)
+            if switchTargets.targets.count > 1 {
+                Picker(AppText.servers, selection: serverFilterSelection) {
+                    Text(AppText.sessionsAllServers)
+                        .tag(Self.allServersSelection)
+                    ForEach(switchTargets.targets) { target in
+                        Text(target.tag.text)
+                            .tag(target.id)
+                    }
+                }
+            }
+            Picker(AppText.workspaces, selection: workspaceFilterSelection) {
+                Text(AppText.sessionsAllWorkspaces)
                     .tag(Self.allServersSelection)
-                ForEach(switchTargets.targets) { target in
-                    Text(target.tag.text)
-                        .tag(target.id)
+                ForEach(workspaceMenuOptions) { option in
+                    Text(option.text)
+                        .tag(option.id)
                 }
             }
         } label: {
@@ -381,12 +416,21 @@ struct SessionsListView: View {
 
     private static let allServersSelection = ""
 
-    private var serverFilterTitle: String {
-        guard let serverFilterID,
-              let target = switchTargets.targets.first(where: { $0.id == serverFilterID }) else {
-            return AppText.sessionsAllServers
+    /// A workspace row names its server only while the list spans several.
+    private var workspaceMenuOptions: [SessionsSidebarHeader.WorkspaceChoice] {
+        workspaceOptions.map {
+            .init(id: $0.id, text: serverFilterID == nil ? $0.label.text : $0.label.workspace)
         }
-        return target.tag.text
+    }
+
+    private var serverFilterTitle: String {
+        let server = serverFilterID.flatMap { id in switchTargets.targets.first(where: { $0.id == id }) }
+        let workspace = workspaceOptions.first { $0.id == effectiveWorkspaceFilterID }
+        return sessionFilterTitle(
+            server: server?.tag,
+            workspace: workspace?.label.workspace,
+            hasSeveralServers: switchTargets.targets.count > 1
+        )
     }
 
     private var serverFilterSelection: Binding<String> {
@@ -397,6 +441,18 @@ struct SessionsListView: View {
                 guard newFilter != serverFilterID,
                       newFilter == nil || switchTargets.targets.contains(where: { $0.id == newFilter }) else { return }
                 serverFilterID = newFilter
+                // The workspace options now come from the new server set; a selection outside
+                // them goes back to All rather than reviving when the server is chosen again.
+                workspaceFilterID = effectiveWorkspaceFilterID
+            }
+        )
+    }
+
+    private var workspaceFilterSelection: Binding<String> {
+        Binding(
+            get: { effectiveWorkspaceFilterID ?? Self.allServersSelection },
+            set: { id in
+                workspaceFilterID = id == Self.allServersSelection ? nil : id
             }
         )
     }
@@ -918,6 +974,13 @@ private struct SessionsSidebarHeader: View {
         let title: String
         let targets: [ServerSwitchTargets.Target]
         let selection: Binding<String>
+        let workspaces: [WorkspaceChoice]
+        let workspaceSelection: Binding<String>
+    }
+
+    struct WorkspaceChoice: Identifiable, Equatable {
+        let id: String
+        let text: String
     }
 
     let serverFilter: ServerFilter?
@@ -966,12 +1029,22 @@ private struct SessionsSidebarHeader: View {
 
     private func filterMenu(_ filter: ServerFilter) -> some View {
         Menu {
-            Picker(AppText.servers, selection: filter.selection) {
-                Text(AppText.sessionsAllServers)
+            if filter.targets.count > 1 {
+                Picker(AppText.servers, selection: filter.selection) {
+                    Text(AppText.sessionsAllServers)
+                        .tag("")
+                    ForEach(filter.targets) { target in
+                        Text(target.tag.text)
+                            .tag(target.id)
+                    }
+                }
+            }
+            Picker(AppText.workspaces, selection: filter.workspaceSelection) {
+                Text(AppText.sessionsAllWorkspaces)
                     .tag("")
-                ForEach(filter.targets) { target in
-                    Text(target.tag.text)
-                        .tag(target.id)
+                ForEach(filter.workspaces) { workspace in
+                    Text(workspace.text)
+                        .tag(workspace.id)
                 }
             }
         } label: {

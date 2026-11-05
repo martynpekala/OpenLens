@@ -135,11 +135,14 @@ enum SessionGrouping {
     ///   - showsServerTags: `isMultiServerUIEnabled(savedServerCount:)`. When false no entry or
     ///     failure carries a server name.
     ///   - statuses: Live session statuses by server id then session id. Busy and retry run.
+    ///   - workspaceFilterID: Keeps only that workspace's entries. Applied before the entries are
+    ///     sectioned, so nothing downstream (section counts included) ever sees the others.
     static func aggregate(
         results: [ServerSessionsResult],
         tags: [String: ServerTag],
         showsServerTags: Bool,
         statuses: [String: [String: OCSessionStatus]] = [:],
+        workspaceFilterID: String? = nil,
         now: Date = Date(),
         calendar: Calendar = .current,
         customName: (String) -> String?
@@ -160,6 +163,10 @@ enum SessionGrouping {
             if let message = result.failureMessage {
                 failures.append(SessionServerFailure(serverID: result.serverID, message: message, tag: tag))
             }
+        }
+
+        if let workspaceFilterID {
+            entries = entries.filter { $0.workspaceID == workspaceFilterID }
         }
 
         // Newest first. `sorted` is not guaranteed stable, so break ties by position.
@@ -242,10 +249,62 @@ struct ServerQualifiedTitle: Equatable {
         self.server = server
     }
 
-    /// The server, separator and workspace as one phrase, for accessibility.
-    var spokenText: String {
+    /// The server, separator and workspace as one phrase.
+    var text: String {
         server.map { "\($0.text) · \(workspace)" } ?? workspace
     }
+
+    /// The same phrase, for accessibility.
+    var spokenText: String { text }
+}
+
+/// One workspace the Sessions filter can narrow to.
+struct SessionWorkspaceOption: Identifiable, Equatable {
+    /// `SessionListEntry.workspaceID`: scoped to the server.
+    let id: String
+    let label: ServerQualifiedTitle
+}
+
+extension SessionGrouping {
+    /// The workspaces present in `entries`, one option each, ordered by name so the menu is
+    /// findable. Pass the entries of the servers in view, before any workspace filter, so
+    /// choosing a server narrows the options to that server's workspaces.
+    static func workspaceOptions(in entries: [SessionListEntry]) -> [SessionWorkspaceOption] {
+        var seen: Set<String> = []
+        let options = entries.compactMap { entry -> SessionWorkspaceOption? in
+            guard seen.insert(entry.workspaceID).inserted else { return nil }
+            return SessionWorkspaceOption(id: entry.workspaceID, label: entry.label)
+        }
+        return options.sorted { lhs, rhs in
+            let order = lhs.label.workspace.localizedCaseInsensitiveCompare(rhs.label.workspace)
+            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+        }
+    }
+
+    /// A workspace selection that is no longer among the options (the server filter moved, or
+    /// its last session went away) means All, not a list filtered to nothing.
+    static func resolvedWorkspaceFilter(_ selected: String?, options: [SessionWorkspaceOption]) -> String? {
+        guard let selected, options.contains(where: { $0.id == selected }) else { return nil }
+        return selected
+    }
+}
+
+/// The capsule is a filter only when there is something to choose between: several servers or
+/// several workspaces. One server with one workspace stays the plain host capsule.
+func sessionFilterIsInteractive(serverCount: Int, workspaceCount: Int) -> Bool {
+    serverCount > 1 || workspaceCount > 1
+}
+
+/// What the Sessions capsule says for the active filter. Composed with `ServerQualifiedTitle`:
+/// a server alone is its tag, a workspace alone is its name, both read `server · workspace`.
+/// With nothing chosen it says what is unfiltered: servers when several are saved, otherwise
+/// workspaces.
+func sessionFilterTitle(server: ServerTag?, workspace: String?, hasSeveralServers: Bool) -> String {
+    if let workspace {
+        return ServerQualifiedTitle(workspace: workspace, showingServer: server).text
+    }
+    if let server { return server.text }
+    return hasSeveralServers ? AppText.sessionsAllServers : AppText.sessionsAllWorkspaces
 }
 
 extension ServerRegistry {
