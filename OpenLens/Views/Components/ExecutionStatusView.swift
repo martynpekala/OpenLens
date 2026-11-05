@@ -7,9 +7,9 @@ struct ExecutionStatusView: View {
 
     private var color: Color {
         switch state {
-        case .succeeded: .green
-        case .failed: .red
-        case .working, .waitingPermission, .waitingForm: .orange
+        case .succeeded: Color.appSuccess
+        case .failed: Color.appDanger
+        case .working, .waitingPermission, .waitingForm: Color.appWarning
         case .interrupted, .unknown: Color.appSecondary
         }
     }
