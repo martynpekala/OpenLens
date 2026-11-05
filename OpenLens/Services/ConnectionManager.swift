@@ -49,6 +49,12 @@ final class ConnectionManager: ConnectionProviding {
     private var lastHeartbeat: Date = .distantPast
     private var heartbeatWatchdog: Timer?
 
+    /// Id of the saved profile this manager is connected to. Unknown until a connect succeeds:
+    /// `saveConnection` dedupes by URL + username, so it may resolve to an existing profile.
+    /// Everything that scopes per-server state (model choice, project folder) reads this, never
+    /// the store's global `activeConnectionID`.
+    private(set) var connectionID: String?
+
     @ObservationIgnored private let localNetworkAccessProbe: any LocalNetworkAccessProbing
 
     /// If no heartbeat arrives within this interval, the connection is considered stale.
@@ -65,8 +71,14 @@ final class ConnectionManager: ConnectionProviding {
 
 #if DEBUG
     /// Installs a negotiated client without opening a live network connection.
-    init(testClient: OpenCodeClient, capabilities: OpenCodeServerCapabilities, testSSEClient: SSEClient? = nil) {
+    init(
+        testClient: OpenCodeClient,
+        capabilities: OpenCodeServerCapabilities,
+        testSSEClient: SSEClient? = nil,
+        connectionID: String? = nil
+    ) {
         self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+        self.connectionID = connectionID
         self.client = testClient
         self.serverCapabilities = capabilities
         self.sseClient = testSSEClient
@@ -104,6 +116,14 @@ final class ConnectionManager: ConnectionProviding {
         password: String = "",
         method: ConnectionMethod = .manual
     ) async {
+        let transient = SavedConnection(id: UUID().uuidString, serverURL: url, username: username, password: password)
+        await connect(profile: transient, method: method)
+    }
+
+    func connect(profile: SavedConnection, method: ConnectionMethod = .manual) async {
+        let url = profile.serverURL
+        let username = profile.username
+        let password = profile.password
         didManuallyDisconnect = false
         hasAttemptedConnection = true
         connectionMethod = method
@@ -179,6 +199,7 @@ final class ConnectionManager: ConnectionProviding {
                 username: username,
                 password: password
             ) {
+                connectionID = saved.id
                 savedConnectionsStore?.updateProjectSelection(
                     connectionID: saved.id,
                     directory: self.selectedProjectDirectory
@@ -206,13 +227,11 @@ final class ConnectionManager: ConnectionProviding {
 
     /// Reconnect using saved config.
     func reconnect() async {
-        guard let saved = savedConnectionsStore?.mostRecent, saved.isConfigured else { return }
-        await connect(
-            url: saved.serverURL,
-            username: saved.username,
-            password: saved.password,
-            method: .autoReconnect
-        )
+        guard let store = savedConnectionsStore,
+              let saved = store.lastActiveConnectionID.flatMap({ id in store.connections.first { $0.id == id } })
+                ?? store.mostRecent,
+              saved.isConfigured else { return }
+        await connect(profile: saved, method: .autoReconnect)
     }
 
     // MARK: - Disconnect
@@ -237,7 +256,8 @@ final class ConnectionManager: ConnectionProviding {
         selectedProjectDirectory = nil
         connectionMethod = nil
         localNetworkAccessRequired = false
-        let disconnectedServerID = savedConnectionsStore?.activeConnectionID
+        let disconnectedServerID = connectionID
+        connectionID = nil
         savedConnectionsStore?.clearActiveConnection()
         if let disconnectedServerID {
             SharedConnectionStore.clear(serverID: disconnectedServerID)
@@ -324,9 +344,9 @@ final class ConnectionManager: ConnectionProviding {
         projectName = nil
         branch = nil
 
-        if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
+        if let connectionID {
             savedConnectionsStore?.updateProjectSelection(
-                connectionID: activeConnectionID,
+                connectionID: connectionID,
                 directory: normalizedDirectory
             )
         }
@@ -403,9 +423,9 @@ final class ConnectionManager: ConnectionProviding {
                 guard generation == projectContextGeneration else { return }
                 sseClient?.updateContextDirectory(inferredDirectory)
 
-                if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
+                if let connectionID {
                     savedConnectionsStore?.updateProjectSelection(
-                        connectionID: activeConnectionID,
+                        connectionID: connectionID,
                         directory: inferredDirectory
                     )
                 }

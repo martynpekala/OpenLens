@@ -947,7 +947,7 @@ struct WorkspaceRootView: View {
     /// The same options the new-session sheet offers: what the server reports plus
     /// the folders chosen earlier, which the server's project list never names.
     private func makeWorkspaceOptions(from snapshot: WorkspaceSnapshot) -> [WorkspaceSelectionOption] {
-        let recentDirectories = savedConnections.activeConnectionID
+        let recentDirectories = connection.connectionID
             .map { savedConnections.recentProjectSelections(connectionID: $0) }
             ?? []
         return WorkspaceSelectionBuilder.makeOptions(
@@ -1012,7 +1012,7 @@ struct WorkspaceRootView: View {
     /// remembers it. Without this it drops out of the picker after the first
     /// switch whenever the server does not list it as a project.
     private func rememberActiveWorkspace() {
-        guard let connectionID = savedConnections.activeConnectionID,
+        guard let connectionID = connection.connectionID,
               let directory = WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.directory),
               directory != "/" else { return }
         savedConnections.updateProjectSelection(connectionID: connectionID, directory: directory)

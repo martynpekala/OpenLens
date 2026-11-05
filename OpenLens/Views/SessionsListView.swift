@@ -1135,7 +1135,7 @@ private struct NewSessionSheet: View {
         workspaceState = .loading
         createErrorMessage = nil
 
-        let activeConnectionID = savedConnections.activeConnectionID
+        let activeConnectionID = connection.connectionID
         let recentDirectories = activeConnectionID
             .map { savedConnections.recentProjectSelections(connectionID: $0) }
             ?? []

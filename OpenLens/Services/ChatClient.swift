@@ -537,7 +537,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard !selectedProviderID.isEmpty, !selectedModelID.isEmpty else { return }
 
         let selectionID = "\(selectedProviderID)/\(selectedModelID)"
-        guard let connID = savedConnectionsStore?.activeConnectionID else {
+        guard let connID = connection?.connectionID else {
             guard isDemoMode else { return }
             inMemoryRecentModelIDs.removeAll { $0 == selectionID }
             inMemoryRecentModelIDs.insert(selectionID, at: 0)
@@ -565,7 +565,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func persistDefaultModelSelection(providerID: String, modelID: String) {
-        guard let connID = savedConnectionsStore?.activeConnectionID else { return }
+        guard let connID = connection?.connectionID else { return }
         savedConnectionsStore?.updateDefaultModelSelection(
             connectionID: connID,
             providerID: providerID,
@@ -574,7 +574,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func clearDefaultModelSelection() {
-        guard let connID = savedConnectionsStore?.activeConnectionID else { return }
+        guard let connID = connection?.connectionID else { return }
         savedConnectionsStore?.clearDefaultModelSelection(connectionID: connID)
     }
 
@@ -649,8 +649,8 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     var defaultModelSelection: (providerID: String, modelID: String)? {
-        guard let activeConnectionID = savedConnectionsStore?.activeConnectionID else { return nil }
-        guard let saved = savedConnectionsStore?.defaultModelSelection(connectionID: activeConnectionID) else { return nil }
+        guard let connectionID = connection?.connectionID else { return nil }
+        guard let saved = savedConnectionsStore?.defaultModelSelection(connectionID: connectionID) else { return nil }
         return Self.resolveSavedModelSelection(
             providerID: saved.providerID,
             modelID: saved.modelID,
@@ -753,7 +753,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     private var quickModelConnectionID: String? {
         guard let savedConnectionsStore else { return nil }
-        return savedConnectionsStore.activeConnectionID ?? savedConnectionsStore.mostRecent?.id
+        return connection?.connectionID ?? savedConnectionsStore.mostRecent?.id
     }
 
     /// Saves a model and optional reasoning variant for a quick action without
@@ -1600,7 +1600,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.sseHandler?.delegate = self
 
         // Restore persisted model selection from the most recent saved connection
-        if let activeID = savedConnectionsStore.activeConnectionID,
+        if let activeID = connection.connectionID,
            let saved = savedConnectionsStore.savedModelSelection(connectionID: activeID) {
             self.selectedProviderID = saved.providerID
             self.selectedModelID = saved.modelID
@@ -2895,10 +2895,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.enabledProviders = configResult.enabledProviders
         self.disabledProviders = configResult.disabledProviders
 
-        let savedDefault = savedConnectionsStore?.activeConnectionID.flatMap {
+        let savedDefault = connection?.connectionID.flatMap {
             savedConnectionsStore?.defaultModelSelection(connectionID: $0)
         }
-        let savedSelection = savedConnectionsStore?.activeConnectionID.flatMap {
+        let savedSelection = connection?.connectionID.flatMap {
             savedConnectionsStore?.savedModelSelection(connectionID: $0)
         }
         var serverDefault: (providerID: String, modelID: String)?
@@ -3082,7 +3082,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         if providers.isEmpty {
             await loadProviders()
         }
-        if let saved = savedConnectionsStore?.activeConnectionID.flatMap({
+        if let saved = connection?.connectionID.flatMap({
                savedConnectionsStore?.savedModelSelection(connectionID: $0)
            }),
            let model = Self.resolveSavedModelSelection(
