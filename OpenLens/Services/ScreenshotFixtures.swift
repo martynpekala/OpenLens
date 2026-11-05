@@ -397,6 +397,10 @@ enum ScreenshotFixtures {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_INBOX")
     }
 
+    static var opensArchivedSessions: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_ARCHIVED_SESSIONS")
+    }
+
     static var opensGlobalFormSheet: Bool {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_GLOBAL_FORM_SHEET")
     }
@@ -557,6 +561,28 @@ enum ScreenshotFixtures {
             outcome: outcome
         )
     }
+
+    /// Archived conversations, reachable directly via `SCREENSHOT_ARCHIVED_SESSIONS`.
+    static let archivedSessions: [OCSession] = [
+        OCSession(
+            id: "session-screenshot-archived-1", projectID: projectID, directory: projectPath,
+            title: "Ship polished App Store screenshots", version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (6 * dayMilliseconds), updated: nowMilliseconds - (2 * dayMilliseconds),
+                                archived: nowMilliseconds - (2 * dayMilliseconds))
+        ),
+        OCSession(
+            id: "session-screenshot-archived-2", projectID: projectID, directory: projectPath,
+            title: "Tighten workspace information architecture", version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (12 * dayMilliseconds), updated: nowMilliseconds - (9 * dayMilliseconds),
+                                archived: nowMilliseconds - (9 * dayMilliseconds))
+        ),
+        OCSession(
+            id: "session-screenshot-archived-3", projectID: projectID, directory: projectPath,
+            title: "Review onboarding copy for precision", version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (40 * dayMilliseconds), updated: nowMilliseconds - (35 * dayMilliseconds),
+                                archived: nowMilliseconds - (35 * dayMilliseconds))
+        )
+    ]
 
     static var sessionStatuses: [String: OCSessionStatus] {
         if outcomeRefreshHasCompleted { return [:] }

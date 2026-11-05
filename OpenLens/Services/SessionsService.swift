@@ -246,7 +246,7 @@ final class SessionsService {
     /// canonical archive state instead of trusting the filter.
     func listArchivedSessions() async throws -> [OCSession] {
         if ScreenshotFixtures.isEnabled {
-            return []
+            return ScreenshotFixtures.archivedSessions
         }
 
         guard let client = connection.client else {

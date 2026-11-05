@@ -309,6 +309,10 @@ struct OpenLensApp: App {
             initialRouter.selectedTab = .chat
             initialRouter.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
         }
+        if screenshotModeEnabled, ScreenshotFixtures.opensArchivedSessions {
+            initialRouter.selectedTab = .chat
+            initialRouter.chatPath = [.archivedSessions]
+        }
         if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
             initialRouter.selectedTab = launchTab
         }

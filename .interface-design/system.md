@@ -49,6 +49,12 @@ content — group headers use weight, not size, to separate from rows.
 - Sessions list — header and rows share the same leading edge (24pt screen /
   12pt sidebar); no folder icon, no extra row indent. Group separation comes
   from the header's top/bottom padding (12/6), not separators.
+- Archived sessions (`ArchivedSessionsView`) mirrors the Sessions row anatomy:
+  single-line, title leading with `.frame(maxWidth: .infinity)`, trailing
+  metadata (here a relative "archived" date, 13pt rounded) at
+  `.firstTextBaseline`, same chevron. Reachable via
+  `SCREENSHOT_ARCHIVED_SESSIONS` for fixture validation — this screen had no
+  populated fixture before and had silently drifted from the Sessions row.
 - Primary buttons: neutral-action convention (`primaryCTAStyle()`,
   `appNeutralAction` FAB) — accent-filled hand-rolled buttons are not used.
 - Empty/error states: `ContentUnavailableView` + `primaryCTAStyle()` retry.
