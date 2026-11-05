@@ -150,19 +150,16 @@ struct ArchivedSessionsView: View {
     }
 
     private func sessionRow(_ session: OCSession) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                SessionWorkingTitle(
-                    title: session.title.isEmpty ? AppText.titleUntitled : session.title,
-                    isWorking: false
-                )
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            SessionWorkingTitle(
+                title: session.title.isEmpty ? AppText.titleUntitled : session.title,
+                isWorking: false
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(archivedDateText(for: session))
-                    .font(.system(size: 14, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
-            }
-
-            Spacer()
+            Text(archivedDateText(for: session))
+                .font(.system(size: 13, design: .rounded))
+                .foregroundStyle(Color.appSecondary)
 
             Image(systemName: "chevron.right")
                 .font(.system(size: 18, weight: .light))
