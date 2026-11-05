@@ -61,9 +61,15 @@ content — group headers use weight, not size, to separate from rows.
 
 ## Verification
 
-- Fixture-mode captures: `SIMCTL_CHILD_OPENLENS_SCREENSHOT_MODE=1
-  SIMCTL_CHILD_OPENLENS_SCREENSHOT_TAB=<chat|review|workspace|settings>
-  xcrun simctl launch <UDID> com.nicolabeghin.OpenLens`, then
+- Fixture-mode captures. Two mechanisms, and the difference matters: flags in
+  the double form (argument *or* `OPENLENS_`-prefixed env key) can be set with
+  `SIMCTL_CHILD_`-prefixed environment variables, but **argument-only flags can
+  only be passed as positional launch arguments after the bundle id**:
+  `xcrun simctl launch <UDID> com.nicolabeghin.OpenLens SCREENSHOT_MODE
+  SCREENSHOT_EXECUTION_OUTCOMES`. (`simctl launch` has no `--setenv`.) The
+  outcome/unread flags this file's own two-state rule depends on are
+  argument-only, so the env-var recipe alone cannot produce the second state —
+  prefer positional arguments unless a flag is env-only. Then
   `xcrun simctl io <UDID> screenshot`. Settle 15s after a fresh install — 7s
   once photographed a blank list. Compose labeled before/after boards with
   `.scratch/ui-review/` tooling; expect deltas in the 0.1–6% range for polish
@@ -77,6 +83,12 @@ content — group headers use weight, not size, to separate from rows.
   Expect ≈35 content bands for the date variant and ≈46 for the state
   variant; archive both boards under `.scratch/ui-review/`
   (`compare-chat-*-both-states.png` pattern for the two-up board).
+- Single-server parity baselines live in `.interface-design/baselines/`
+  (`baseline-single-default.png`, `baseline-single-states.png`), captured from
+  the single-server fixture before multi-server aggregation existed. The
+  sessions list must stay pixel-identical to them while only one server is
+  saved; regenerate them only for a deliberate, reviewed design change.
+
 - States not fixture-renderable in the list (waiting-permission/form rows,
   v1 date rows, iPad sidebar selection) are covered by keeping status
   metadata bounded: `ExecutionStatusView(isCompact: true)` never wraps
