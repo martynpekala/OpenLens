@@ -439,31 +439,39 @@ struct SessionsListView: View {
         let showsListExecutionOutcomes = connection.serverCapabilities?.protocolVersion == .v2
             || ScreenshotFixtures.showsExecutionOutcomes
 
+        let showsUnreadBadge = !isBusy && session.hasUnreadResult && showsListExecutionOutcomes
+
         return HStack(alignment: .firstTextBaseline, spacing: 12) {
-            SessionWorkingTitle(
-                title: session.title.isEmpty ? AppText.titleUntitled : session.title,
-                isWorking: isBusy
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    SessionWorkingTitle(
+                        title: session.title.isEmpty ? AppText.titleUntitled : session.title,
+                        isWorking: isBusy
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            if !isBusy, showsListExecutionOutcomes,
-                      let outcome = session.executionOutcomeVisibleOnSessionList() {
-                ExecutionStatusView(state: outcome, idleTime: session.time.idle)
-            } else if !isBusy, !showsListExecutionOutcomes {
-                Text(formattedDate(session.updatedAt))
-                    .font(.system(size: 13, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
-            }
+                    if !isBusy, showsListExecutionOutcomes,
+                              let outcome = session.executionOutcomeVisibleOnSessionList() {
+                        ExecutionStatusView(state: outcome, idleTime: session.time.idle, isCompact: true)
+                    } else if !isBusy, !showsListExecutionOutcomes {
+                        Text(formattedDate(session.updatedAt))
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundStyle(Color.appSecondary)
+                    }
+                }
 
-            if !isBusy, session.hasUnreadResult, showsListExecutionOutcomes {
-                Text(AppText.unreadResult)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.appAccent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.appAccent.opacity(0.12), in: Capsule())
-                    .accessibilityLabel(AppText.unreadResultAccessibility)
-                    .accessibilityIdentifier("session.unreadResult.\(session.id)")
+                // Unread results earn their own line: the badge gets breathing
+                // room and the row itself stands taller than read rows.
+                if showsUnreadBadge {
+                    Text(AppText.unreadResult)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.appAccent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.appAccent.opacity(0.12), in: Capsule())
+                        .accessibilityLabel(AppText.unreadResultAccessibility)
+                        .accessibilityIdentifier("session.unreadResult.\(session.id)")
+                }
             }
 
             if !isSidebar {

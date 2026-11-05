@@ -58,6 +58,19 @@ content — group headers use weight, not size, to separate from rows.
 - Fixture-mode captures: `SIMCTL_CHILD_OPENLENS_SCREENSHOT_MODE=1
   SIMCTL_CHILD_OPENLENS_SCREENSHOT_TAB=<chat|review|workspace|settings>
   xcrun simctl launch <UDID> com.nicolabeghin.OpenLens`, then
-  `xcrun simctl io <UDID> screenshot`. Compose labeled before/after boards with
+  `xcrun simctl io <UDID> screenshot`. Settle 15s after a fresh install — 7s
+  once photographed a blank list. Compose labeled before/after boards with
   `.scratch/ui-review/` tooling; expect deltas in the 0.1–6% range for polish
   passes (larger = recheck capture methodology first).
+- Row layouts MUST be validated against the states they can render, not the
+  default fixture: plain captures show date-only rows. Add
+  `SCREENSHOT_EXECUTION_OUTCOMES SCREENSHOT_UNREAD_RESULTS` as launch
+  arguments (bare, no leading dash — the fixture matches exact strings) to
+  render succeeded/failed/interrupted statuses, a busy shimmer row, and
+  unread badges. Verify captures quantitatively (content-band analysis ≈35
+  bands date-variant, ≈46 state-variant) before composing boards.
+- States not fixture-renderable in the list (waiting-permission/form rows,
+  v1 date rows, iPad sidebar selection) are covered by keeping status
+  metadata bounded: `ExecutionStatusView(isCompact: true)` never wraps
+  (`lineLimit(1)` + `fixedSize`) and yields nothing to the title.
+
