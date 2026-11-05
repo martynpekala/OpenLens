@@ -50,7 +50,7 @@ struct WorkspaceRootView: View {
             case .info:
                 .secondary
             case .error:
-                .orange
+                Color.appWarning
             }
         }
     }
@@ -102,6 +102,7 @@ struct WorkspaceRootView: View {
                 content
             }
         }
+        .background(Color.appBackground)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             projectToolbarItem
@@ -190,7 +191,7 @@ struct WorkspaceRootView: View {
                         Text(errorMessage)
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Color.appWarning)
                     }
                 }
             }
@@ -200,6 +201,7 @@ struct WorkspaceRootView: View {
             changedFilesSection
             filesSection
         }
+        .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
@@ -295,20 +297,22 @@ struct WorkspaceRootView: View {
 
     private var sourceControlSection: some View {
         Section {
-            LabeledContent("Branch") {
+            LabeledContent(AppText.workspaceBranchLabel) {
                 Text(currentBranch)
                     .font(.body.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            LabeledContent("Files", value: "\(workingTreeSummary.fileCount)")
-            LabeledContent("Added") {
-                Text("+\(workingTreeSummary.additions)")
-                    .foregroundStyle(.green)
-            }
-            LabeledContent("Removed") {
-                Text("-\(workingTreeSummary.deletions)")
-                    .foregroundStyle(.red)
+
+            LabeledContent(AppText.workspaceWorkingTreeLabel) {
+                HStack(spacing: 8) {
+                    Text("\(workingTreeSummary.fileCount)")
+                        .foregroundStyle(.secondary)
+                    Text("+\(workingTreeSummary.additions)")
+                        .foregroundStyle(Color.appSuccess)
+                    Text("-\(workingTreeSummary.deletions)")
+                        .foregroundStyle(Color.appDanger)
+                }
             }
 
             if let workingTreeStatusNotice {
@@ -378,7 +382,7 @@ struct WorkspaceRootView: View {
                     Button {
                         selectedDiffFile = file
                     } label: {
-                        changedFileRow(file)
+                        FileChangeRow(file: file)
                     }
                     .tint(.primary)
                 }
@@ -410,26 +414,6 @@ struct WorkspaceRootView: View {
 
     private var hiddenWorkingTreeCount: Int {
         max(snapshot.workingTree.count - Self.changedFilesCollapsedLimit, 0)
-    }
-
-    private func changedFileRow(_ file: ReviewFileChange) -> some View {
-        VStack(alignment: .leading) {
-            Text(file.path)
-                .font(.body.monospaced())
-                .lineLimit(2)
-                .truncationMode(.middle)
-            Text(file.statusLabel.capitalized)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                Text("+\(file.additions)")
-                    .foregroundStyle(.green)
-                Text("-\(file.deletions)")
-                    .foregroundStyle(.red)
-            }
-            .monospacedDigit()
-        }
-        .font(.footnote.monospaced())
     }
 
     // MARK: - Activity & Insights

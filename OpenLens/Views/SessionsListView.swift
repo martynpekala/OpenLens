@@ -73,6 +73,7 @@ struct SessionsListView: View {
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.connection) private var connection
     @Environment(\.workspaceNames) private var workspaceNames
+    @Environment(\.openLensTheme) private var theme
 
     init(
         initialState: InitialState,
@@ -318,7 +319,7 @@ struct SessionsListView: View {
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(
                     top: 0,
-                    leading: (isSidebar ? 12.0 : 24.0) + 22,
+                    leading: isSidebar ? 12.0 : 24.0,
                     bottom: 0,
                     trailing: isSidebar ? 12.0 : 24.0
                 ))
@@ -349,27 +350,19 @@ struct SessionsListView: View {
     private func projectHeader(_ group: SessionProjectGroup) -> some View {
         let isExpanded = expandedProjectIDs.contains(group.id)
 
-        return HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading) {
-                HStack(alignment: .center) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(group.title)
+                .font(.system(size: isSidebar ? 15 : 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.appPrimary)
+                .lineLimit(1)
 
-                    Text(group.title)
-                        .font(.system(size: isSidebar ? 15 : 18, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
-                        .lineLimit(1)
+            Text("\u{00B7}")
+                .font(theme.typography.captionRounded)
+                .foregroundStyle(Color.appSecondary)
 
-                    Text("\u{00B7}")
-                        .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(Color.appSecondary)
-
-                    Text(AppText.groupedProjectCount(group.sessions.count))
-                        .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(Color.appSecondary)
-                }
-            }
+            Text(AppText.groupedProjectCount(group.sessions.count))
+                .font(theme.typography.captionRounded)
+                .foregroundStyle(Color.appSecondary)
 
             Spacer()
 
@@ -384,11 +377,11 @@ struct SessionsListView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, 6)
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(
-            top: isSidebar ? 12.0 : 18.0,
+            top: isSidebar ? 12.0 : 12.0,
             leading: isSidebar ? 12.0 : 24.0,
             bottom: 0,
             trailing: isSidebar ? 12.0 : 24.0
@@ -446,24 +439,21 @@ struct SessionsListView: View {
         let showsListExecutionOutcomes = connection.serverCapabilities?.protocolVersion == .v2
             || ScreenshotFixtures.showsExecutionOutcomes
 
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                SessionWorkingTitle(
-                    title: session.title.isEmpty ? AppText.titleUntitled : session.title,
-                    isWorking: isBusy
-                )
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            SessionWorkingTitle(
+                title: session.title.isEmpty ? AppText.titleUntitled : session.title,
+                isWorking: isBusy
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-                if !isBusy, showsListExecutionOutcomes,
-                          let outcome = session.executionOutcomeVisibleOnSessionList() {
-                    ExecutionStatusView(state: outcome, idleTime: session.time.idle)
-                } else if !isBusy, !showsListExecutionOutcomes {
-                    Text(formattedDate(session.updatedAt))
-                        .font(.system(size: 14, design: .rounded))
-                        .foregroundStyle(Color.appSecondary)
-                }
+            if !isBusy, showsListExecutionOutcomes,
+                      let outcome = session.executionOutcomeVisibleOnSessionList() {
+                ExecutionStatusView(state: outcome, idleTime: session.time.idle)
+            } else if !isBusy, !showsListExecutionOutcomes {
+                Text(formattedDate(session.updatedAt))
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundStyle(Color.appSecondary)
             }
-
-            Spacer()
 
             if !isBusy, session.hasUnreadResult, showsListExecutionOutcomes {
                 Text(AppText.unreadResult)
@@ -496,7 +486,7 @@ struct SessionsListView: View {
 
     private var emptyState: some View {
         VStack(spacing: 20) {
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: theme.radius.card)
                 .fill(Color.appTertiary)
                 .frame(width: 72, height: 72)
                 .overlay {
@@ -516,19 +506,10 @@ struct SessionsListView: View {
                     .multilineTextAlignment(.center)
             }
 
-            Button {
+            Button(AppText.newSession) {
                 presentNewSessionSheet()
-            } label: {
-                Text(AppText.newSession)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appOnAccent)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 13)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14)
-                            .fill(Color.appAccent)
-                    )
             }
+            .primaryCTAStyle()
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -789,6 +770,7 @@ private struct NewSessionSheet: View {
     @Environment(\.savedConnections) private var savedConnections
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.openLensTheme) private var theme
 
     @State private var title = ""
     @State private var workspaceState: WorkspaceLoadState = .idle
@@ -895,7 +877,7 @@ private struct NewSessionSheet: View {
     private var titleSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(AppText.newSessionPlaceholder)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .font(theme.typography.sectionLabel)
                 .foregroundStyle(Color.appSecondary)
                 .textCase(.uppercase)
 
@@ -907,9 +889,9 @@ private struct NewSessionSheet: View {
                 .autocorrectionDisabled(false)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 13)
-                .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous)
                         .stroke(Color.appSeparator, lineWidth: 1)
                 }
         }
@@ -919,7 +901,7 @@ private struct NewSessionSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(AppText.workspace)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .font(theme.typography.sectionLabel)
                     .foregroundStyle(Color.appSecondary)
                     .textCase(.uppercase)
 
@@ -966,10 +948,10 @@ private struct NewSessionSheet: View {
                 )
             } label: {
                 Label(AppText.browseFolders, systemImage: "folder.badge.plus")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .font(theme.typography.rowTitleEmphasized)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14)
-                    .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous))
             }
             .buttonStyle(.plain)
             .foregroundStyle(Color.appAccent)
@@ -983,13 +965,13 @@ private struct NewSessionSheet: View {
             ProgressView()
                 .controlSize(.small)
                 .tint(Color.appAccent)
-            Text("Loading workspaces...")
+            Text(AppText.workspaceLoadingWorkspaces)
                 .font(.system(size: 14, design: .rounded))
                 .foregroundStyle(Color.appSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous))
     }
 
     private var workspaceOptionsList: some View {
@@ -1005,9 +987,9 @@ private struct NewSessionSheet: View {
                 }
             }
         }
-        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.listGroup, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.radius.listGroup, style: .continuous)
                 .stroke(Color.appSeparator, lineWidth: 1)
         }
     }
@@ -1023,12 +1005,12 @@ private struct NewSessionSheet: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(iconTint(for: option))
                     .frame(width: 28, height: 28)
-                    .background(iconTint(for: option).opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(iconTint(for: option).opacity(0.12), in: RoundedRectangle(cornerRadius: theme.radius.iconTile, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         Text(option.title)
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .font(theme.typography.rowTitleEmphasized)
                             .foregroundStyle(option.canCreateSession ? Color.appPrimary : Color.appSecondary)
                             .lineLimit(1)
 
@@ -1097,7 +1079,7 @@ private struct NewSessionSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
-        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: theme.radius.rowHighlight, style: .continuous))
     }
 
     private func iconName(for option: WorkspaceSelectionOption) -> String {
@@ -1209,7 +1191,7 @@ private struct ConnectedHostCapsule: View {
     let isReconnecting: Bool
 
     var body: some View {
-        HStack(spacing: 6) {
+        GlassToolbarCapsule(isInteractive: false) {
             Circle()
                 .fill(isReconnecting ? Color.appWarning : Color.appSuccess)
                 .frame(width: 7, height: 7)
@@ -1219,9 +1201,6 @@ private struct ConnectedHostCapsule: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .glassEffect(.regular, in: Capsule())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(AppText.sessions), \(host)")
     }

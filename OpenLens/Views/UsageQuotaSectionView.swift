@@ -74,7 +74,7 @@ struct UsageQuotaSectionView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
             }
             .font(.footnote)
-            .foregroundStyle(.orange)
+            .foregroundStyle(Color.appWarning)
             .padding(.vertical, 2)
         case .noLimitsReported:
             Label {
@@ -186,8 +186,8 @@ private struct QuotaWindowRow: View {
     private var barTint: Color {
         switch window.percentage {
         case ..<70: Color.appUserAccent
-        case ..<90: .orange
-        default: .red
+        case ..<90: Color.appWarning
+        default: Color.appDanger
         }
     }
 

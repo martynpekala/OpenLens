@@ -38,11 +38,11 @@ struct ReviewSessionPickerCapsule: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("Choose another session to review")
+        .accessibilityHint(AppText.reviewPickerHint)
     }
 
     private var titleCapsule: some View {
-        HStack(spacing: 6) {
+        GlassToolbarCapsule(isInteractive: true) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.appPrimary)
@@ -54,10 +54,6 @@ struct ReviewSessionPickerCapsule: View {
                 .rotationEffect(.degrees(isPresented ? 180 : 0))
                 .animation(.snappy, value: isPresented)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 5)
-        .frame(maxWidth: 240)
-        .glassEffect(.regular.interactive(), in: Capsule())
     }
 
     /// Always mounted so the merged shape never changes. It starts at zero and
@@ -65,10 +61,10 @@ struct ReviewSessionPickerCapsule: View {
     private var totalsCapsule: some View {
         HStack(spacing: 8) {
             Text("+\(totals.additions)")
-                .foregroundStyle(.green)
+                .foregroundStyle(Color.appSuccess)
                 .contentTransition(.numericText(value: Double(totals.additions)))
             Text("-\(totals.deletions)")
-                .foregroundStyle(.red)
+                .foregroundStyle(Color.appDanger)
                 .contentTransition(.numericText(value: Double(totals.deletions)))
         }
         .font(.caption2.weight(.semibold))
@@ -80,7 +76,11 @@ struct ReviewSessionPickerCapsule: View {
     }
 
     private var accessibilityLabel: String {
-        "Reviewed session, \(title), \(totals.additions) lines added, \(totals.deletions) lines removed"
+        AppText.reviewPickerAccessibility(
+            title: title,
+            additions: totals.additions,
+            deletions: totals.deletions
+        )
     }
 }
 
@@ -118,7 +118,7 @@ struct ReviewSessionPickerList: View {
         .listStyle(.plain)
         .overlay {
             if sessions.isEmpty, !hasMore {
-                ContentUnavailableView("No Sessions", systemImage: "doc.text.magnifyingglass")
+                ContentUnavailableView(AppText.reviewEmptyTitle, systemImage: "doc.text.magnifyingglass")
             }
         }
     }
@@ -153,7 +153,7 @@ struct ReviewSessionPickerList: View {
                 Task { await onLoadMore() }
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
-                    Label("Load more sessions", systemImage: "arrow.clockwise")
+                    Label(AppText.reviewPickerLoadMore, systemImage: "arrow.clockwise")
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(.secondary)
