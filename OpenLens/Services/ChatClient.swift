@@ -4731,6 +4731,10 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     // MARK: - SSE Setup
 
+    /// Whether this client belongs to the server the UI is showing. The registry replaces it;
+    /// everything else (previews, tests, a single server) is the active one.
+    @ObservationIgnored var isActiveServer: () -> Bool = { true }
+
     func setupSSEHandlers() {
         guard let connection, let sseClient = connection.sseClient else { return }
 
@@ -4751,6 +4755,13 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Routes one event from the session stream. Reconcile and inbox-change
     /// events trigger authoritative reads for the open session only.
     func receiveStreamEvent(_ inboundEvent: SSEInboundEvent) {
+        // The connection binds every client to its stream whether or not a chat was ever opened,
+        // so a non-active server's client with no session sees every session's prompts.
+        // `SSEEventHandler` treats "no current session" as "any session", which would raise
+        // another session's permission, question or form here and reject a pending question on
+        // the server. The active client keeps that deliberate early-prompt behaviour; recovery
+        // reads prompts authoritatively once a session is loaded.
+        guard currentSession != nil || isActiveServer() || !Self.isInteractivePromptEvent(inboundEvent) else { return }
         if usesV2SessionAPI, case .cold(.sessionUpdated(let update), _) = inboundEvent,
            let update, update.sessionID == currentSession?.id,
            let directory = update.update?.directory, directory != currentSession?.directory {
@@ -4783,6 +4794,18 @@ final class ChatClient: SSEEventHandlerDelegate {
         if usesV2SessionAPI, case .cold(.sessionUpdated(let update), _) = inboundEvent,
            let update, update.sessionID == currentSession?.id, update.refreshesTranscript {
             synchronizeCurrentSessionFromServer()
+        }
+    }
+
+    private static func isInteractivePromptEvent(_ inboundEvent: SSEInboundEvent) -> Bool {
+        switch inboundEvent {
+        case .cold(.permissionAsked, _), .cold(.questionAsked, _), .cold(.formCreated, _):
+            true
+        case .raw(let event):
+            ["permission.asked", "permission.v2.asked", "question.asked", "form.created", "form.asked"]
+                .contains(event.type)
+        default:
+            false
         }
     }
 

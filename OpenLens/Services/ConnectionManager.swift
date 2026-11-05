@@ -39,6 +39,9 @@ final class ConnectionManager: ConnectionProviding {
 
     private(set) var client: OpenCodeClient?
     private(set) var sseClient: SSEClient?
+    /// Called each time this connection builds a fresh `SSEClient`, before it connects, so whoever
+    /// consumes the stream can bind to it without waiting for a view to appear.
+    @ObservationIgnored var onSSEClientReady: ((SSEClient) -> Void)?
 
     /// Continuation used to bridge the SSE callback-based connection into async/await.
     /// Resumed once when SSE reports `.connected` or fails to connect.
@@ -232,6 +235,7 @@ final class ConnectionManager: ConnectionProviding {
             )
             self.sseClient = sse
             configureSSECallbacks(sse)
+            onSSEClientReady?(sse)
             await connectSSEAndWait(sse)
         } catch {
             guard !Task.isCancelled else { return }

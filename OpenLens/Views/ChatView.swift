@@ -196,7 +196,6 @@ struct ChatView: View {
         }
         // Initial load: ensure session is loaded when view appears
         .task {
-            chatClient.setupSSEHandlers()
             if initialSession == nil {
                 await chatClient.ensureSession()
             }
@@ -228,18 +227,12 @@ struct ChatView: View {
             )
         }
 
-        // Foreground recovery: stream events may have been missed while iOS
-        // suspended the app, so reconcile session and transcript before the
-        // incremental stream is considered current again.
+        // Foreground recovery of the stream, the session and pending prompts belongs to
+        // `ServerContext.resume()`, driven by the registry. The view reloads only what it owns.
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                chatClient.setupSSEHandlers()
-                chatClient.synchronizeCurrentSessionFromServer()
                 Task {
                     await loadCommands(force: true)
-                    await chatClient.recoverPendingPermission()
-                    await chatClient.recoverPendingQuestions()
-                    await chatClient.recoverPendingForms()
                     await loadSkills(force: true)
                 }
             }

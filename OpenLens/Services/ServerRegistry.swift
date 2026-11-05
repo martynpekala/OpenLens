@@ -44,6 +44,8 @@ final class ServerRegistry {
     @ObservationIgnored private let recordedReplayStore: RecordedReplayStore
     @ObservationIgnored private let makeTransport: (@Sendable (URL) -> any OpenCodeTransport)?
     @ObservationIgnored private let localNetworkAccessProbe: (any LocalNetworkAccessProbing)?
+    @ObservationIgnored private let resumeStagger: Duration
+    @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
 
     /// The context the root views read. The registry always holds at least one context, and
     /// `activeServerID` always names one of them.
@@ -58,12 +60,16 @@ final class ServerRegistry {
     ///     for the multi-server screenshot path.
     ///   - makeTransport: Fakes the network for every connection the registry builds.
     ///   - localNetworkAccessProbe: Replaces the real local-network probe, for tests.
+    ///   - resumeStagger: Pause between servers when the app returns to the foreground.
+    ///   - sleep: How that pause is spent; tests replace it so they never wait.
     init(
         savedConnectionsStore: SavedConnectionsStore,
         liveActivity: any LiveActivityProviding,
         recordedReplayStore: RecordedReplayStore,
         makeTransport: (@Sendable (URL) -> any OpenCodeTransport)? = nil,
         localNetworkAccessProbe: (any LocalNetworkAccessProbing)? = nil,
+        resumeStagger: Duration = .milliseconds(250),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         preparedContext: ServerContext? = nil,
         additionalPreparedContexts: [ServerContext] = []
     ) {
@@ -72,16 +78,20 @@ final class ServerRegistry {
         self.recordedReplayStore = recordedReplayStore
         self.makeTransport = makeTransport
         self.localNetworkAccessProbe = localNetworkAccessProbe
+        self.resumeStagger = resumeStagger
+        self.sleep = sleep
         self.contexts = []
 
         if let preparedContext {
             contexts = [preparedContext] + additionalPreparedContexts
             activeServerID = preparedContext.id
+            contexts.forEach(trackActiveState)
             return
         }
 
         contexts = savedConnectionsStore.connections.map { makeContext(for: $0) }
         ensureAContextExists()
+        contexts.forEach(trackActiveState)
         // Same rule `ConnectionManager.reconnect()` uses to pick the server to reopen, so the
         // context the connect screen drives is the one whose profile it connects to.
         let preferred = savedConnectionsStore.lastActiveConnectionID
@@ -184,6 +194,28 @@ final class ServerRegistry {
         savedConnectionsStore.setLastActiveConnection(id: profileID)
     }
 
+    // MARK: - Scene phase
+
+    /// Resumes the active server first, then every other live one in display order, one stagger
+    /// apart. `SSEClient`'s reconnect ladder is a flat 2s with no jitter, so servers waking
+    /// together would retry in lockstep. Stops early if the task is cancelled (the app went back
+    /// to the background).
+    func resumeAll() async {
+        let live = resumeOrder(contexts: contexts, activeID: activeServerID).filter(isLive)
+        for (index, context) in live.enumerated() {
+            if index > 0 {
+                await sleep(resumeStagger)
+            }
+            guard !Task.isCancelled else { return }
+            context.resume()
+        }
+    }
+
+    /// Never disconnects: that would clear `activeConnectionID` and the App Group credentials.
+    func suspendAll() {
+        contexts.forEach { $0.suspend() }
+    }
+
     // MARK: - Saved profiles
 
     /// Saves a server (or refreshes the existing profile for the same URL and user) and gives it
@@ -231,8 +263,16 @@ final class ServerRegistry {
     @discardableResult
     private func appendContext(for profile: SavedConnection) -> ServerContext {
         let context = makeContext(for: profile)
+        trackActiveState(context)
         contexts.append(context)
         return context
+    }
+
+    /// Lets a context's chat client ask whether its server is the active one.
+    private func trackActiveState(_ context: ServerContext) {
+        context.chatClient.isActiveServer = { [weak self, id = context.id] in
+            self?.activeServerID == id
+        }
     }
 
     private func makeContext(for profile: SavedConnection) -> ServerContext {
@@ -264,13 +304,15 @@ final class ServerRegistry {
 
     private func ensureAContextExists() {
         guard contexts.isEmpty else { return }
-        contexts = [ServerContext(
+        let draft = ServerContext(
             id: Self.draftContextID,
             connection: makeConnection(),
             liveActivity: liveActivity,
             savedConnectionsStore: savedConnectionsStore,
             recordedReplayStore: recordedReplayStore
-        )]
+        )
+        trackActiveState(draft)
+        contexts = [draft]
     }
 
     private func makeConnection() -> ConnectionManager {

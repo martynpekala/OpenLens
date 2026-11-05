@@ -31,6 +31,11 @@ final class ServerContext: Identifiable {
     let workspaceService: WorkspaceService
     let chatClient: ChatClient
 
+    @ObservationIgnored private var recoveryTask: Task<Void, Never>?
+
+    /// Whether a foreground recovery started by `resume()` is still running.
+    var isRecovering: Bool { recoveryTask != nil }
+
     init(
         id: String,
         profile: SavedConnection? = nil,
@@ -66,5 +71,48 @@ final class ServerContext: Identifiable {
             savedConnectionsStore: savedConnectionsStore,
             recordedReplayStore: recordedReplayStore
         )
+
+        // The connection, not a view, decides when the stream is wired: a server that is never on
+        // screen must still consume its events.
+        connection.onSSEClientReady = { [weak self] _ in
+            self?.chatClient.setupSSEHandlers()
+        }
     }
+
+    // MARK: - Scene phase
+
+    /// Brings this server back after the app returns to the foreground: re-binds the stream,
+    /// reconciles the open session and re-reads pending prompts, since events may have been
+    /// missed while iOS suspended the socket. Idempotent: a call while recovery is in flight
+    /// coalesces into it. It does not refresh any catalogue; that stays with the active view.
+    func resume() {
+        chatClient.setupSSEHandlers()
+        // Recovery is about the session this client has open. Without one the recovery reads
+        // would be unscoped and could surface another session's prompt.
+        guard chatClient.currentSession != nil else { return }
+        chatClient.synchronizeCurrentSessionFromServer()
+        guard recoveryTask == nil else { return }
+        recoveryTask = Task { [weak self] in
+            guard let chatClient = self?.chatClient else { return }
+            await chatClient.recoverPendingPermission()
+            await chatClient.recoverPendingQuestions()
+            await chatClient.recoverPendingForms()
+            self?.recoveryTask = nil
+        }
+    }
+
+    /// Nothing destructive: the connection, `activeConnectionID` and the App Group credentials
+    /// all survive, so a Live Activity button still works while the app is suspended. Only
+    /// foreground recovery that has not finished is dropped; `resume()` redoes it.
+    func suspend() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+    }
+}
+
+/// The order a foreground resume visits servers: the active one first so the screen the user is
+/// looking at recovers before anything else, then the rest in their stable display order.
+func resumeOrder(contexts: [ServerContext], activeID: String?) -> [ServerContext] {
+    guard let active = contexts.first(where: { $0.id == activeID }) else { return contexts }
+    return [active] + contexts.filter { $0.id != active.id }
 }

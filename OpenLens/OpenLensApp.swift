@@ -178,6 +178,8 @@ struct OpenLensApp: App {
     private let streamStressModeEnabled: Bool
     /// Every server context. The UI still shows one at a time: the registry's active context.
     @State private var serverRegistry: ServerRegistry
+    @State private var resumeTask: Task<Void, Never>?
+    @Environment(\.scenePhase) private var scenePhase
     /// Set once the remaining saved servers have been connected for this launch.
     @State private var hasConnectedRemainingServers = false
 
@@ -560,6 +562,17 @@ struct OpenLensApp: App {
             .environment(\.requestReviewPrompt, {
                 presentSystemReviewPrompt()
             })
+            .onChange(of: scenePhase) { _, newPhase in
+                resumeTask?.cancel()
+                switch newPhase {
+                case .active:
+                    resumeTask = Task { await serverRegistry.resumeAll() }
+                case .background:
+                    serverRegistry.suspendAll()
+                default:
+                    break
+                }
+            }
             .onChange(of: serverRegistry.activeServerID) { _, newID in
                 // Backstop for changes that bypass `switchServer`, such as removing the active server.
                 if let newID { router.activate(serverID: newID) }
