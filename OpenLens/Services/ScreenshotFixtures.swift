@@ -360,8 +360,9 @@ enum ScreenshotFixtures {
     static let settingsSectionEnvironmentKey = "OPENLENS_SCREENSHOT_SETTINGS_SECTION"
     static let multiServerArgument = "SCREENSHOT_MULTI_SERVER"
     static let multiServerEnvironmentKey = "OPENLENS_SCREENSHOT_MULTI_SERVER"
-    /// Id of the second demo server that multi-server screenshot mode adds beside the default one.
-    static let secondServerID = "second-server"
+    /// Ids of the two demo servers that multi-server screenshot mode adds beside the default one.
+    static let devboxServerID = "devbox-server"
+    static let ciServerID = "ci-server"
     static let defaultServerID = "default"
 
     static var isEnabled: Bool {
@@ -384,8 +385,8 @@ enum ScreenshotFixtures {
         return AppTab(rawValue: String(rawValue).lowercased())
     }
 
-    /// Adds a second demo server so the registry holds two contexts.
-    static var holdsTwoServers: Bool {
+    /// Adds two more demo servers so the registry holds three contexts.
+    static var holdsMultipleServers: Bool {
         let processInfo = ProcessInfo.processInfo
         return isEnabled && (processInfo.arguments.contains(multiServerArgument) || processInfo.environment[multiServerEnvironmentKey] == "1")
     }
@@ -426,20 +427,74 @@ enum ScreenshotFixtures {
             || processInfo.environment["OPENLENS_SCREENSHOT_SERVER_SHEET"] == "1")
     }
 
-    /// Profiles that give the two demo servers a name to show. Only the multi-server fixture uses them.
+    /// Profiles that give the demo servers a name to show. Only the multi-server fixture uses them.
+    /// One nickname and two bare hosts, so both naming treatments render.
     static let defaultServerProfile = SavedConnection(
         id: defaultServerID,
-        serverURL: "macbook-pro.local:4096",
+        serverURL: "mac-studio.local:4096",
         username: "opencode",
         password: ""
     )
-    static let secondServerProfile = SavedConnection(
-        id: secondServerID,
-        serverURL: "192.168.1.50:4096",
-        username: "opencode",
+    static let devboxServerProfile = SavedConnection(
+        id: devboxServerID,
+        serverURL: "devbox.local:4096",
+        username: "nicola",
         password: "",
-        nickname: "Build box"
+        nickname: "Devbox"
     )
+    static let ciServerProfile = SavedConnection(
+        id: ciServerID,
+        serverURL: "ci-runner.local:4096",
+        username: "ci",
+        password: ""
+    )
+
+    /// The default server is connected and active, the devbox is reconnecting (`appWarning` dot)
+    /// and the CI runner has failed (`appDanger` dot, plus a failure notice in the sessions list).
+    static let devboxConnectionState: ConnectionManager.State = .reconnecting
+    static let ciConnectionState: ConnectionManager.State = .error("The network connection was lost.")
+
+    /// What each non-default demo server last returned, standing in for a load that already ran:
+    /// a reconnecting server keeps the sessions it had, a failed one never had any. The devbox
+    /// deliberately shares `projectPath` with the default server, so two sections carry the same
+    /// project title and only the server tag tells them apart. Empty outside the multi-server fixture.
+    static var sessionsByServerID: [String: [OCSession]] {
+        guard holdsMultipleServers else { return [:] }
+        return [devboxServerID: devboxSessions]
+    }
+
+    /// Servers whose last load failed. Empty outside the multi-server fixture.
+    static var sessionFailuresByServerID: [String: String] {
+        guard holdsMultipleServers else { return [:] }
+        return [ciServerID: "The network connection was lost."]
+    }
+
+    private static let devboxSessions: [OCSession] = [
+        OCSession(
+            id: "session-devbox-1",
+            projectID: "proj_openlens_devbox",
+            directory: projectPath,
+            title: "Profile the sessions list scroll",
+            version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (5 * hourMilliseconds), updated: nowMilliseconds - (42 * 60 * 1000))
+        ),
+        OCSession(
+            id: "session-devbox-2",
+            projectID: "proj_openlens_devbox",
+            directory: projectPath,
+            title: "Bisect the reconnect regression",
+            version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (2 * dayMilliseconds), updated: nowMilliseconds - (19 * hourMilliseconds))
+        ),
+        OCSession(
+            id: "session-devbox-3",
+            projectID: "proj_api_gateway",
+            directory: "/srv/api-gateway",
+            title: "Migrate the rate limiter to tokens",
+            version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (6 * dayMilliseconds), updated: nowMilliseconds - (3 * dayMilliseconds))
+        )
+    ]
 
     /// Opens the New Session sheet over the Sessions list, for capturing its server picker.
     static var opensNewSessionSheet: Bool {

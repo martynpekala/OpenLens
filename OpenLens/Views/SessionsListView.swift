@@ -46,8 +46,10 @@ struct SessionsListView: View {
     @State private var viewState: ViewState
     /// What each server last returned, by server id. A server with no entry has not been loaded;
     /// the seed stands in for it until then (see `sessions(for:)`).
-    @State private var sessionsByServer: [String: [OCSession]] = [:]
-    @State private var failureByServer: [String: String] = [:]
+    @State private var sessionsByServer: [String: [OCSession]] = ScreenshotFixtures.isEnabled
+        ? ScreenshotFixtures.sessionsByServerID : [:]
+    @State private var failureByServer: [String: String] = ScreenshotFixtures.isEnabled
+        ? ScreenshotFixtures.sessionFailuresByServerID : [:]
     @State private var statusesByServer: [String: [String: OCSessionStatus]] = [:]
     @State private var failedOutcomeIDsByServer: [String: Set<String>] = [:]
     /// Sessions the list opened with, before any refresh of its own.

@@ -561,8 +561,12 @@ final class ConnectionManager: ConnectionProviding {
 
     /// Configures the connection manager with fake state for demo mode.
     /// The header toolbar reads projectName/branch/state from the connection.
-    func configureDemoState(projectName: String = "my-project", branch: String = "main") {
-        self.state = .connected
+    func configureDemoState(
+        projectName: String = "my-project",
+        branch: String = "main",
+        state: State = .connected
+    ) {
+        self.state = state
         self.projectName = projectName
         self.branch = branch
         self.serverVersion = "demo"

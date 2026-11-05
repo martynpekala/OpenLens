@@ -68,6 +68,10 @@ SCENARIOS = [
         baseline="baseline-single-states.png",
     ),
     # Review material rather than a gate: there is no "before" to be identical to.
+    # SCREENSHOT_MULTI_SERVER seeds three servers: Mac Studio (connected, active), Devbox
+    # (reconnecting, shares /workspace/OpenLens with Mac Studio) and ci-runner (error).
+    # multi-default is therefore the aggregated list with a failing server: two same-named
+    # project sections told apart by tag, plus ci-runner's per-section failure notice.
     Scenario(
         name="multi-default",
         arguments=["SCREENSHOT_MODE", "SCREENSHOT_MULTI_SERVER"],
@@ -83,6 +87,7 @@ SCENARIOS = [
         ],
         compare=False,
     ),
+    # The Servers screen showing all three connection states at once.
     Scenario(
         name="servers",
         arguments=["SCREENSHOT_MODE", "SCREENSHOT_MULTI_SERVER", "SCREENSHOT_SERVERS"],

@@ -81,7 +81,8 @@ content — group headers use weight, not size, to separate from rows.
      failed / interrupted with relative times, busy shimmer row, unread
      badges on their own line).
   Expect ≈35 content bands for the date variant and ≈46 for the state
-  variant; archive both boards under `.scratch/ui-review/`
+  variant (single-server fixture only: the three-server `SCREENSHOT_MULTI_SERVER`
+  list has more sections and no band baseline, so judge it by eye); archive both boards under `.scratch/ui-review/`
   (`compare-chat-*-both-states.png` pattern for the two-up board).
 - Single-server parity baselines live in `.interface-design/baselines/`
   (`baseline-single-default.png`, `baseline-single-states.png`), captured from

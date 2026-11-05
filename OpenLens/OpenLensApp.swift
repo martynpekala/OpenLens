@@ -406,7 +406,7 @@ struct OpenLensApp: App {
             )
             preparedContext = ServerContext(
                 id: ScreenshotFixtures.defaultServerID,
-                profile: ScreenshotFixtures.holdsTwoServers ? ScreenshotFixtures.defaultServerProfile : nil,
+                profile: ScreenshotFixtures.holdsMultipleServers ? ScreenshotFixtures.defaultServerProfile : nil,
                 connection: demoConnection,
                 liveActivity: liveActivity,
                 savedConnectionsStore: savedConnections,
@@ -415,20 +415,27 @@ struct OpenLensApp: App {
             )
         }
         var additionalContexts: [ServerContext] = []
-        if screenshotModeEnabled, ScreenshotFixtures.holdsTwoServers {
-            let secondConnection = ConnectionManager()
-            secondConnection.savedConnectionsStore = savedConnections
-            secondConnection.configureDemoState(projectName: "Second Server", branch: "server-b")
-            let secondClient = ChatClient(demoMode: true)
-            additionalContexts = [ServerContext(
-                id: ScreenshotFixtures.secondServerID,
-                profile: ScreenshotFixtures.secondServerProfile,
-                connection: secondConnection,
-                liveActivity: liveActivity,
-                savedConnectionsStore: savedConnections,
-                recordedReplayStore: recordedReplayStore,
-                chatClient: secondClient
-            )]
+        if screenshotModeEnabled, ScreenshotFixtures.holdsMultipleServers {
+            let demoServers: [(id: String, profile: SavedConnection, project: String, branch: String, state: ConnectionManager.State)] = [
+                (ScreenshotFixtures.devboxServerID, ScreenshotFixtures.devboxServerProfile,
+                 "OpenLens", "perf/session-list", ScreenshotFixtures.devboxConnectionState),
+                (ScreenshotFixtures.ciServerID, ScreenshotFixtures.ciServerProfile,
+                 "release-pipeline", "main", ScreenshotFixtures.ciConnectionState)
+            ]
+            additionalContexts = demoServers.map { server in
+                let connection = ConnectionManager()
+                connection.savedConnectionsStore = savedConnections
+                connection.configureDemoState(projectName: server.project, branch: server.branch, state: server.state)
+                return ServerContext(
+                    id: server.id,
+                    profile: server.profile,
+                    connection: connection,
+                    liveActivity: liveActivity,
+                    savedConnectionsStore: savedConnections,
+                    recordedReplayStore: recordedReplayStore,
+                    chatClient: ChatClient(demoMode: true)
+                )
+            }
         }
         let registry = ServerRegistry(
             savedConnectionsStore: savedConnections,
