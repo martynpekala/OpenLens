@@ -454,7 +454,10 @@ struct SessionsListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .contentMargins(.top, isSidebar ? 10 : 16, for: .scrollContent)
+        // The nav bar already leaves ~28pt below the capsule, so a large margin on top of it
+        // pushed the first section most of a row down the screen -- costly on a list whose job
+        // is density of recent activity.
+        .contentMargins(.top, isSidebar ? 6 : 8, for: .scrollContent)
         .contentMargins(.bottom, 16, for: .scrollContent)
         .refreshable {
             await loadSessions()
@@ -506,6 +509,9 @@ struct SessionsListView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(
+                // Uniform: a plain List does not honour a smaller top inset on its first row,
+                // so special-casing it reclaimed nothing and only implied it did. The space
+                // above the first header comes from the scroll content margin instead.
                 top: 12.0,
                 leading: isSidebar ? 12.0 : 24.0,
                 bottom: 0,
