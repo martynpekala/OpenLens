@@ -62,13 +62,15 @@ content — group headers use weight, not size, to separate from rows.
   once photographed a blank list. Compose labeled before/after boards with
   `.scratch/ui-review/` tooling; expect deltas in the 0.1–6% range for polish
   passes (larger = recheck capture methodology first).
-- Row layouts MUST be validated against the states they can render, not the
-  default fixture: plain captures show date-only rows. Add
-  `SCREENSHOT_EXECUTION_OUTCOMES SCREENSHOT_UNREAD_RESULTS` as launch
-  arguments (bare, no leading dash — the fixture matches exact strings) to
-  render succeeded/failed/interrupted statuses, a busy shimmer row, and
-  unread badges. Verify captures quantitatively (content-band analysis ≈35
-  bands date-variant, ≈46 state-variant) before composing boards.
+- Conversations-list UI changes require BOTH fixture states captured and
+  validated before review — a plain board alone is an invalid review:
+  1. default fixture (date rows, no outcome args), and
+  2. `SCREENSHOT_EXECUTION_OUTCOMES SCREENSHOT_UNREAD_RESULTS` (succeeded /
+     failed / interrupted with relative times, busy shimmer row, unread
+     badges on their own line).
+  Expect ≈35 content bands for the date variant and ≈46 for the state
+  variant; archive both boards under `.scratch/ui-review/`
+  (`compare-chat-*-both-states.png` pattern for the two-up board).
 - States not fixture-renderable in the list (waiting-permission/form rows,
   v1 date rows, iPad sidebar selection) are covered by keeping status
   metadata bounded: `ExecutionStatusView(isCompact: true)` never wraps
