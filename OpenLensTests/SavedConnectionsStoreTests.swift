@@ -28,7 +28,7 @@ struct SavedConnectionsStoreTests {
         ])
     }
 
-    @Test func capsHistoryToMostRecentConnections() {
+    @Test func capsHistoryByDroppingLeastRecentlyConnectedAndKeepsArrayOrder() {
         let connections = (0..<23).map { index in
             SavedConnection(
                 id: "\(index)",
@@ -41,10 +41,12 @@ struct SavedConnectionsStoreTests {
 
         let store = SavedConnectionsStore(initialConnections: connections)
 
-        #expect(store.connections.map(\.id) == (3..<23).reversed().map(String.init))
+        // Deliberate behaviour change: the array keeps its order and only the three
+        // least recently connected entries (0, 1, 2) are evicted.
+        #expect(store.connections.map(\.id) == (3..<23).map(String.init))
     }
 
-    @Test func reusingSavedConnectionMovesItToFront() {
+    @Test func reusingSavedConnectionKeepsItsPositionButBecomesMostRecent() {
         let store = SavedConnectionsStore(initialConnections: [
             SavedConnection(
                 id: "newer",
@@ -69,7 +71,10 @@ struct SavedConnectionsStoreTests {
         )
 
         #expect(store.connections.count == 2)
+        // Deliberate behaviour change: reconnecting no longer moves the entry to the front.
+        #expect(store.connections.map(\.id) == ["newer", "older"])
         #expect(store.mostRecent?.id == "older")
+        #expect(store.suggestions(for: "").map(\.id) == ["older", "newer"])
         #expect(store.mostRecent?.password == "updated")
     }
 
