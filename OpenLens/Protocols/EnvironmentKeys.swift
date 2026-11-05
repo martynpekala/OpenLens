@@ -30,6 +30,17 @@ private struct SavedConnectionsStoreKey: EnvironmentKey {
     static let defaultValue: SavedConnectionsStore = SavedConnectionsStore()
 }
 
+// MARK: - ServerRegistry Environment Key
+
+private struct ServerRegistryKey: EnvironmentKey {
+    // Fallback only used if no explicit injection is provided (e.g. SwiftUI previews).
+    static let defaultValue: ServerRegistry = ServerRegistry(
+        savedConnectionsStore: SavedConnectionsStore(initialConnections: []),
+        liveActivity: LiveActivityManager(),
+        recordedReplayStore: RecordedReplayStore()
+    )
+}
+
 // MARK: - LiveActivityManager Environment Key
 
 private struct LiveActivityManagerKey: EnvironmentKey {
@@ -105,6 +116,11 @@ extension EnvironmentValues {
     var savedConnections: SavedConnectionsStore {
         get { self[SavedConnectionsStoreKey.self] }
         set { self[SavedConnectionsStoreKey.self] = newValue }
+    }
+
+    var serverRegistry: ServerRegistry {
+        get { self[ServerRegistryKey.self] }
+        set { self[ServerRegistryKey.self] = newValue }
     }
 
     var liveActivity: LiveActivityManager {

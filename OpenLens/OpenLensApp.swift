@@ -170,10 +170,10 @@ struct OpenLensApp: App {
     private static let turnDiffPreviewLaunchArgument = "CHAT_TURN_DIFF_PREVIEW_MODE"
     private let screenshotModeEnabled: Bool
     private let streamStressModeEnabled: Bool
-    /// Until the registry lands there is exactly one server context. Its id is a placeholder:
-    /// the saved profile this manager connects to is only known after a connect succeeds.
-    private static let singleServerContextID = "default"
-    @State private var serverContext: ServerContext
+    /// Every server context. The UI still shows one at a time: the registry's active context.
+    @State private var serverRegistry: ServerRegistry
+    /// Set once the remaining saved servers have been connected for this launch.
+    @State private var hasConnectedRemainingServers = false
 
     @State private var router = AppRouter()
 
@@ -188,7 +188,19 @@ struct OpenLensApp: App {
     private let chatEasterEgg: ChatEasterEggController
     private let pendingAppActions: PendingAppActions
 
+    private var serverContext: ServerContext { serverRegistry.activeContext }
     private var connection: ConnectionManager { serverContext.connection }
+
+    /// What the root observes about the active server. Including the context id makes switching
+    /// the active server re-run everything that keys off connection state.
+    private struct ActiveConnectionKey: Equatable {
+        let contextID: String
+        let state: ConnectionManager.State
+    }
+
+    private var activeConnectionKey: ActiveConnectionKey {
+        ActiveConnectionKey(contextID: serverContext.id, state: connection.state)
+    }
     private var chatClient: ChatClient { serverContext.chatClient }
     private var sessionsService: SessionsService { serverContext.sessionsService }
 
@@ -204,8 +216,6 @@ struct OpenLensApp: App {
     @State private var pendingDeepLink: DeepLinkConnection?
     @State private var pendingSessionNavigationID: String?
 
-    /// Alert shown when a deep link arrives while already connected.
-    @State private var showDeepLinkSwitch: Bool = false
     /// Set by `openlens://setup` while connected or reconnecting; presented once the connected root is on screen.
     @State private var isOpenCodeV2SupportRequested = false
     @State private var isOpenCodeV2SupportPresented = false
@@ -317,15 +327,6 @@ struct OpenLensApp: App {
         self._router = State(initialValue: initialRouter)
 
         let savedConnections = SavedConnectionsStore()
-        let connection = ConnectionManager()
-        connection.savedConnectionsStore = savedConnections
-
-        if screenshotModeEnabled {
-            connection.configureDemoState(
-                projectName: ScreenshotFixtures.projectName,
-                branch: ScreenshotFixtures.branchName
-            )
-        }
 
         let liveActivity = LiveActivityManager()
 
@@ -374,13 +375,30 @@ struct OpenLensApp: App {
             }
             demoChatClient = demoClient
         }
-        self._serverContext = State(initialValue: ServerContext(
-            id: Self.singleServerContextID,
-            connection: connection,
-            liveActivity: liveActivity,
+        // Screenshot mode hands the registry a ready-made demo context; otherwise the registry
+        // builds one context per saved profile itself.
+        var preparedContext: ServerContext?
+        if screenshotModeEnabled {
+            let demoConnection = ConnectionManager()
+            demoConnection.savedConnectionsStore = savedConnections
+            demoConnection.configureDemoState(
+                projectName: ScreenshotFixtures.projectName,
+                branch: ScreenshotFixtures.branchName
+            )
+            preparedContext = ServerContext(
+                id: "default",
+                connection: demoConnection,
+                liveActivity: liveActivity,
+                savedConnectionsStore: savedConnections,
+                recordedReplayStore: recordedReplayStore,
+                chatClient: demoChatClient
+            )
+        }
+        self._serverRegistry = State(initialValue: ServerRegistry(
             savedConnectionsStore: savedConnections,
+            liveActivity: liveActivity,
             recordedReplayStore: recordedReplayStore,
-            chatClient: demoChatClient
+            preparedContext: preparedContext
         ))
 
         if streamStressModeEnabled {
@@ -482,6 +500,7 @@ struct OpenLensApp: App {
             .openLensTheme(OpenLensAppearance.fallback.theme)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .environment(\.liveActivity, liveActivity)
+            .environment(\.serverRegistry, serverRegistry)
             .environment(\.savedConnections, savedConnectionsStore)
             .environment(\.sessionsService, serverContext.sessionsService)
             .environment(\.messagesService, serverContext.messagesService)
@@ -499,7 +518,7 @@ struct OpenLensApp: App {
             .environment(\.requestReviewPrompt, {
                 presentSystemReviewPrompt()
             })
-            .task(id: connection.state) {
+            .task(id: activeConnectionKey) {
                 await prepareInitialSessions(for: connection.state)
             }
             .sheet(isPresented: previewPresentationBinding) {
@@ -541,14 +560,19 @@ struct OpenLensApp: App {
                 }
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
-                if connection.isConnected || connection.isReconnecting || isPreviewMode {
-                    pendingDeepLink = deepLink
-                    showDeepLinkSwitch = true
+                if connection.isConnected || connection.isReconnecting {
+                    // Already connected: add the server alongside the current one and switch to it.
+                    Task { await addDeepLinkedServer(deepLink) }
                 } else {
+                    if isPreviewMode { exitPreview() }
                     pendingDeepLink = deepLink
                 }
             }
-            .onChange(of: connection.state) { oldState, newState in
+            .onChange(of: activeConnectionKey) { oldKey, newKey in
+                let oldState = oldKey.state
+                let newState = newKey.state
+                // A change of active server is a switch, not a connect.
+                let isSameServer = oldKey.contextID == newKey.contextID
                 switch newState {
                 case .disconnected, .error:
                     // The awaited (re)connection did not happen; the user stays on connection setup.
@@ -561,8 +585,15 @@ struct OpenLensApp: App {
                     onboardingCompleted = true
                 }
 
-                if shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
+                if isSameServer, shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
                     router.selectedTab = .chat
+                }
+
+                // The connect screen drives the first connection; once it is up, bring the other
+                // saved servers up in the background. With one saved server this does nothing.
+                if newState == .connected, !hasConnectedRemainingServers {
+                    hasConnectedRemainingServers = true
+                    Task { await serverRegistry.connectAll() }
                 }
 
                 if newState == .connected {
@@ -577,23 +608,6 @@ struct OpenLensApp: App {
                 Task {
                     await createRequestedSessionIfNeeded()
                 }
-            }
-            .alert(
-                AppText.switchServerTitle,
-                isPresented: $showDeepLinkSwitch
-            ) {
-                Button(AppText.switchAction, role: .destructive) {
-                    if isPreviewMode { exitPreview() }
-                    liveActivity.dismissAll()
-                    connection.disconnect()
-                    // pendingDeepLink is already set — ConnectView will pick it up
-                }
-                Button(AppText.cancel, role: .cancel) {
-                    pendingDeepLink = nil
-                    pendingSessionNavigationID = nil
-                }
-            } message: {
-                Text(AppText.switchMessage)
             }
         }
     }
@@ -707,6 +721,35 @@ struct OpenLensApp: App {
                 }
             }
         )
+    }
+
+    /// `openlens://connect` while connected: save the server, connect it next to the current one
+    /// and make it the active server. Nothing is disconnected.
+    @MainActor
+    private func addDeepLinkedServer(_ deepLink: DeepLinkConnection) async {
+        let profile = serverRegistry.add(
+            serverURL: deepLink.serverURL,
+            username: deepLink.username,
+            password: deepLink.password
+        )
+        do {
+            try await serverRegistry.connect(profile: profile, method: .deepLink)
+        } catch {
+            Logger.connection.error("Couldn't connect the server a deep link added: \(error.localizedDescription, privacy: .public)")
+            pendingSessionNavigationID = nil
+            return
+        }
+        guard let context = serverRegistry.context(forProfileID: profile.id), context.connection.isConnected else {
+            pendingSessionNavigationID = nil
+            return
+        }
+        if context.id != serverRegistry.activeContext.id {
+            // The new server needs its own first sessions load before the root shows it.
+            initialSessionsReadiness.reset()
+            serverRegistry.activate(id: context.id)
+        }
+        router.selectedTab = .chat
+        await openDeepLinkedSessionIfNeeded()
     }
 
     @MainActor

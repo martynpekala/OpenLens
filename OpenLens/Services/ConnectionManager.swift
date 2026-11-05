@@ -57,16 +57,26 @@ final class ConnectionManager: ConnectionProviding {
 
     @ObservationIgnored private let localNetworkAccessProbe: any LocalNetworkAccessProbing
 
+    /// Builds the transport for a server URL. `nil` means the real network (`DirectOpenCodeTransport`).
+    /// Used for both the API client and the SSE client, so a test can fake a whole server by
+    /// faking only the transport.
+    @ObservationIgnored private let makeTransport: (@Sendable (URL) -> any OpenCodeTransport)?
+
     /// If no heartbeat arrives within this interval, the connection is considered stale.
     /// OpenCode server typically sends heartbeats every ~30s; 90s allows 3 missed beats.
     private static let heartbeatTimeout: TimeInterval = 90
 
-    init() {
+    init(makeTransport: (@Sendable (URL) -> any OpenCodeTransport)? = nil) {
         self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+        self.makeTransport = makeTransport
     }
 
-    init(localNetworkAccessProbe: any LocalNetworkAccessProbing) {
+    init(
+        localNetworkAccessProbe: any LocalNetworkAccessProbing,
+        makeTransport: (@Sendable (URL) -> any OpenCodeTransport)? = nil
+    ) {
         self.localNetworkAccessProbe = localNetworkAccessProbe
+        self.makeTransport = makeTransport
     }
 
 #if DEBUG
@@ -78,6 +88,7 @@ final class ConnectionManager: ConnectionProviding {
         connectionID: String? = nil
     ) {
         self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+        self.makeTransport = nil
         self.connectionID = connectionID
         self.client = testClient
         self.serverCapabilities = capabilities
@@ -169,10 +180,12 @@ final class ConnectionManager: ConnectionProviding {
 
         Logger.connection.debug("Connecting to \(urlString, privacy: .public) with restored project directory \(restoredProjectDirectory ?? "nil", privacy: .public)")
 
+        let transport = makeTransport?(baseURL)
         let apiClient = OpenCodeClient(
             baseURL: baseURL,
             authHeader: authHeader,
-            contextDirectory: restoredProjectDirectory
+            contextDirectory: restoredProjectDirectory,
+            transport: transport
         )
         do {
             let capabilities = try await apiClient.probeCapabilities()
@@ -214,7 +227,8 @@ final class ConnectionManager: ConnectionProviding {
                 baseURL: baseURL,
                 authHeader: authHeader,
                 protocolVersion: capabilities.protocolVersion,
-                contextDirectory: selectedProjectDirectory
+                contextDirectory: selectedProjectDirectory,
+                transport: transport
             )
             self.sseClient = sse
             configureSSECallbacks(sse)
@@ -259,10 +273,11 @@ final class ConnectionManager: ConnectionProviding {
         let disconnectedServerID = connectionID
         connectionID = nil
         savedConnectionsStore?.clearActiveConnection()
+        // Only this server's entry. A manager that never learned its id -- a connect that was
+        // cancelled before it saved -- wrote nothing, so it clears nothing: clearAll() here
+        // would wipe every other connected server's credentials too.
         if let disconnectedServerID {
             SharedConnectionStore.clear(serverID: disconnectedServerID)
-        } else {
-            SharedConnectionStore.clearAll()
         }
     }
 
