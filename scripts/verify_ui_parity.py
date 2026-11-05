@@ -32,6 +32,14 @@ BASELINES = ROOT / ".interface-design" / "baselines"
 # this row is app content and is compared.
 MASK_TOP = 160
 
+# Rows that differ are grouped into bands, and a gap smaller than this joins two
+# groups into one. An animating gradient does not differ on every row it covers --
+# a few rows coincidentally match and would otherwise split one shimmer into two
+# bands, failing the band count while the percentage went *down*. A real layout
+# shift separates its bands by tens of rows (a measured one gave gaps of 32+), so
+# this sits well below that and well above the handful an animation produces.
+BAND_GAP = 16
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -202,7 +210,7 @@ def compare(baseline, shot, work):
         ordered = sorted(rows)
         start = previous = ordered[0]
         for y in ordered[1:]:
-            if y - previous > 3:
+            if y - previous > BAND_GAP:
                 bands.append((start, previous))
                 start = y
             previous = y

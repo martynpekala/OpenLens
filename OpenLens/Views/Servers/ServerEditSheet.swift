@@ -48,14 +48,14 @@ struct ServerEditSheet: View {
                 VStack(alignment: .leading, spacing: 22) {
                     if case .rename(let profile) = mode {
                         renameHeader(profile)
-                    } else {
-                        addFields
-                    }
 
-                    field(AppText.serversNickname) {
-                        TextField(AppText.serversNicknamePlaceholder, text: $nickname)
-                            .textInputAutocapitalization(.words)
-                            .font(theme.typography.rowTitle)
+                        nicknameField
+                    } else {
+                        scanSection
+
+                        nicknameField
+
+                        addFields
                     }
 
                     if !isRename, isAtConnectionLimit {
@@ -108,10 +108,16 @@ struct ServerEditSheet: View {
 
     // MARK: - Sections
 
+    private var nicknameField: some View {
+        field(AppText.serversNickname) {
+            TextField(AppText.serversNicknamePlaceholder, text: $nickname)
+                .textInputAutocapitalization(.words)
+                .font(theme.typography.rowTitle)
+        }
+    }
+
     private var addFields: some View {
         VStack(alignment: .leading, spacing: 22) {
-            scanSection
-
             field(AppText.serversServerURL) {
                 TextField(AppText.serversServerURLPlaceholder, text: $serverURL)
                     .font(.system(size: 15, design: .monospaced))

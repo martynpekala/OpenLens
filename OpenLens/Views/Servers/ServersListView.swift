@@ -95,12 +95,16 @@ struct ServersListView: View {
                         connectionState: context.connection.state,
                         isActive: context.id == registry.activeServerID
                     )
-                    Button {
-                        Task { await open(context, profile: profile) }
-                    } label: {
-                        serverRow(profile: profile, status: status)
+                    HStack(spacing: 4) {
+                        Button {
+                            Task { await open(context, profile: profile) }
+                        } label: {
+                            serverRow(profile: profile, status: status)
+                        }
+                        .buttonStyle(.plain)
+
+                        rowActionsMenu(context, profile: profile)
                     }
-                    .buttonStyle(.plain)
                     .listRowBackground(activeHighlight(status == .active))
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 12, leading: 24, bottom: 12, trailing: 24))
@@ -163,7 +167,10 @@ struct ServersListView: View {
                             .font(.system(size: 15, weight: .medium, design: .monospaced))
                             .foregroundStyle(Color.appPrimary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            // Tail, not middle: when the row is tight it is the hostname that
+                            // tells two machines apart, and middle truncation spends it to keep
+                            // a port they usually share.
+                            .truncationMode(.tail)
                     }
                 }
             }
@@ -175,13 +182,6 @@ struct ServersListView: View {
                 .lineLimit(1)
                 .fixedSize()
 
-            // A checkmark, not a chevron: tapping a row picks a server, it does not push a
-            // detail screen, and a chevron would promise navigation this row does not do.
-            // Same affordance the review session picker uses to mark its choice.
-            Image(systemName: "checkmark")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.appAccent)
-                .opacity(status == .active ? 1 : 0)
         }
         .padding(.vertical, 12)
         .contentShape(Rectangle())
@@ -236,6 +236,30 @@ struct ServersListView: View {
         .controlSize(.large)
         .tint(Color.appNeutralAction)
         .accessibilityLabel(AppText.serversAdd)
+    }
+
+    /// The row's actions need somewhere visible to live. Tapping a row picks a server rather
+    /// than pushing a screen, so there is no chevron to hint at more; a checkmark used to sit
+    /// here, but the tinted row and the "Active" label already say which server is active, so it
+    /// was the one trailing slot carrying no information. Swipe and long-press still work --
+    /// this just stops rename being reachable only by gestures nothing advertises.
+    private func rowActionsMenu(_ context: ServerContext, profile: SavedConnection) -> some View {
+        Menu {
+            renameButton(profile)
+            if registry.isLive(context) {
+                disconnectButton(context)
+            }
+            forgetButton(context)
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 17))
+                .foregroundStyle(Color.appSecondary)
+                // 44pt is the minimum comfortable touch target.
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(AppText.serversRowActionsAccessibility(profile.displayName))
     }
 
     private func renameButton(_ profile: SavedConnection) -> some View {

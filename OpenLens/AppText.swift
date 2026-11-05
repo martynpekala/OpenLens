@@ -17,7 +17,7 @@ enum AppText {
     static let serversStatusConnecting = "Connecting…"
     static let serversStatusReconnecting = "Reconnecting…"
     static let serversStatusNotConnected = "Not connected"
-    static let serversStatusFailed = "Connection failed"
+    static let serversStatusFailed = "Failed"
     static let serversRename = "Rename"
     static let serversForgetTitle = "Forget This Server?"
     static let serversForgetMessage = "OpenLens disconnects from it and removes its saved credentials. You'll need to re-enter them to connect again."
@@ -29,6 +29,7 @@ enum AppText {
     static let serversNickname = "Nickname"
     static let serversNicknamePlaceholder = "optional"
     static let serversRenameTitle = "Rename Server"
+    static func serversRowActionsAccessibility(_ name: String) -> String { "Actions for \(name)" }
     static let serversScanQRCode = "Scan QR Code"
     static let serversScanQRCodeHintPrefix = "Run "
     static let serversScanQRCodeCommand = "opencode pair"
