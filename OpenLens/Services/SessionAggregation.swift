@@ -266,19 +266,35 @@ struct SessionWorkspaceOption: Identifiable, Equatable {
 }
 
 extension SessionGrouping {
-    /// The workspaces present in `entries`, one option each, ordered by name so the menu is
-    /// findable. Pass the entries of the servers in view, before any workspace filter, so
-    /// choosing a server narrows the options to that server's workspaces.
+    /// The newest session each key contributed. The Sessions filter ranks by this, so its order
+    /// is evidence taken from the list underneath it rather than a second opinion about it.
+    ///
+    /// `entries` cannot be relied on for this: it is `sections.flatMap`, so a running session
+    /// from last week precedes one touched a minute ago.
+    static func lastActivity(
+        in entries: [SessionListEntry],
+        by key: (SessionListEntry) -> String
+    ) -> [String: Double] {
+        var newest: [String: Double] = [:]
+        for entry in entries {
+            let id = key(entry)
+            if let seen = newest[id], seen >= entry.session.updatedAt { continue }
+            newest[id] = entry.session.updatedAt
+        }
+        return newest
+    }
+
+    /// The workspaces present in `entries`, one option each, most recently used first. Pass the
+    /// entries of the servers in view, before any workspace filter, so choosing a server narrows
+    /// the options to that server's workspaces.
     static func workspaceOptions(in entries: [SessionListEntry]) -> [SessionWorkspaceOption] {
         var seen: Set<String> = []
         let options = entries.compactMap { entry -> SessionWorkspaceOption? in
             guard seen.insert(entry.workspaceID).inserted else { return nil }
             return SessionWorkspaceOption(id: entry.workspaceID, label: entry.label)
         }
-        return options.sorted { lhs, rhs in
-            let order = lhs.label.workspace.localizedCaseInsensitiveCompare(rhs.label.workspace)
-            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
-        }
+        let lastUsed = lastActivity(in: entries) { $0.workspaceID }
+        return orderedByRecentUse(options) { lastUsed[$0.id] }
     }
 
     /// A workspace selection that is no longer among the options (the server filter moved, or
@@ -287,6 +303,30 @@ extension SessionGrouping {
         guard let selected, options.contains(where: { $0.id == selected }) else { return nil }
         return selected
     }
+}
+
+/// Most recently used first, for the Sessions filter's two sections.
+///
+/// An option with nothing to rank -- an idle server, one whose load failed, a workspace whose
+/// sessions have gone -- sorts last, keeping its incoming order among the others like it. For
+/// servers that incoming order is the saved display order, so a group of servers that have never
+/// answered still reads the same way on every launch.
+func orderedByRecentUse<Option>(_ options: [Option], lastUsed: (Option) -> Double?) -> [Option] {
+    // `sorted` is not guaranteed stable, so ties break on position.
+    options.enumerated()
+        .sorted { lhs, rhs in
+            switch (lastUsed(lhs.element), lastUsed(rhs.element)) {
+            case let (left?, right?) where left != right:
+                return left > right
+            case (.some, nil):
+                return true
+            case (nil, .some):
+                return false
+            default:
+                return lhs.offset < rhs.offset
+            }
+        }
+        .map(\.element)
 }
 
 /// The capsule is a filter only when there is something to choose between: several servers or

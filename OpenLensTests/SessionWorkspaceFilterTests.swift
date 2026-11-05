@@ -45,7 +45,55 @@ extension MultiServerSuite {
         @Test func theSameFolderOnTwoServersIsTwoWorkspaceOptionsWhenBothServersAreInView() {
             let options = Self.options()
 
-            #expect(options.map(\.label.text) == ["Laptop · app", "10.0.0.2:4096 · app", "10.0.0.2:4096 · docs", "Laptop · site"])
+            #expect(options.map(\.label.text) == ["Laptop · app", "Laptop · site", "10.0.0.2:4096 · app", "10.0.0.2:4096 · docs"])
+        }
+
+        @Test func workspaceOptionsAreOrderedByMostRecentUse() {
+            // The fixture's newest session per workspace: a/app 1h, a/site 3h, b/app 4h, b/docs 5h.
+            #expect(Self.options().map(\.id) == [
+                "a|directory:/work/app",
+                "a|directory:/work/site",
+                "b|directory:/work/app",
+                "b|directory:/work/docs"
+            ])
+        }
+
+        @Test func aWorkspaceIsRankedByItsNewestSessionNotItsOldest() {
+            let aggregation = SessionGrouping.aggregate(
+                results: [ServerSessionsResult(serverID: "b", sessions: [
+                    Fixture.session("b-app", directory: "/work/app", hoursAgo: 4),
+                    Fixture.session("b-docs-stale", directory: "/work/docs", hoursAgo: 200),
+                    Fixture.session("b-docs-fresh", directory: "/work/docs", hoursAgo: 1)
+                ])],
+                tags: Fixture.tags,
+                showsServerTags: true,
+                workspaceFilterID: nil,
+                now: Fixture.now,
+                calendar: Fixture.calendar,
+                customName: { _ in nil }
+            )
+
+            // docs holds both the oldest session and the newest; the newest is what ranks it.
+            #expect(SessionGrouping.workspaceOptions(in: aggregation.entries).map(\.label.workspace)
+                == ["docs", "app"])
+        }
+
+        @Test func serversAreOrderedByTheirNewestSession() {
+            let lastUsed = SessionGrouping.lastActivity(in: Self.aggregate().entries) { $0.serverID }
+
+            // a's newest is 1h old, b's is 4h, so a leads whichever way they arrive.
+            #expect(orderedByRecentUse(["b", "a"]) { lastUsed[$0] } == ["a", "b"])
+            #expect(orderedByRecentUse(["a", "b"]) { lastUsed[$0] } == ["a", "b"])
+        }
+
+        @Test func aServerWithNothingToShowSortsLastAndKeepsItsGivenOrder() {
+            // Only b is in view, so a and c contributed nothing: idle, or their load failed.
+            let lastUsed = SessionGrouping.lastActivity(in: Self.aggregate(serverIDs: ["b"]).entries) {
+                $0.serverID
+            }
+
+            #expect(orderedByRecentUse(["a", "b", "c"]) { lastUsed[$0] } == ["b", "a", "c"])
+            #expect(orderedByRecentUse(["c", "a", "b"]) { lastUsed[$0] } == ["b", "c", "a"])
         }
 
         @Test func aWorkspaceSelectionOutsideTheOptionsResetsToAll() {

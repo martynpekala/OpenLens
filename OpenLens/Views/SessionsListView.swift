@@ -409,15 +409,20 @@ struct SessionsListView: View {
     }
 
     private var filterModel: SessionFilterModel {
+        let entries = aggregation(for: sources, workspaceFilterID: nil).entries
         let counts = SessionGrouping.filterCounts(
-            entries: aggregation(for: sources, workspaceFilterID: nil).entries,
+            entries: entries,
             serverIDs: sources.map(\.id),
             unavailableServerIDs: unavailableServerIDs,
             serverFilterID: serverFilterID,
             workspaceFilterID: effectiveWorkspaceFilterID
         )
         let showsServers = sessionFilterShowsServersSection(serverCount: switchTargets.targets.count)
-        let servers = showsServers ? switchTargets.targets.map { target in
+        // Ordered here and not in `switchTargets`: the switcher's own order is the saved display
+        // order, which the Servers screen and the server tags depend on staying put.
+        let serverLastUsed = SessionGrouping.lastActivity(in: entries) { $0.serverID }
+        let recentServers = orderedByRecentUse(switchTargets.targets) { serverLastUsed[$0.id] }
+        let servers = showsServers ? recentServers.map { target in
             SessionFilterModel.ServerOption(
                 id: target.id,
                 tag: target.tag,
