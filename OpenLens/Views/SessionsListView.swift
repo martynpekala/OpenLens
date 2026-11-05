@@ -319,7 +319,7 @@ struct SessionsListView: View {
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(
                     top: 0,
-                    leading: (isSidebar ? 12.0 : 24.0) + 22,
+                    leading: isSidebar ? 12.0 : 24.0,
                     bottom: 0,
                     trailing: isSidebar ? 12.0 : 24.0
                 ))
@@ -350,27 +350,19 @@ struct SessionsListView: View {
     private func projectHeader(_ group: SessionProjectGroup) -> some View {
         let isExpanded = expandedProjectIDs.contains(group.id)
 
-        return HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading) {
-                HStack(alignment: .center) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(group.title)
+                .font(.system(size: isSidebar ? 15 : 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.appPrimary)
+                .lineLimit(1)
 
-                    Text(group.title)
-                        .font(.system(size: isSidebar ? 15 : 18, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appPrimary)
-                        .lineLimit(1)
+            Text("\u{00B7}")
+                .font(theme.typography.captionRounded)
+                .foregroundStyle(Color.appSecondary)
 
-                    Text("\u{00B7}")
-                        .font(theme.typography.captionRounded)
-                        .foregroundStyle(Color.appSecondary)
-
-                    Text(AppText.groupedProjectCount(group.sessions.count))
-                        .font(theme.typography.captionRounded)
-                        .foregroundStyle(Color.appSecondary)
-                }
-            }
+            Text(AppText.groupedProjectCount(group.sessions.count))
+                .font(theme.typography.captionRounded)
+                .foregroundStyle(Color.appSecondary)
 
             Spacer()
 
@@ -385,11 +377,11 @@ struct SessionsListView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, 6)
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(
-            top: isSidebar ? 12.0 : 18.0,
+            top: isSidebar ? 12.0 : 12.0,
             leading: isSidebar ? 12.0 : 24.0,
             bottom: 0,
             trailing: isSidebar ? 12.0 : 24.0
