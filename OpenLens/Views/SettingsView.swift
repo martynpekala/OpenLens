@@ -4,7 +4,7 @@ import UIKit
 struct SettingsView: View {
     private let repositoryURL = URL(string: "https://github.com/martynpekala/OpenLens")!
 
-    @Environment(\.connection) private var connection
+    @Environment(\.serverRegistry) private var serverRegistry
     @Environment(\.liveActivity) private var liveActivity
     @Environment(\.requestReviewPrompt) private var requestReviewPrompt
     @Environment(\.gitHubStarsService) private var gitHubStars
@@ -46,6 +46,8 @@ struct SettingsView: View {
                 }
             }
             .tint(Color.appUserAccent)
+
+            ServersSettingsSectionView()
 
             UsageQuotaSectionView()
 
@@ -129,7 +131,7 @@ struct SettingsView: View {
                     ) {
                         Button(AppText.disconnect, role: .destructive) {
                             liveActivity.dismissAll()
-                            connection.manualDisconnect()
+                            serverRegistry.activeContext.connection.manualDisconnect()
                         }
                         Button(AppText.done, role: .cancel) {}
                     } message: {
@@ -205,7 +207,7 @@ struct SettingsView: View {
     }
 
     private var showsDisconnectToolbarButton: Bool {
-        switch connection.state {
+        switch serverRegistry.activeContext.connection.state {
         case .connected, .reconnecting, .connecting:
             true
         case .disconnected, .error:

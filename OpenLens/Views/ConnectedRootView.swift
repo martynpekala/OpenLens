@@ -358,6 +358,8 @@ private struct ConnectedDestinationView: View {
             SessionChatDestinationView(chatClient: chatClient, session: session, serverID: serverID)
         case .archivedSessions:
             ArchivedSessionsView()
+        case .servers:
+            ServersListView()
         case .sessionInsights(let sessionID):
             InsightsRootView(chatClient: chatClient, sessionID: sessionID)
         case .reviewMessage, .reviewFile, .workspacePath:

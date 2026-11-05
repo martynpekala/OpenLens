@@ -1,6 +1,35 @@
 import Foundation
 
 enum AppText {
+    // MARK: Servers
+    static let servers = "Servers"
+    static let serversEmptyTitle = "No Saved Servers"
+    static let serversEmptyMessage = "Add a server to connect OpenLens to it."
+    static let serversAdd = "Add Server"
+    static let serversSettingsFooter = "Add another server to work across several at once."
+    static let serversStatusActive = "Active"
+    static let serversStatusConnected = "Connected"
+    static let serversStatusConnecting = "Connecting…"
+    static let serversStatusReconnecting = "Reconnecting…"
+    static let serversStatusNotConnected = "Not connected"
+    static let serversStatusFailed = "Connection failed"
+    static let serversRename = "Rename"
+    static let serversForgetTitle = "Forget This Server?"
+    static let serversForgetMessage = "OpenLens disconnects from it and removes its saved credentials. You'll need to re-enter them to connect again."
+    static let serversServerURL = "Server URL"
+    static let serversServerURLPlaceholder = "192.168.1.50:4096"
+    static let serversUsername = "Username"
+    static let serversUsernameDefault = "opencode"
+    static let serversPasswordPlaceholder = "optional"
+    static let serversNickname = "Nickname"
+    static let serversNicknamePlaceholder = "optional"
+    static let serversRenameTitle = "Rename Server"
+    static let serversSave = "Save"
+    static let serversAtLimitNotice = "OpenLens is already connected to the most servers it can hold at once. This server will be saved, not connected."
+    static func serversCount(_ count: Int) -> String {
+        count == 1 ? "1 server" : "\(count) servers"
+    }
+
     static let activityEmpty = "No activity recorded yet."
     static let activityThinking = "Thinking"
     static let activityTitle = "Agent Activity"

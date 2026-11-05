@@ -12,6 +12,8 @@ final class AppRouter {
     /// The server whose paths the stacks currently show.
     private(set) var activeServerID: String = AppRouter.unscopedServerID
     private var pathsByServer: [String: [AppTab: [RouterDestination]]] = [:]
+    /// Paths for tabs that are not a view onto one server; see `keepsNavigationAcrossServers`.
+    private var globalPaths: [AppTab: [RouterDestination]] = [:]
 
     var chatPath: [RouterDestination] {
         get { path(for: .chat) }
@@ -41,11 +43,16 @@ final class AppRouter {
     }
 
     func path(for tab: AppTab) -> [RouterDestination] {
-        pathsByServer[activeServerID]?[tab] ?? []
+        if tab.keepsNavigationAcrossServers { return globalPaths[tab] ?? [] }
+        return pathsByServer[activeServerID]?[tab] ?? []
     }
 
     func setPath(_ path: [RouterDestination], for tab: AppTab) {
-        pathsByServer[activeServerID, default: [:]][tab] = path
+        if tab.keepsNavigationAcrossServers {
+            globalPaths[tab] = path
+        } else {
+            pathsByServer[activeServerID, default: [:]][tab] = path
+        }
     }
 
     /// Makes `serverID`'s paths the visible ones. Its previous paths are kept, so coming back

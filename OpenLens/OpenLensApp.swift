@@ -321,6 +321,10 @@ struct OpenLensApp: App {
             initialRouter.selectedTab = .chat
             initialRouter.chatPath = [initialRouter.chatSessionDestination(for: ScreenshotFixtures.defaultSession)]
         }
+        if screenshotModeEnabled, ScreenshotFixtures.opensServers {
+            initialRouter.selectedTab = .settings
+            initialRouter.settingsPath = [.servers]
+        }
         if screenshotModeEnabled, ScreenshotFixtures.opensArchivedSessions {
             initialRouter.selectedTab = .chat
             initialRouter.chatPath = [.archivedSessions]
@@ -391,6 +395,7 @@ struct OpenLensApp: App {
             )
             preparedContext = ServerContext(
                 id: ScreenshotFixtures.defaultServerID,
+                profile: ScreenshotFixtures.holdsTwoServers ? ScreenshotFixtures.defaultServerProfile : nil,
                 connection: demoConnection,
                 liveActivity: liveActivity,
                 savedConnectionsStore: savedConnections,
@@ -406,6 +411,7 @@ struct OpenLensApp: App {
             let secondClient = ChatClient(demoMode: true)
             additionalContexts = [ServerContext(
                 id: ScreenshotFixtures.secondServerID,
+                profile: ScreenshotFixtures.secondServerProfile,
                 connection: secondConnection,
                 liveActivity: liveActivity,
                 savedConnectionsStore: savedConnections,

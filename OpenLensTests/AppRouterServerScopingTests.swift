@@ -76,13 +76,28 @@ extension MultiServerSuite {
         @Test func pathAccessorsReadAndWriteTheActiveServersPaths() {
             let router = AppRouter()
             router.activate(serverID: "a")
-            router.setPath([.archivedSessions], for: .settings)
+            router.setPath([.workspacePath(path: "/src")], for: .workspace)
 
-            #expect(router.path(for: .settings) == [.archivedSessions])
-            #expect(router.settingsPath == [.archivedSessions])
+            #expect(router.path(for: .workspace) == [.workspacePath(path: "/src")])
+            #expect(router.workspacePath == [.workspacePath(path: "/src")])
 
             router.activate(serverID: "b")
-            #expect(router.path(for: .settings).isEmpty)
+            #expect(router.path(for: .workspace).isEmpty)
+        }
+
+        @Test func settingsNavigationSurvivesAServerSwitch() {
+            let router = AppRouter()
+            router.activate(serverID: "a")
+            router.setPath([.servers], for: .settings)
+            router.setPath([.archivedSessions], for: .chat)
+
+            router.activate(serverID: "b")
+
+            // Settings is the app's own surface -- preferences and the servers list itself --
+            // and the servers screen is where a switch is made, so switching must not drop you
+            // off it. Chat is a view onto one server, so its stack is that server's.
+            #expect(router.path(for: .settings) == [.servers])
+            #expect(router.path(for: .chat).isEmpty)
         }
     }
 }

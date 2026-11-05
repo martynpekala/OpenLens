@@ -408,6 +408,39 @@ enum ScreenshotFixtures {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_INBOX")
     }
 
+    /// Pushes the Servers screen on the Settings tab.
+    ///
+    /// Argument *and* environment key: captures run through `xcrun simctl launch`, which injects
+    /// `SIMCTL_CHILD_`-prefixed environment variables and cannot pass launch arguments, so an
+    /// argument-only flag is unreachable from the capture path that needs it.
+    static var opensServers: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SERVERS")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SERVERS"] == "1")
+    }
+
+    /// Opens the add-server sheet over the Servers screen.
+    static var opensServerSheet: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SERVER_SHEET")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SERVER_SHEET"] == "1")
+    }
+
+    /// Profiles that give the two demo servers a name to show. Only the multi-server fixture uses them.
+    static let defaultServerProfile = SavedConnection(
+        id: defaultServerID,
+        serverURL: "macbook-pro.local:4096",
+        username: "opencode",
+        password: ""
+    )
+    static let secondServerProfile = SavedConnection(
+        id: secondServerID,
+        serverURL: "192.168.1.50:4096",
+        username: "opencode",
+        password: "",
+        nickname: "Build box"
+    )
+
     static var opensArchivedSessions: Bool {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_ARCHIVED_SESSIONS")
     }

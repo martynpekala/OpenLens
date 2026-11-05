@@ -104,11 +104,24 @@ final class ServerRegistry {
     }
 
     /// Connecting, connected or reconnecting: the states that occupy one of the connection slots.
-    private func isLive(_ context: ServerContext) -> Bool {
+    func isLive(_ context: ServerContext) -> Bool {
         switch context.connection.state {
         case .connecting, .connected, .reconnecting: true
         case .disconnected, .error: false
         }
+    }
+
+    /// The saved profile behind a context: the store's current copy (so a rename shows at once),
+    /// else the snapshot the context was built from. `nil` for the draft context.
+    func profile(for context: ServerContext) -> SavedConnection? {
+        savedConnectionsStore.connections.first {
+            $0.id == context.id || $0.id == context.connection.connectionID
+        } ?? context.profile
+    }
+
+    /// Contexts that stand for a saved server, in display order.
+    var savedServerContexts: [ServerContext] {
+        contexts.filter { profile(for: $0) != nil }
     }
 
     var liveConnectionCount: Int {

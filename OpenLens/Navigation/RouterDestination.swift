@@ -5,6 +5,7 @@ enum RouterDestination: Hashable {
     /// and `.task(id:)` rely on.
     case chatSession(session: OCSession, serverID: String)
     case archivedSessions
+    case servers
     case sessionInsights(sessionID: String?)
     case reviewMessage(messageID: String)
     case reviewFile(path: String)
