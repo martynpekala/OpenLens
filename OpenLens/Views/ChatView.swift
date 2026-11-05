@@ -23,6 +23,7 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.connection) private var connection
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.workspaceNames) private var workspaceNames
     @Environment(\.chatEasterEgg) private var chatEasterEgg
     @Environment(AppRouter.self) private var router: AppRouter?
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
@@ -163,9 +164,7 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ChatHeaderToolbar(
-                projectName: chatClient.sessionLocationState == .ready
-                    ? (headerSession?.workspaceDisplayName ?? connection.projectName)
-                    : connection.projectName,
+                projectName: headerWorkspaceName,
                 branch: connection.branch,
                 connectionState: connection.state,
                 sessionTitle: headerSession?.title,
@@ -178,6 +177,9 @@ struct ChatView: View {
                     } else {
                         chatClient.startStreamRecording()
                     }
+                },
+                onOpenWorkspace: {
+                    router?.selectedTab = .workspace
                 }
             )
         }
@@ -333,6 +335,17 @@ struct ChatView: View {
         return chatClient.currentSession?.id == initialSession.id
             ? chatClient.currentSession
             : initialSession
+    }
+
+    /// The workspace name shown in the header: the personalized name when one
+    /// is assigned, otherwise the folder's default display name.
+    private var headerWorkspaceName: String? {
+        if chatClient.sessionLocationState == .ready {
+            if let directory = headerSession?.workspaceDirectory {
+                return workspaceNames.displayName(forDirectory: directory) ?? connection.projectName
+            }
+        }
+        return connection.projectName
     }
 
     private var isRetroChat: Bool {

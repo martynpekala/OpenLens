@@ -71,6 +71,10 @@ private struct WorkspaceServiceKey: EnvironmentKey {
     }()
 }
 
+private struct WorkspaceNameStoreKey: EnvironmentKey {
+    static let defaultValue: WorkspaceNameStore = WorkspaceNameStore()
+}
+
 private struct SessionInsightsServiceKey: EnvironmentKey {
     static let defaultValue: SessionInsightsService = SessionInsightsService()
 }
@@ -146,6 +150,11 @@ extension EnvironmentValues {
     var workspaceService: WorkspaceService {
         get { self[WorkspaceServiceKey.self] }
         set { self[WorkspaceServiceKey.self] = newValue }
+    }
+
+    var workspaceNames: WorkspaceNameStore {
+        get { self[WorkspaceNameStoreKey.self] }
+        set { self[WorkspaceNameStoreKey.self] = newValue }
     }
 
     var sessionInsightsService: SessionInsightsService {

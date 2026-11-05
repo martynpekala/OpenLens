@@ -958,12 +958,12 @@ enum ScreenshotFixtures {
 
     private static let workingTreeFiles: [ReviewFileChange] = [
         ReviewFileChange(
-            path: "OpenLens/Views/Workspace/WorkspaceRootView.swift",
-            status: "M",
-            additions: 42,
-            deletions: 11,
-            beforeText: "Text(\"Workspace\")\n",
-            afterText: "Text(\"Workspace\")\nText(\"Source control and commands in one place\")\n"
+            path: "OpenLens/Services/ScreenshotFixtures.swift",
+            status: "A",
+            additions: 214,
+            deletions: 0,
+            beforeText: nil,
+            afterText: "enum ScreenshotFixtures {\n    static let providersResult = ProvidersService.ProvidersResult(...)\n}"
         ),
         ReviewFileChange(
             path: "OpenLens/Views/Review/ReviewRootView.swift",
@@ -974,12 +974,44 @@ enum ScreenshotFixtures {
             afterText: "Text(\"Review\")\nText(\"Inspect scoped code changes\")\n"
         ),
         ReviewFileChange(
-            path: "OpenLens/Services/ScreenshotFixtures.swift",
+            path: "OpenLens/Views/SessionsListView.swift",
+            status: "M",
+            additions: 12,
+            deletions: 4,
+            beforeText: "Text(session.title)\n",
+            afterText: "Text(session.title)\nText(session.updatedAt, style: .relative)\n"
+        ),
+        ReviewFileChange(
+            path: "OpenLens/Views/Workspace/WorkspaceRootView.swift",
+            status: "M",
+            additions: 42,
+            deletions: 11,
+            beforeText: "Text(\"Workspace\")\n",
+            afterText: "Text(\"Workspace\")\nText(\"Source control and commands in one place\")\n"
+        ),
+        ReviewFileChange(
+            path: "OpenLensTests/WorkspaceNameStoreTests.swift",
             status: "A",
-            additions: 214,
+            additions: 96,
             deletions: 0,
             beforeText: nil,
-            afterText: "enum ScreenshotFixtures {\n    static let providersResult = ProvidersService.ProvidersResult(...)\n}"
+            afterText: "struct WorkspaceNameStoreTests {\n    @Test func customNameOverridesDefaultName() {}\n}"
+        ),
+        ReviewFileChange(
+            path: "PromoScreenshots/hero-dark.png",
+            status: "A",
+            additions: 1042,
+            deletions: 0,
+            beforeText: nil,
+            afterText: nil
+        ),
+        ReviewFileChange(
+            path: "docs/release-checklist.md",
+            status: "M",
+            additions: 8,
+            deletions: 2,
+            beforeText: "- [ ] Run full test suite\n",
+            afterText: "- [ ] Run full test suite\n- [ ] Refresh App Store screenshots\n"
         )
     ]
 
