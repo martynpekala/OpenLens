@@ -3,6 +3,8 @@ import SwiftUI
 /// Navigation bar toolbar content for the chat view.
 struct ChatHeaderToolbar: ToolbarContent {
     let projectName: String?
+    /// Set only while several servers are saved.
+    var serverTag: ServerTag?
     let branch: String?
     let connectionState: ConnectionManager.State
     let sessionTitle: String?
@@ -106,6 +108,14 @@ struct ChatHeaderToolbar: ToolbarContent {
                         .frame(width: 6, height: 6)
                         .symbolEffect(.pulse, isActive: connectionState == .connected)
                         .padding(.trailing, 4)
+
+                    if let serverTag {
+                        ServerBadge(tag: serverTag, size: 13, truncation: .tail)
+                            .layoutPriority(-1)
+                        Text("\u{00B7}")
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
+                            .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+                    }
 
                     if let projectName {
                         workspaceNameLabel(projectName)

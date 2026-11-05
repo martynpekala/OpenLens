@@ -7,20 +7,28 @@ import SwiftUI
 /// monospaced like every other host in the app.
 struct ServerBadge: View {
     let tag: ServerTag
+    var color: Color = Color.appSecondary
+    var size: CGFloat = 12
+    /// Where to cut when the badge has to truncate. A group header has the width to spare and
+    /// middle-truncates like every other host in the app, keeping both ends. A toolbar capsule
+    /// is sharing 240pt with the workspace it qualifies, and middle truncation there keeps the
+    /// port while discarding the hostname -- "macb…4096" names no machine. Tail truncation keeps
+    /// the part that actually tells two machines apart.
+    var truncation: Text.TruncationMode = .middle
 
     var body: some View {
         Text(tag.text)
             .font(font)
-            .foregroundStyle(Color.appSecondary)
+            .foregroundStyle(color)
             .lineLimit(1)
-            .truncationMode(.middle)
+            .truncationMode(truncation)
             .accessibilityLabel(AppText.serverBadgeAccessibility(tag.text))
     }
 
     private var font: Font {
         switch tag.kind {
-        case .nickname: .system(size: 12, design: .rounded)
-        case .host: .system(size: 12, design: .monospaced)
+        case .nickname: .system(size: size, design: .rounded)
+        case .host: .system(size: size, design: .monospaced)
         }
     }
 }

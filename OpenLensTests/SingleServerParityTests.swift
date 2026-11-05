@@ -55,7 +55,7 @@ extension MultiServerSuite {
             }
         }
 
-        private static let sessions: [OCSession] = [
+        static let sessions: [OCSession] = [
             MultiServerSuite.Aggregation.session("s1", directory: "/work/app", projectID: "p1", updated: 9000),
             MultiServerSuite.Aggregation.session("s2", directory: "/work/other", updated: 8000),
             MultiServerSuite.Aggregation.session("s3", directory: "/work/app", updated: 7000),
@@ -139,6 +139,49 @@ extension MultiServerSuite {
             let several = serverSwitchTargets([(id: "a", tag: tag), (id: "b", tag: tag)])
             #expect(several.isInteractive)
             #expect(several.targets.map(\.id) == ["a", "b"])
+        }
+
+        @Test func oneSavedServerLeavesTheNewSessionTargetOnTheActiveServerWithNoPicker() {
+            let target = resolveNewSessionTarget(preferredServerID: nil, activeServerID: "only", savedServerIDs: ["only"])
+            #expect(target == "only")
+            // The sheet offers a server picker only when the switcher has targets to choose between.
+            #expect(serverSwitchTargets([(id: "only", tag: ServerTag(nickname: nil, serverURL: "10.0.0.1:4096"))]).targets.count <= 1)
+        }
+
+        @Test func oneSavedServerLeavesTheWorkspaceCapsuleAsTheWorkspaceAlone() {
+            let tag = ServerTag(nickname: "Laptop", serverURL: "10.0.0.1:4096")
+            let title = ServerQualifiedTitle(workspace: "OpenLens", server: tag, savedServerCount: 1)
+            #expect(title.server == nil)
+            #expect(title.workspace == "OpenLens")
+        }
+
+        @Test func oneSavedServerLeavesTheReviewPickerAsTheActiveServersSessionsOnly() {
+            let options = reviewPickerOptions(
+                activeServerID: "only",
+                activeSessions: MultiServerSuite.SingleServerParity.sessions,
+                otherServers: [],
+                tags: ["only": ServerTag(nickname: "Laptop", serverURL: "10.0.0.1:4096")],
+                showsServerTags: isMultiServerUIEnabled(savedServerCount: 1)
+            )
+            #expect(options.map(\.session.id) == MultiServerSuite.SingleServerParity.sessions.map(\.id))
+            #expect(options.allSatisfy { $0.tag == nil })
+        }
+
+        @Test func oneSavedServerLeavesTheInboxUntaggedWithItsOwnWarning() {
+            let snapshot = InboxSnapshot(
+                permissions: [OCPermissionRequest(id: "p1", sessionID: "s")],
+                questions: [],
+                forms: [],
+                warning: "forms failed"
+            )
+            let merged = InboxAggregation.merge(
+                results: [ServerInboxResult(serverID: "only", snapshot: snapshot, failureMessage: nil)],
+                tags: ["only": ServerTag(nickname: "Laptop", serverURL: "10.0.0.1:4096")],
+                showsServerTags: isMultiServerUIEnabled(savedServerCount: 1)
+            )
+            #expect(merged.permissions.map(\.item.id) == ["p1"])
+            #expect(merged.permissions.allSatisfy { $0.tag == nil })
+            #expect(merged.warning == "forms failed")
         }
     }
 }

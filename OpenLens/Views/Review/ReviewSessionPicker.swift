@@ -93,20 +93,21 @@ struct ReviewSessionPickerList: View {
         case error(String)
     }
 
-    let sessions: [OCSession]
-    let selectedSessionID: String?
+    let options: [ReviewPickerOption]
+    /// `ReviewPickerOption.id` of the reviewed session.
+    let selectedOptionID: String?
     let hasMore: Bool
     let pagingState: PagingState
-    let onSelect: (OCSession) -> Void
+    let onSelect: (ReviewPickerOption) -> Void
     let onLoadMore: () async -> Void
 
     var body: some View {
         List {
-            ForEach(sessions) { session in
+            ForEach(options) { option in
                 Button {
-                    onSelect(session)
+                    onSelect(option)
                 } label: {
-                    row(session)
+                    row(option)
                 }
                 .tint(.primary)
             }
@@ -117,32 +118,46 @@ struct ReviewSessionPickerList: View {
         }
         .listStyle(.plain)
         .overlay {
-            if sessions.isEmpty, !hasMore {
+            if options.isEmpty, !hasMore {
                 ContentUnavailableView(AppText.reviewEmptyTitle, systemImage: "doc.text.magnifyingglass")
             }
         }
     }
 
-    private func row(_ session: OCSession) -> some View {
-        HStack(spacing: 12) {
+    private func row(_ option: ReviewPickerOption) -> some View {
+        let session = option.session
+        let isSelected = option.id == selectedOptionID
+        return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.title.nilIfBlank ?? AppText.titleUntitled)
                     .lineLimit(1)
-                if session.updatedAt > 0 {
-                    Text(Date(timeIntervalSince1970: session.updatedAt), format: .relative(presentation: .named))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if option.tag != nil || session.updatedAt > 0 {
+                    HStack(spacing: 4) {
+                        if let tag = option.tag {
+                            ServerBadge(tag: tag, truncation: .tail)
+                            if session.updatedAt > 0 {
+                                Text("\u{00B7}")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.appSecondary)
+                            }
+                        }
+                        if session.updatedAt > 0 {
+                            Text(Date(timeIntervalSince1970: session.updatedAt), format: .relative(presentation: .named))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             Spacer(minLength: 0)
-            if session.id == selectedSessionID {
+            if isSelected {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(Color.appAccent)
             }
         }
         .contentShape(Rectangle())
-        .accessibilityAddTraits(session.id == selectedSessionID ? .isSelected : [])
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -167,7 +182,7 @@ struct ReviewSessionPickerList: View {
                 Spacer()
             }
             .listRowSeparator(.hidden)
-            .task(id: sessions.count) {
+            .task(id: options.count) {
                 await onLoadMore()
             }
         }

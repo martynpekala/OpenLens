@@ -53,6 +53,8 @@ struct ReviewRootView: View {
     @Environment(\.inboxService) private var inboxService
     @Environment(\.reviewService) private var reviewService
     @Environment(\.sessionsService) private var sessionsService
+    @Environment(\.serverRegistry) private var registry
+    @Environment(AppRouter.self) private var router: AppRouter?
 
     @State private var viewState: ViewState = .idle
     @State private var reviewSnapshot: SessionReviewSnapshot?
@@ -62,6 +64,8 @@ struct ReviewRootView: View {
     @State private var lastUpdateScopeID: String?
     @State private var selectedFile: ReviewFileChange?
     @State private var availableSessions: [OCSession] = []
+    /// The other connected servers' first pages, for the picker.
+    @State private var otherServerSessions: [ServerSessionsResult] = []
     @State private var nextSessionsCursor: String?
     @State private var sessionsPagingState: ReviewSessionPickerList.PagingState = .idle
     @State private var selectedReviewSession: OCSession?
@@ -80,6 +84,10 @@ struct ReviewRootView: View {
             await refreshInboxBadgeCount()
             if ScreenshotFixtures.opensInbox {
                 isInboxPresented = true
+            }
+            if ScreenshotFixtures.opensReviewSessionPicker {
+                try? await Task.sleep(for: .seconds(2))
+                isSessionPickerPresented = true
             }
         }
         .task(id: chatClient.currentSession?.id) {
@@ -197,13 +205,13 @@ struct ReviewRootView: View {
                 }
                 .popover(isPresented: $isSessionPickerPresented, arrowEdge: .top) {
                     ReviewSessionPickerList(
-                        sessions: sessionPickerSessions,
-                        selectedSessionID: selectedReviewSessionID,
+                        options: sessionPickerOptions,
+                        selectedOptionID: selectedReviewSessionID.map { "\(registry.activeContext.id)|\($0)" },
                         hasMore: nextSessionsCursor != nil,
                         pagingState: sessionsPagingState,
-                        onSelect: { session in
-                            selectedReviewSession = session
+                        onSelect: { option in
                             isSessionPickerPresented = false
+                            selectPickerOption(option)
                         },
                         onLoadMore: loadMoreSessions
                     )
@@ -350,6 +358,50 @@ struct ReviewRootView: View {
         return [selectedReviewSession] + availableSessions
     }
 
+    private var sessionPickerOptions: [ReviewPickerOption] {
+        reviewPickerOptions(
+            activeServerID: registry.activeContext.id,
+            activeSessions: sessionPickerSessions,
+            otherServers: otherServerSessions,
+            tags: registry.serverTags(),
+            showsServerTags: isMultiServerUIEnabled(savedServerCount: registry.savedServerContexts.count)
+        )
+    }
+
+    /// A session on another server makes that server the active one first, as the Sessions list
+    /// does. That rebuilds this view, so the choice is handed over through the router.
+    private func selectPickerOption(_ option: ReviewPickerOption) {
+        guard option.serverID != registry.activeContext.id else {
+            selectedReviewSession = option.session
+            return
+        }
+        router?.pendingReviewSession = option.session
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            guard registry.activate(id: option.serverID) else {
+                router?.pendingReviewSession = nil
+                return
+            }
+            router?.activate(serverID: option.serverID)
+        }
+    }
+
+    private func refreshOtherServerSessions() async {
+        let activeID = registry.activeContext.id
+        let others = registry.savedServerContexts.filter { $0.id != activeID && $0.connection.isConnected }
+        var results: [ServerSessionsResult] = []
+        for context in others {
+            do {
+                let page = try await context.sessionsService.listSessionsPage()
+                results.append(ServerSessionsResult(serverID: context.id, sessions: page.sessions))
+            } catch {
+                results.append(ServerSessionsResult(serverID: context.id, sessions: [], failureMessage: error.localizedDescription))
+            }
+        }
+        otherServerSessions = results
+    }
+
     private var isReviewReloading: Bool {
         if case .loading = viewState {
             return reviewSnapshot != nil
@@ -373,6 +425,13 @@ struct ReviewRootView: View {
             availableSessions = page.sessions
             nextSessionsCursor = page.nextCursor
             sessionsPagingState = .idle
+            await refreshOtherServerSessions()
+
+            if let pending = router?.pendingReviewSession {
+                router?.pendingReviewSession = nil
+                selectedReviewSession = pending
+                return
+            }
 
             let activeSession = chatClient.currentSession.flatMap { session in
                 session.parentID?.nilIfBlank == nil ? session : nil
@@ -441,7 +500,7 @@ struct ReviewRootView: View {
 
     private func refreshInboxBadgeCount() async {
         do {
-            let snapshot = try await inboxService.loadInbox()
+            let snapshot = try await registry.loadAggregatedInbox(activeInbox: inboxService)
             inboxBadgeCount = snapshot.pendingRequestCount
         } catch {
             inboxBadgeCount = 0

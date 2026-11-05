@@ -59,6 +59,7 @@ struct WorkspaceRootView: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.connection) private var connection
+    @Environment(\.serverRegistry) private var registry
     @Environment(\.workspaceService) private var workspaceService
     @Environment(\.workspaceNames) private var workspaceNames
     @Environment(\.savedConnections) private var savedConnections
@@ -221,6 +222,7 @@ struct WorkspaceRootView: View {
                 } label: {
                     WorkspaceProjectTitleCapsule(
                         title: currentWorkspaceTitle,
+                        serverTag: registry.activeServerTagWhenMultiServer,
                         isSwitching: switchingProjectID != nil,
                         isSelectable: true
                     )
@@ -230,6 +232,7 @@ struct WorkspaceRootView: View {
             } else {
                 WorkspaceProjectTitleCapsule(
                     title: currentWorkspaceTitle,
+                    serverTag: registry.activeServerTagWhenMultiServer,
                     isSwitching: switchingProjectID != nil,
                     isSelectable: false
                 )

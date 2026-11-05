@@ -441,6 +441,16 @@ enum ScreenshotFixtures {
         nickname: "Build box"
     )
 
+    /// Opens the New Session sheet over the Sessions list, for capturing its server picker.
+    static var opensNewSessionSheet: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_NEW_SESSION")
+    }
+
+    /// Opens the Review tab's session picker, for capturing its server marks.
+    static var opensReviewSessionPicker: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_REVIEW_PICKER")
+    }
+
     static var opensArchivedSessions: Bool {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_ARCHIVED_SESSIONS")
     }

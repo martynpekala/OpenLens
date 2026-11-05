@@ -10,6 +10,7 @@ struct SessionsListView: View {
 
     private struct NewSessionRequest: Identifiable {
         let id = UUID()
+        let targetServerID: String
     }
 
     /// A session waiting on the delete confirmation, with the server that owns it.
@@ -236,9 +237,13 @@ struct SessionsListView: View {
         presentationContent
             .scrollEdgeEffectStyle(.soft, for: .bottom)
         .background(isSidebar ? Color.clear : Color.appBackground)
-        .sheet(item: $newSessionRequest) { _ in
-            NewSessionSheet(newSessionModel: newSessionModel) { session in
-                handleCreatedSession(session)
+        .sheet(item: $newSessionRequest) { request in
+            NewSessionSheet(
+                newSessionModel: newSessionModel,
+                targets: switchTargets.targets,
+                initialTargetID: request.targetServerID
+            ) { session, serverID in
+                handleCreatedSession(session, serverID: serverID)
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -270,6 +275,9 @@ struct SessionsListView: View {
         .onChange(of: sessionsService.confirmedViewedMarkers, initial: true) { _, _ in
             let id = activeServerID
             sessionsByServer[id] = sessionsService.applyingConfirmedViewedMarkers(to: sessions(for: id))
+        }
+        .task {
+            if ScreenshotFixtures.opensNewSessionSheet { presentNewSessionSheet() }
         }
         .task(id: loadableSources.map(\.id)) {
             // The first load seeds one server; the rest fill in as they are connected.
@@ -305,6 +313,13 @@ struct SessionsListView: View {
         if isSidebar {
             VStack(spacing: 0) {
                 SessionsSidebarHeader(
+                    serverFilter: switchTargets.isInteractive
+                        ? SessionsSidebarHeader.ServerFilter(
+                            title: serverFilterTitle,
+                            targets: switchTargets.targets,
+                            selection: serverFilterSelection
+                        )
+                        : nil,
                     onCreate: presentNewSessionSheet,
                     onShowArchived: supportsArchiving ? { showArchivedSessions = true } : nil
                 )
@@ -849,17 +864,22 @@ struct SessionsListView: View {
     }
 
     private func presentNewSessionSheet() {
-        newSessionRequest = NewSessionRequest()
+        // The server the user is looking at, so + after browsing B's sessions creates on B.
+        let targetID = resolveNewSessionTarget(
+            preferredServerID: serverFilterID,
+            activeServerID: activeServerID,
+            savedServerIDs: registry.savedServerContexts.map(\.id)
+        )
+        newSessionRequest = NewSessionRequest(targetServerID: targetID)
     }
 
-    private func handleCreatedSession(_ session: OCSession) {
+    private func handleCreatedSession(_ session: OCSession, serverID id: String) {
         outcomeRefreshGeneration &+= 1
         openedSessionIDs.insert(session.id)
         viewState = .loaded
-        let id = activeServerID
         sessionsByServer[id] = [session] + sessions(for: id)
         pruneExpandedProjects()
-        onSelect(session)
+        selectSession(session, serverID: id)
     }
 
     private func deleteSession(_ session: OCSession, serverID: String) {
@@ -927,14 +947,26 @@ struct SessionsListView: View {
 }
 
 private struct SessionsSidebarHeader: View {
+    /// The sidebar's form of the toolbar capsule: present only while several servers are saved.
+    struct ServerFilter {
+        let title: String
+        let targets: [ServerSwitchTargets.Target]
+        let selection: Binding<String>
+    }
+
+    let serverFilter: ServerFilter?
     let onCreate: () -> Void
     var onShowArchived: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(AppText.sessions)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.appSecondary)
+            if let serverFilter {
+                filterMenu(serverFilter)
+            } else {
+                Text(AppText.sessions)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.appSecondary)
+            }
 
             Spacer()
 
@@ -964,6 +996,35 @@ private struct SessionsSidebarHeader: View {
         .padding(.trailing, 14)
         .padding(.top, 10)
         .padding(.bottom, 2)
+    }
+
+    private func filterMenu(_ filter: ServerFilter) -> some View {
+        Menu {
+            Picker(AppText.servers, selection: filter.selection) {
+                Text(AppText.sessionsAllServers)
+                    .tag("")
+                ForEach(filter.targets) { target in
+                    Text(target.tag.text)
+                        .tag(target.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(filter.title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.appSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.appSecondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(AppText.sessions), \(filter.title)")
+        .accessibilityHint(AppText.servers)
     }
 }
 
@@ -996,15 +1057,44 @@ private struct NewSessionSheet: View {
         case error(String)
     }
 
+    /// Resolves the model for the *active* server; another server resolves its own.
     let newSessionModel: @MainActor () async -> OCV2ModelRef?
-    let onCreated: (OCSession) -> Void
+    /// Empty with one saved server, which is what keeps the sheet exactly as it was.
+    let targets: [ServerSwitchTargets.Target]
+    let onCreated: (OCSession, String) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.connection) private var connection
+    @Environment(\.connection) private var activeConnection
     @Environment(\.savedConnections) private var savedConnections
-    @Environment(\.sessionsService) private var sessionsService
-    @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.sessionsService) private var activeSessionsService
+    @Environment(\.workspaceService) private var activeWorkspaceService
+    @Environment(\.serverRegistry) private var registry
     @Environment(\.openLensTheme) private var theme
+
+    @State private var targetServerID: String?
+
+    init(
+        newSessionModel: @escaping @MainActor () async -> OCV2ModelRef?,
+        targets: [ServerSwitchTargets.Target],
+        initialTargetID: String,
+        onCreated: @escaping (OCSession, String) -> Void
+    ) {
+        self.newSessionModel = newSessionModel
+        self.targets = targets
+        self.onCreated = onCreated
+        self._targetServerID = State(initialValue: initialTargetID)
+    }
+
+    /// The target's context. The active server uses the environment's services, which the
+    /// composition root keeps equal to the active context's own.
+    private var targetContext: ServerContext {
+        targetServerID.flatMap { registry.context(id: $0) } ?? registry.activeContext
+    }
+
+    private var isTargetActive: Bool { targetContext.id == registry.activeContext.id }
+    private var connection: ConnectionManager { isTargetActive ? activeConnection : targetContext.connection }
+    private var sessionsService: SessionsService { isTargetActive ? activeSessionsService : targetContext.sessionsService }
+    private var workspaceService: WorkspaceService { isTargetActive ? activeWorkspaceService : targetContext.workspaceService }
 
     @State private var title = ""
     @State private var workspaceState: WorkspaceLoadState = .idle
@@ -1034,6 +1124,9 @@ private struct NewSessionSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     titleSection
+                    if targets.count > 1 {
+                        serverSection
+                    }
                     workspaceSection
 
                     if let createErrorMessage {
@@ -1080,7 +1173,7 @@ private struct NewSessionSheet: View {
                     .disabled(!canCreate)
                 }
             }
-            .task {
+            .task(id: targetServerID) {
                 await loadWorkspaceOptions()
             }
             .sheet(item: $folderBrowserRequest) { request in
@@ -1128,6 +1221,45 @@ private struct NewSessionSheet: View {
                     RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous)
                         .stroke(Color.appSeparator, lineWidth: 1)
                 }
+        }
+    }
+
+    /// Which server the session is created on. Only offered with several saved servers.
+    private var serverSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(AppText.server)
+                .font(theme.typography.sectionLabel)
+                .foregroundStyle(Color.appSecondary)
+                .textCase(.uppercase)
+
+            Menu {
+                Picker(AppText.server, selection: Binding(
+                    get: { targetServerID ?? "" },
+                    set: { targetServerID = $0 }
+                )) {
+                    ForEach(targets) { target in
+                        Text(target.tag.text).tag(target.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if let tag = targets.first(where: { $0.id == targetServerID })?.tag {
+                        ServerBadge(tag: tag, color: Color.appPrimary, size: 15)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.appSecondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 13)
+                .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous)
+                        .stroke(Color.appSeparator, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -1408,9 +1540,9 @@ private struct NewSessionSheet: View {
                 title: trimmedTitle.isEmpty ? nil : trimmedTitle,
                 workspaceDirectory: selectedWorkspace.directory,
                 clearsWorkspaceContext: selectedWorkspace.clearsWorkspaceContext,
-                model: await newSessionModel()
+                model: isTargetActive ? await newSessionModel() : await targetContext.chatClient.newSessionModelPreference()
             )
-            onCreated(session)
+            onCreated(session, targetContext.id)
             dismiss()
         } catch {
             createErrorMessage = error.localizedDescription

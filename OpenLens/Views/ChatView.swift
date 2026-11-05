@@ -22,6 +22,7 @@ struct ChatView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.connection) private var connection
+    @Environment(\.serverRegistry) private var serverRegistry
     @Environment(\.workspaceService) private var workspaceService
     @Environment(\.workspaceNames) private var workspaceNames
     @Environment(\.chatEasterEgg) private var chatEasterEgg
@@ -165,6 +166,7 @@ struct ChatView: View {
         .toolbar {
             ChatHeaderToolbar(
                 projectName: headerWorkspaceName,
+                serverTag: serverRegistry.activeServerTagWhenMultiServer,
                 branch: connection.branch,
                 connectionState: connection.state,
                 sessionTitle: headerSession?.title,

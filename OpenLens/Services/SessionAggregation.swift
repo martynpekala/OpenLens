@@ -192,3 +192,40 @@ func serverSwitchTargets(_ targets: [(id: String, tag: ServerTag)]) -> ServerSwi
             : []
     )
 }
+
+/// The server a new session is created on. The server the user is looking at (the list filter)
+/// wins, then the active one; an id that is no longer saved falls back rather than creating on
+/// a server the user cannot see.
+func resolveNewSessionTarget(preferredServerID: String?, activeServerID: String, savedServerIDs: [String]) -> String {
+    if savedServerIDs.isEmpty { return activeServerID }
+    if let preferredServerID, savedServerIDs.contains(preferredServerID) { return preferredServerID }
+    if savedServerIDs.contains(activeServerID) { return activeServerID }
+    return savedServerIDs[0]
+}
+
+/// What a workspace-naming capsule shows: the workspace, with the server in front of it once
+/// there is more than one saved server to tell apart.
+struct ServerQualifiedTitle: Equatable {
+    /// Nil at one saved server, which is what keeps the capsule exactly as it always was.
+    let server: ServerTag?
+    let workspace: String
+
+    init(workspace: String, server: ServerTag?, savedServerCount: Int) {
+        self.workspace = workspace
+        self.server = isMultiServerUIEnabled(savedServerCount: savedServerCount) ? server : nil
+    }
+
+    /// The server, separator and workspace as one phrase, for accessibility.
+    var spokenText: String {
+        server.map { "\($0.text) · \(workspace)" } ?? workspace
+    }
+}
+
+extension ServerRegistry {
+    /// The active server's identity, or nil while one server (or none) is saved.
+    var activeServerTagWhenMultiServer: ServerTag? {
+        guard isMultiServerUIEnabled(savedServerCount: savedServerContexts.count),
+              let profile = profile(for: activeContext) else { return nil }
+        return ServerTag(nickname: profile.nickname, serverURL: profile.serverURL)
+    }
+}

@@ -5,11 +5,22 @@ import SwiftUI
 /// of a project picker menu, so it shows a chevron and reacts to touches.
 struct WorkspaceProjectTitleCapsule: View {
     let title: String
+    /// Set only while several servers are saved; shown before the workspace, never instead of it.
+    var serverTag: ServerTag?
     let isSwitching: Bool
     let isSelectable: Bool
 
     var body: some View {
         GlassToolbarCapsule(isInteractive: isSelectable) {
+            if let serverTag {
+                // Context, so it gives way first: it is the server that truncates, never the workspace.
+                ServerBadge(tag: serverTag, size: 15, truncation: .tail)
+                    .layoutPriority(-1)
+                Text("\u{00B7}")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.appSecondary)
+                    .accessibilityHidden(true)
+            }
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.appPrimary)
@@ -26,7 +37,9 @@ struct WorkspaceProjectTitleCapsule: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(AppText.workspaceProjectAccessibilityLabel(title))
+        .accessibilityLabel(AppText.workspaceProjectAccessibilityLabel(
+            serverTag.map { "\($0.text) · \(title)" } ?? title
+        ))
         .accessibilityHint(isSelectable ? AppText.workspaceProjectHint : "")
     }
 }

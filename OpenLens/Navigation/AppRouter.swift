@@ -9,6 +9,9 @@ final class AppRouter {
     static let unscopedServerID = ""
 
     var selectedTab: AppTab = .chat
+    /// A Review session chosen on another server. Activating that server rebuilds the Review
+    /// root (it is scoped to the active server), so the choice waits here for the new root.
+    var pendingReviewSession: OCSession?
     /// The server whose paths the stacks currently show.
     private(set) var activeServerID: String = AppRouter.unscopedServerID
     private var pathsByServer: [String: [AppTab: [RouterDestination]]] = [:]
