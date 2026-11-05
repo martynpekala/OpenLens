@@ -221,6 +221,8 @@ struct OpenLensApp: App {
     /// Deep link connection received via `openlens://connect` URL.
     @State private var pendingDeepLink: DeepLinkConnection?
     @State private var pendingSessionNavigationID: String?
+    /// Server the pending navigation belongs to; nil searches every connected server.
+    @State private var pendingSessionNavigationServerID: String?
 
     /// Set by `openlens://setup` while connected or reconnecting; presented once the connected root is on screen.
     @State private var isOpenCodeV2SupportRequested = false
@@ -589,8 +591,8 @@ struct OpenLensApp: App {
                 }
             }
             .onOpenURL { url in
-                if let sessionID = OpenLensActivityAttributes.sessionID(from: url) {
-                    openLiveActivitySession(sessionID)
+                if let link = OpenLensActivityAttributes.sessionLink(from: url) {
+                    openLiveActivitySession(link)
                     return
                 }
                 if ConnectionSetupLink.matches(url) {
@@ -604,6 +606,7 @@ struct OpenLensApp: App {
                 }
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
+                pendingSessionNavigationServerID = nil
                 if connection.isConnected || connection.isReconnecting {
                     // Already connected: add the server alongside the current one and switch to it.
                     Task { await addDeepLinkedServer(deepLink) }
@@ -639,7 +642,12 @@ struct OpenLensApp: App {
                 // saved servers up in the background. With one saved server this does nothing.
                 if newState == .connected, !hasConnectedRemainingServers {
                     hasConnectedRemainingServers = true
-                    Task { await serverRegistry.connectAll() }
+                    Task {
+                        await serverRegistry.connectAll()
+                        // A link held above because its server was still connecting gets its
+                        // second and final chance here.
+                        await openDeepLinkedSessionIfNeeded()
+                    }
                 }
 
                 if newState == .connected {
@@ -843,15 +851,44 @@ struct OpenLensApp: App {
         else {
             return
         }
+        let linkedServerID = pendingSessionNavigationServerID
 
-        do {
-            let session = try await sessionsService.getSession(id: sessionID)
-            router.selectedTab = .chat
-            router.chatPath = [router.chatSessionDestination(for: session)]
-            pendingSessionNavigationID = nil
-        } catch {
-            pendingSessionNavigationID = nil
+        // Tapping a Live Activity is usually a cold start, so the server the link names is very
+        // often still connecting: only the first server is up at this point, and connectAll()
+        // brings up the rest. Clearing the link here would make the tap do nothing, which is the
+        // one thing it exists for. Hold it until the other servers have been brought up -- that
+        // completion re-runs this -- after which an unresolvable link is cleared as before.
+        if let linkedServerID,
+           let linkedContext = serverRegistry.context(forProfileID: linkedServerID),
+           !linkedContext.connection.isConnected,
+           !hasConnectedRemainingServers {
+            return
         }
+
+        let candidates = activityLinkCandidateServerIDs(
+            linkedServerID: linkedServerID.flatMap { serverRegistry.context(forProfileID: $0)?.id },
+            activeServerID: serverRegistry.activeContext.id,
+            connectedServerIDs: serverRegistry.contexts.filter { $0.connection.isConnected }.map(\.id)
+        )
+
+        // An unknown or disconnected server in the link leaves no candidates and clears the link.
+        var found: (context: ServerContext, session: OCSession)?
+        for id in candidates {
+            guard let context = serverRegistry.context(id: id),
+                  let session = try? await context.sessionsService.getSession(id: sessionID)
+            else { continue }
+            found = (context, session)
+            break
+        }
+        pendingSessionNavigationID = nil
+        pendingSessionNavigationServerID = nil
+        guard let found else { return }
+
+        if found.context.id != serverRegistry.activeContext.id {
+            switchServer(to: found.context.id)
+        }
+        router.selectedTab = .chat
+        router.chatPath = [router.chatSessionDestination(for: found.session)]
     }
 
     /// Creates the session an App Shortcut asked for once the app is connected to a server.
@@ -876,13 +913,16 @@ struct OpenLensApp: App {
     }
 
     /// Opens the session a Live Activity belongs to, unless its chat is already on screen.
-    private func openLiveActivitySession(_ sessionID: String) {
+    private func openLiveActivitySession(_ link: OpenLensActivityAttributes.SessionLink) {
+        let activeConnectionID = serverContext.connection.connectionID
         if router.selectedTab == .chat,
            case .chatSession(let session, _)? = router.chatPath.last,
-           session.id == sessionID {
+           session.id == link.sessionID,
+           link.serverID == nil || link.serverID == activeConnectionID {
             return
         }
-        pendingSessionNavigationID = sessionID
+        pendingSessionNavigationID = link.sessionID
+        pendingSessionNavigationServerID = link.serverID
         Task {
             await openDeepLinkedSessionIfNeeded()
         }

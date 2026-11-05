@@ -105,7 +105,7 @@ struct SettingsView: View {
                         Label(AppText.settingsLiveActivityDebugTitle, systemImage: "waveform.path.ecg")
                     }
                     Button {
-                        liveActivity.dismissAll()
+                        liveActivity.dismissEverything()
                     } label: {
                         Label(AppText.settingsLiveActivityDismissTitle, systemImage: "xmark.circle")
                     }
@@ -130,7 +130,7 @@ struct SettingsView: View {
                         isPresented: $showDisconnectConfirmation
                     ) {
                         Button(AppText.disconnect, role: .destructive) {
-                            liveActivity.dismissAll()
+                            liveActivity.dismissAll(serverID: serverRegistry.activeContext.connection.connectionID)
                             serverRegistry.activeContext.connection.manualDisconnect()
                         }
                         Button(AppText.done, role: .cancel) {}
@@ -146,7 +146,8 @@ struct SettingsView: View {
         .scrollEdgeEffectStyle(.soft, for: .bottom)
         .onChange(of: liveActivitiesEnabled) { _, enabled in
             if !enabled {
-                liveActivity.dismissAll()
+                // The preference is app-wide, so it turns every server's activities off.
+                liveActivity.dismissEverything()
             }
         }
         .task {

@@ -4,17 +4,18 @@
 /// test run, and when the next run reinstalls the app the system launches it to end
 /// them, beating xcodebuild's test host launch ("Simulator device failed to launch").
 final class TestLiveActivityProvider: LiveActivityProviding {
-    func isActive(sessionID: String?) -> Bool { false }
+    func isActive(serverID: String?, sessionID: String?) -> Bool { false }
 
-    func startActivity(sessionID: String?, directory: String?, title: String?) {}
+    func startActivity(serverID: String?, sessionID: String?, directory: String?, title: String?) {}
 
-    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
+    func update(serverID: String?, sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) {}
+    func endActivity(serverID: String?, sessionID: String?, phase: OpenLensActivityAttributes.Phase) {}
 
-    func dismissImmediately(sessionID: String?) {}
+    func dismissImmediately(serverID: String?, sessionID: String?) {}
 
-    func dismissAll() {}
+    func dismissAll(serverID: String?) {}
+    func dismissEverything() {}
 
     func previewLiveActivity() {}
 }

@@ -405,30 +405,34 @@ private final class LiveActivitySpy: LiveActivityProviding {
     var updates: [OpenLensActivityAttributes.PendingUserResponse?] { updateLog.map(\.response) }
     var endings: [OpenLensActivityAttributes.Phase] { endLog.map(\.phase) }
 
-    func isActive(sessionID: String?) -> Bool {
+    func isActive(serverID: String?, sessionID: String?) -> Bool {
         activeSessionIDs.contains(sessionID ?? "")
     }
 
-    func startActivity(sessionID: String?, directory: String?, title: String?) {
+    func startActivity(serverID: String?, sessionID: String?, directory: String?, title: String?) {
         starts.append((sessionID, directory))
         activeSessionIDs.insert(sessionID ?? "")
     }
 
-    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {
+    func update(serverID: String?, sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {
         updateLog.append((sessionID, pendingUserResponse))
     }
 
-    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) {
+    func endActivity(serverID: String?, sessionID: String?, phase: OpenLensActivityAttributes.Phase) {
         endLog.append((sessionID, phase))
         activeSessionIDs.remove(sessionID ?? "")
     }
 
-    func dismissImmediately(sessionID: String?) {
+    func dismissImmediately(serverID: String?, sessionID: String?) {
         dismissedSessionIDs.append(sessionID)
         activeSessionIDs.remove(sessionID ?? "")
     }
 
-    func dismissAll() {
+    func dismissAll(serverID: String?) {
+        activeSessionIDs.removeAll()
+    }
+
+    func dismissEverything() {
         activeSessionIDs.removeAll()
     }
 

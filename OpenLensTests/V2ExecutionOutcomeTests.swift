@@ -307,13 +307,14 @@ private final class OutcomeUnusedStream: OpenCodeEventStream, @unchecked Sendabl
 @MainActor
 private final class OutcomeActivityProvider: LiveActivityProviding {
     private var startedSessionIDs: Set<String> = []
-    func isActive(sessionID: String?) -> Bool { startedSessionIDs.contains(sessionID ?? "") }
+    func isActive(serverID: String?, sessionID: String?) -> Bool { startedSessionIDs.contains(sessionID ?? "") }
     var phases: [OpenLensActivityAttributes.Phase] = []
     var dismissCount = 0
-    func startActivity(sessionID: String?, directory: String?, title: String?) { startedSessionIDs.insert(sessionID ?? "") }
-    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
-    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) { phases.append(phase) }
-    func dismissImmediately(sessionID: String?) { dismissCount += 1 }
-    func dismissAll() {}
+    func startActivity(serverID: String?, sessionID: String?, directory: String?, title: String?) { startedSessionIDs.insert(sessionID ?? "") }
+    func update(serverID: String?, sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
+    func endActivity(serverID: String?, sessionID: String?, phase: OpenLensActivityAttributes.Phase) { phases.append(phase) }
+    func dismissImmediately(serverID: String?, sessionID: String?) { dismissCount += 1 }
+    func dismissAll(serverID: String?) {}
+    func dismissEverything() {}
     func previewLiveActivity() {}
 }

@@ -26,26 +26,48 @@ final class LiveActivityManager: LiveActivityProviding {
         }
     }
 
-    /// Running activities keyed by `key(for:)`.
-    private var entries: [String: Entry] = [:]
+    /// Identifies one activity. The same session id on two servers is two activities, and a
+    /// session-less turn on each server is its own too.
+    struct ActivityKey: Hashable {
+        let serverID: String?
+        let sessionID: String?
+
+        /// The preview never collides with a real server or session.
+        static let preview = ActivityKey(serverID: "\u{0}preview", sessionID: nil)
+    }
+
+    /// Running activities.
+    private var entries: [ActivityKey: Entry] = [:]
     private let debounceInterval: TimeInterval = 0.25
     private var previewTask: Task<Void, Never>?
 
-    /// The preview never collides with a real session ID.
-    private static let previewKey = "\u{0}preview"
-
     init() {}
 
-    private func key(for sessionID: String?) -> String {
-        sessionID ?? ""
+    /// Whether an activity already on screen is the earlier turn of this server's session, which
+    /// a new turn replaces. Another server's activity for the same session id is not. An activity
+    /// with no server was started before multi-server support, by the one server the app then
+    /// talked to.
+    static func isReplaced(_ attributes: OpenLensActivityAttributes, byTurnOn serverID: String?, sessionID: String?) -> Bool {
+        !attributes.isPreview
+            && attributes.sessionID == sessionID
+            && (attributes.serverID == serverID || attributes.serverID == nil)
+    }
+
+    /// Whether dismissing a server's activities also takes this untracked one down.
+    static func isDismissed(_ attributes: OpenLensActivityAttributes, withServer serverID: String?) -> Bool {
+        attributes.serverID == serverID || attributes.serverID == nil
+    }
+
+    private func key(for serverID: String?, _ sessionID: String?) -> ActivityKey {
+        ActivityKey(serverID: serverID, sessionID: sessionID)
     }
 
     // MARK: - Public API
 
     /// Start a session's Live Activity when a turn begins. A turn that is already shown keeps its
     /// activity and timer, so starting the same running session twice is harmless.
-    func startActivity(sessionID: String?, directory: String?, title: String?) {
-        let key = key(for: sessionID)
+    func startActivity(serverID: String?, sessionID: String?, directory: String?, title: String?) {
+        let key = key(for: serverID, sessionID)
         if let entry = entries[key], entry.activity.activityState == .active {
             return
         }
@@ -61,9 +83,12 @@ final class LiveActivityManager: LiveActivityProviding {
         }
 
         // The previous turn's activity for this session may still be on screen showing its
-        // outcome, or left over from an earlier launch. The new turn replaces it.
+        // outcome, or left over from an earlier launch. The new turn replaces it. Another
+        // server's activity for the same session id is not this session's, so it stays. An
+        // activity with no server was started before multi-server support, by the one server
+        // the app then talked to.
         for stale in Activity<OpenLensActivityAttributes>.activities
-        where !stale.attributes.isPreview && stale.attributes.sessionID == sessionID {
+        where Self.isReplaced(stale.attributes, byTurnOn: serverID, sessionID: sessionID) {
             Task {
                 await stale.end(nil, dismissalPolicy: .immediate)
             }
@@ -73,7 +98,8 @@ final class LiveActivityManager: LiveActivityProviding {
         let attributes = OpenLensActivityAttributes(
             sessionID: sessionID,
             directory: directory,
-            sessionTitle: OpenLensActivityAttributes.boundedSessionTitle(title)
+            sessionTitle: OpenLensActivityAttributes.boundedSessionTitle(title),
+            serverID: serverID
         )
         let initialState = OpenLensActivityAttributes.ContentState(phase: .working, startDate: startDate)
         let content = ActivityContent(state: initialState, staleDate: nil)
@@ -93,8 +119,8 @@ final class LiveActivityManager: LiveActivityProviding {
     /// Update the prompt a session's Live Activity shows.
     /// Uses a throttle+debounce hybrid: fires immediately if enough time has passed
     /// since the last update; otherwise debounces to avoid overwhelming ActivityKit.
-    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {
-        guard let entry = entries[key(for: sessionID)] else { return }
+    func update(serverID: String?, sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {
+        guard let entry = entries[key(for: serverID, sessionID)] else { return }
 
         let state = OpenLensActivityAttributes.ContentState(
             phase: .working,
@@ -135,27 +161,42 @@ final class LiveActivityManager: LiveActivityProviding {
     }
 
     /// End a session's Live Activity. Shows how the turn ended briefly before dismissing.
-    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) {
-        finishActivity(key: key(for: sessionID), phase: phase, dismissalPolicy: .after(.now + 8))
+    func endActivity(serverID: String?, sessionID: String?, phase: OpenLensActivityAttributes.Phase) {
+        finishActivity(key: key(for: serverID, sessionID), phase: phase, dismissalPolicy: .after(.now + 8))
     }
 
     /// Dismiss a session's Live Activity immediately when its outcome is unknown.
-    func dismissImmediately(sessionID: String?) {
-        finishActivity(key: key(for: sessionID), phase: .stopped, dismissalPolicy: .immediate)
+    func dismissImmediately(serverID: String?, sessionID: String?) {
+        finishActivity(key: key(for: serverID, sessionID), phase: .stopped, dismissalPolicy: .immediate)
     }
 
-    /// Dismiss every Live Activity immediately when their server context is gone.
-    func dismissAll() {
-        previewTask?.cancel()
-        previewTask = nil
+    /// Dismiss one server's Live Activities immediately when its connection is gone. Other
+    /// servers' activities keep running. The preview is not tied to a server, so it goes too, and
+    /// so do activities with no server: they predate multi-server support.
+    func dismissAll(serverID: String?) {
+        let keys = entries.keys.filter { $0.serverID == serverID || $0 == .preview }
+        endActivities(matching: { Self.isDismissed($0, withServer: serverID) }, keys: Array(keys))
+    }
 
+    /// Dismiss every server's Live Activities immediately.
+    func dismissEverything() {
+        endActivities(matching: { _ in true }, keys: Array(entries.keys))
+    }
+
+    private func endActivities(matching belongs: (OpenLensActivityAttributes) -> Bool, keys: [ActivityKey]) {
         let trackedIDs = Set(entries.values.map(\.activity.id))
-        for key in Array(entries.keys) {
+        if keys.contains(.preview) {
+            previewTask?.cancel()
+            previewTask = nil
+        }
+
+        for key in keys {
             finishActivity(key: key, phase: .stopped, dismissalPolicy: .immediate)
         }
 
         // Activities left over from an earlier launch, or still showing a finished turn.
-        for activity in Activity<OpenLensActivityAttributes>.activities where !trackedIDs.contains(activity.id) {
+        for activity in Activity<OpenLensActivityAttributes>.activities
+        where !trackedIDs.contains(activity.id) && belongs(activity.attributes) {
             Task {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
@@ -163,11 +204,11 @@ final class LiveActivityManager: LiveActivityProviding {
     }
 
     private func finishActivity(
-        key: String,
+        key: ActivityKey,
         phase: OpenLensActivityAttributes.Phase,
         dismissalPolicy: ActivityUIDismissalPolicy
     ) {
-        if key == Self.previewKey {
+        if key == .preview {
             previewTask?.cancel()
             previewTask = nil
         }
@@ -191,8 +232,8 @@ final class LiveActivityManager: LiveActivityProviding {
     }
 
     /// Whether a session's Live Activity is currently active.
-    func isActive(sessionID: String?) -> Bool {
-        entries[key(for: sessionID)] != nil
+    func isActive(serverID: String?, sessionID: String?) -> Bool {
+        entries[key(for: serverID, sessionID)] != nil
     }
 
     // MARK: - Preview Live Activity
@@ -201,7 +242,7 @@ final class LiveActivityManager: LiveActivityProviding {
     /// Its buttons clear the prompt locally without calling the server. Session activities keep
     /// running beside it.
     func previewLiveActivity() {
-        finishActivity(key: Self.previewKey, phase: .finished, dismissalPolicy: .after(.now + 8))
+        finishActivity(key: ActivityKey.preview, phase: .finished, dismissalPolicy: .after(.now + 8))
 
         guard AppPreferences.liveActivitiesEnabled else {
             return
@@ -229,7 +270,7 @@ final class LiveActivityManager: LiveActivityProviding {
             Logger.liveActivity.error("Failed to start preview Live Activity: \(error.localizedDescription, privacy: .public)")
             return
         }
-        entries[Self.previewKey] = entry
+        entries[ActivityKey.preview] = entry
 
         previewTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))
@@ -237,14 +278,14 @@ final class LiveActivityManager: LiveActivityProviding {
 
             let steps: [OpenLensActivityAttributes.ContentState] = [.waitingForPermission, .working, .waitingForAnswer, .working]
             for step in steps {
-                guard self?.entries[Self.previewKey] === entry, !Task.isCancelled else { return }
+                guard self?.entries[ActivityKey.preview] === entry, !Task.isCancelled else { return }
                 await entry.activity.update(ActivityContent(state: step, staleDate: nil))
                 try? await Task.sleep(for: .seconds(step.pendingUserResponse == nil ? 3 : 6))
                 guard !Task.isCancelled else { return }
             }
 
-            guard self?.entries[Self.previewKey] === entry, !Task.isCancelled else { return }
-            self?.entries[Self.previewKey] = nil
+            guard self?.entries[ActivityKey.preview] === entry, !Task.isCancelled else { return }
+            self?.entries[ActivityKey.preview] = nil
 
             let finishedState = OpenLensActivityAttributes.ContentState.finished
             await entry.activity.end(

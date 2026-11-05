@@ -229,3 +229,21 @@ extension ServerRegistry {
         return ServerTag(nickname: profile.nickname, serverURL: profile.serverURL)
     }
 }
+
+/// The servers to ask, in order, for the session a Live Activity link points at.
+///
+/// A link naming a server asks only that server, and only while it is connected. A legacy link
+/// names none, because activities started before multi-server support carry no server: every
+/// connected server is searched, the active one first.
+func activityLinkCandidateServerIDs(
+    linkedServerID: String?,
+    activeServerID: String,
+    connectedServerIDs: [String]
+) -> [String] {
+    if let linkedServerID {
+        return connectedServerIDs.contains(linkedServerID) ? [linkedServerID] : []
+    }
+    var ordered = connectedServerIDs.filter { $0 == activeServerID }
+    ordered += connectedServerIDs.filter { $0 != activeServerID }
+    return ordered
+}

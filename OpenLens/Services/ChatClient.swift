@@ -1588,7 +1588,8 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         let haptics = HapticController()
         let tracker = LiveActivityTracker(
-            liveActivity: liveActivity
+            liveActivity: liveActivity,
+            serverID: { [weak connection] in connection?.connectionID }
         )
 
         self.haptics = haptics
@@ -5978,17 +5979,19 @@ extension ChatClient {
 #endif
 
 private final class NoopLiveActivityProvider: LiveActivityProviding {
-    func isActive(sessionID: String?) -> Bool { false }
+    func isActive(serverID: String?, sessionID: String?) -> Bool { false }
 
-    func startActivity(sessionID: String?, directory: String?, title: String?) {}
+    func startActivity(serverID: String?, sessionID: String?, directory: String?, title: String?) {}
 
-    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
+    func update(serverID: String?, sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) {}
+    func endActivity(serverID: String?, sessionID: String?, phase: OpenLensActivityAttributes.Phase) {}
 
-    func dismissImmediately(sessionID: String?) {}
+    func dismissImmediately(serverID: String?, sessionID: String?) {}
 
-    func dismissAll() {}
+    func dismissAll(serverID: String?) {}
+
+    func dismissEverything() {}
 
     func previewLiveActivity() {}
 }
