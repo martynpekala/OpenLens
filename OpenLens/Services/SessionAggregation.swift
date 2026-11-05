@@ -41,18 +41,30 @@ struct ServerSessionsResult: Equatable, Sendable {
     }
 }
 
-struct SessionGroup: Identifiable, Equatable {
-    /// Scoped to the server, so the same folder (or two directory-less sessions) on two servers
-    /// never share a group, nor an expanded/collapsed state.
-    let id: String
+/// One row of the flat Sessions list: a session, the server it lives on and the workspace it
+/// belongs to. The list is no longer grouped by project, so the row carries that identity itself.
+struct SessionListEntry: Identifiable, Equatable {
+    var id: String { "\(serverID)|\(session.id)" }
     let serverID: String
-    let title: String
-    let subtitle: String?
-    let sessions: [OCSession]
-    /// Set only while more than one server is saved; the header shows it.
-    let tag: ServerTag?
+    let session: OCSession
+    /// Scoped to the server, so one folder on two servers counts as two workspaces.
+    let workspaceID: String
+    /// The server (only while several are saved) and the workspace name, as the row tag shows them.
+    let label: ServerQualifiedTitle
+}
 
-    var latestActivity: Double { sessions.map(\.updatedAt).max() ?? 0 }
+enum SessionSectionKind: String, Equatable, Sendable {
+    case running
+    case today
+    case yesterday
+    case earlier
+}
+
+struct SessionListSection: Identifiable, Equatable {
+    let kind: SessionSectionKind
+    let entries: [SessionListEntry]
+
+    var id: String { kind.rawValue }
 }
 
 /// A server whose sessions could not be loaded; shown as a notice, never as a full-screen error.
@@ -63,15 +75,20 @@ struct SessionServerFailure: Equatable {
 }
 
 struct SessionAggregation: Equatable {
-    var groups: [SessionGroup]
+    var sections: [SessionListSection]
     var failures: [SessionServerFailure]
+
+    var entries: [SessionListEntry] { sections.flatMap(\.entries) }
+
+    /// Rows carry a workspace tag only when the displayed set spans more than one workspace:
+    /// the same word repeated down a whole list is noise, and a single-project user should see
+    /// clean rows.
+    var showsWorkspaceTags: Bool {
+        Set(entries.map(\.workspaceID)).count > 1
+    }
 }
 
 enum SessionGrouping {
-    static func groupID(serverID: String, for session: OCSession) -> String {
-        "\(serverID)|\(baseGroupID(for: session))"
-    }
-
     /// Unscoped identity inside one server.
     static func baseGroupID(for session: OCSession) -> String {
         if let directory = normalizedDirectory(for: session) {
@@ -99,76 +116,82 @@ enum SessionGrouping {
         session.directory?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
     }
 
-    /// Groups every server's sessions by project and orders the groups by their most recent
-    /// session, whichever machine it is on.
+    /// Which section a session that is not running belongs to.
+    static func timeBucket(for session: OCSession, now: Date, calendar: Calendar) -> SessionSectionKind {
+        let updated = Date(timeIntervalSince1970: session.updatedAt)
+        let startOfToday = calendar.startOfDay(for: now)
+        if updated >= startOfToday { return .today }
+        if let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday), updated >= startOfYesterday {
+            return .yesterday
+        }
+        return .earlier
+    }
+
+    /// Merges every server's sessions into one recency-ordered list: running sessions pinned in
+    /// their own section, everything else in coarse time buckets. There is deliberately no
+    /// per-section cap, so a session touched minutes ago is never hidden behind a busy project.
     ///
     /// - Parameters:
     ///   - results: One entry per server, in the order the servers are displayed.
     ///   - tags: Server identities by id. Used only when `showsServerTags` is set.
-    ///   - showsServerTags: `isMultiServerUIEnabled(savedServerCount:)`. When false no group or
-    ///     failure carries a tag, which is what keeps one saved server looking as it always did.
+    ///   - showsServerTags: `isMultiServerUIEnabled(savedServerCount:)`. When false no entry or
+    ///     failure carries a server name.
+    ///   - statuses: Live session statuses by server id then session id. Busy and retry run.
     static func aggregate(
         results: [ServerSessionsResult],
         tags: [String: ServerTag],
         showsServerTags: Bool,
+        statuses: [String: [String: OCSessionStatus]] = [:],
+        now: Date = Date(),
+        calendar: Calendar = .current,
         customName: (String) -> String?
     ) -> SessionAggregation {
-        var groups: [SessionGroup] = []
+        var entries: [SessionListEntry] = []
         var failures: [SessionServerFailure] = []
 
         for result in results {
             let tag = showsServerTags ? tags[result.serverID] : nil
-            groups += groupsForOneServer(result, tag: tag, customName: customName)
+            for session in result.sessions {
+                entries.append(SessionListEntry(
+                    serverID: result.serverID,
+                    session: session,
+                    workspaceID: "\(result.serverID)|\(baseGroupID(for: session))",
+                    label: ServerQualifiedTitle(workspace: title(for: session, customName: customName), showingServer: tag)
+                ))
+            }
             if let message = result.failureMessage {
                 failures.append(SessionServerFailure(serverID: result.serverID, message: message, tag: tag))
             }
         }
 
-        // One server has nothing to merge across: keep its own order exactly as before.
-        let contributing = Set(groups.map(\.serverID))
-        if contributing.count > 1 {
-            // Stable by construction: `sorted` is not guaranteed stable, so break ties by position.
-            groups = groups.enumerated()
-                .sorted { lhs, rhs in
-                    if lhs.element.latestActivity != rhs.element.latestActivity {
-                        return lhs.element.latestActivity > rhs.element.latestActivity
-                    }
-                    return lhs.offset < rhs.offset
+        // Newest first. `sorted` is not guaranteed stable, so break ties by position.
+        let ordered = entries.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.session.updatedAt != rhs.element.session.updatedAt {
+                    return lhs.element.session.updatedAt > rhs.element.session.updatedAt
                 }
-                .map(\.element)
-        }
-        return SessionAggregation(groups: groups, failures: failures)
-    }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
 
-    private static func groupsForOneServer(
-        _ result: ServerSessionsResult,
-        tag: ServerTag?,
-        customName: (String) -> String?
-    ) -> [SessionGroup] {
-        var sessionsByID: [String: [OCSession]] = [:]
-        var order: [String] = []
-        var titles: [String: String] = [:]
-        var subtitles: [String: String] = [:]
-
-        for session in result.sessions {
-            let id = groupID(serverID: result.serverID, for: session)
-            if sessionsByID[id] == nil { order.append(id) }
-            sessionsByID[id, default: []].append(session)
-            titles[id] = title(for: session, customName: customName)
-            subtitles[id] = normalizedDirectory(for: session)
+        func isRunning(_ entry: SessionListEntry) -> Bool {
+            let type = statuses[entry.serverID]?[entry.session.id]?.type
+            return type == .busy || type == .retry
         }
 
-        return order.compactMap { id in
-            guard let sessions = sessionsByID[id] else { return nil }
-            return SessionGroup(
-                id: id,
-                serverID: result.serverID,
-                title: titles[id] ?? AppText.projectFallback,
-                subtitle: subtitles[id],
-                sessions: sessions,
-                tag: tag
-            )
+        var buckets: [SessionSectionKind: [SessionListEntry]] = [:]
+        for entry in ordered {
+            let kind = isRunning(entry)
+                ? SessionSectionKind.running
+                : timeBucket(for: entry.session, now: now, calendar: calendar)
+            buckets[kind, default: []].append(entry)
         }
+        let order: [SessionSectionKind] = [.running, .today, .yesterday, .earlier]
+        let sections = order.compactMap { kind -> SessionListSection? in
+            guard let entries = buckets[kind], !entries.isEmpty else { return nil }
+            return SessionListSection(kind: kind, entries: entries)
+        }
+        return SessionAggregation(sections: sections, failures: failures)
     }
 }
 
@@ -213,6 +236,12 @@ struct ServerQualifiedTitle: Equatable {
     init(workspace: String, server: ServerTag?, savedServerCount: Int) {
         self.workspace = workspace
         self.server = isMultiServerUIEnabled(savedServerCount: savedServerCount) ? server : nil
+    }
+
+    /// For callers that already decided whether the server is shown (nil means it is not).
+    init(workspace: String, showingServer server: ServerTag?) {
+        self.workspace = workspace
+        self.server = server
     }
 
     /// The server, separator and workspace as one phrase, for accessibility.

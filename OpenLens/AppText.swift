@@ -480,8 +480,14 @@ enum AppText {
     static let settingsServerEventsStreaming = "Streaming"
     static let settingsServerEventsUnavailable = "Unavailable"
     static let settingsWorktree = "Worktree"
-    static let showFewerSessions = "Show Less"
-    static let showMoreSessions = "Show More"
+    static func sessionSectionTitle(_ kind: SessionSectionKind) -> String {
+        switch kind {
+        case .running: "Running"
+        case .today: "Today"
+        case .yesterday: "Yesterday"
+        case .earlier: "Earlier"
+        }
+    }
     static let showContextStatus = "Shows context status"
     static let showThinking = "Show Thinking"
     static let showThinkingSubtitle = "Display model reasoning in chat"
@@ -639,10 +645,6 @@ enum AppText {
 
     static func groupedProjectCount(_ count: Int) -> String {
         "\(count) chat\(count == 1 ? "" : "s")"
-    }
-
-    static func showMoreSessions(_ remainingCount: Int) -> String {
-        "\(showMoreSessions) (\(remainingCount))"
     }
 
     static let executionOutcomeUnavailable = "Outcome unavailable"

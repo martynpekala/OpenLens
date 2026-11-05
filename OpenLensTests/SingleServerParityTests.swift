@@ -3,11 +3,13 @@ import Testing
 @testable import OpenLens
 
 extension MultiServerSuite {
-    /// The regression gate for "one saved server means no visible change". Each test here would
-    /// fail if a tag, a failure notice or the switcher leaked into the single-server case.
+    /// The regression gate for "one saved server means no server name anywhere". Each test here
+    /// would fail if a server tag, a failure notice or the switcher leaked into the single-server
+    /// case. (The list's layout is deliberately no longer the pre-multi-server one: it is flat and
+    /// recency-ordered, with a workspace tag only when several workspaces are in view.)
     @Suite struct SingleServerParity {
         /// The grouping the Sessions list did before aggregation existed, kept verbatim as the
-        /// reference the aggregated output must equal.
+        /// reference for how a session's workspace is identified and named.
         private struct LegacyGroup: Equatable {
             let id: String
             let title: String
@@ -73,33 +75,46 @@ extension MultiServerSuite {
             )
         }
 
-        @Test func oneServerGroupsExactlyAsTheListDidBeforeAggregation() {
-            let aggregated = Self.aggregate(Self.sessions).groups.map {
-                LegacyGroup(id: $0.id, title: $0.title, subtitle: $0.subtitle, sessionIDs: $0.sessions.map(\.id))
-            }
+        @Test func oneServerNamesEachRowsWorkspaceExactlyAsTheProjectGroupsUsedToBeNamed() {
+            // The list is flat now, so the old group identity and title survive as the row's workspace.
+            let aggregation = Self.aggregate(Self.sessions)
             let legacy = Self.legacyGroups(Self.sessions)
+            let legacyBySession = Dictionary(uniqueKeysWithValues: legacy.flatMap { group in
+                group.sessionIDs.map { ($0, group) }
+            })
 
-            // Identity is scoped to the server now, so compare it with the scope removed.
-            #expect(aggregated.map { $0.id.replacingOccurrences(of: "only|", with: "") } == legacy.map(\.id))
-            #expect(aggregated.map(\.title) == legacy.map(\.title))
-            #expect(aggregated.map(\.subtitle) == legacy.map(\.subtitle))
-            #expect(aggregated.map(\.sessionIDs) == legacy.map(\.sessionIDs))
+            #expect(aggregation.entries.count == Self.sessions.count)
+            for entry in aggregation.entries {
+                let group = legacyBySession[entry.session.id]
+                // Identity is scoped to the server, so compare it with the scope removed.
+                #expect(entry.workspaceID.replacingOccurrences(of: "only|", with: "") == group?.id)
+                #expect(entry.label.workspace == group?.title)
+            }
         }
 
-        @Test func oneServerKeepsItsOwnGroupOrderEvenWhenItsSessionsAreNotSortedByRecency() {
+        @Test func oneServerListsEverySessionNewestFirstWhateverOrderTheyArrivedIn() {
             let unsorted = [
                 MultiServerSuite.Aggregation.session("old", directory: "/work/first", updated: 1000),
                 MultiServerSuite.Aggregation.session("new", directory: "/work/second", updated: 9000)
             ]
-            #expect(Self.aggregate(unsorted).groups.map(\.title) == ["first", "second"])
-            #expect(Self.aggregate(unsorted).groups.map(\.title) == Self.legacyGroups(unsorted).map(\.title))
+            #expect(Self.aggregate(unsorted).entries.map(\.session.id) == ["new", "old"])
         }
 
-        @Test func oneServerProducesNoServerTagOnAnyGroup() {
+        @Test func oneServerNeverNamesAServerOnAnyRow() {
             let aggregation = Self.aggregate(Self.sessions)
 
-            #expect(!aggregation.groups.isEmpty)
-            #expect(aggregation.groups.allSatisfy { $0.tag == nil })
+            #expect(!aggregation.entries.isEmpty)
+            #expect(aggregation.entries.allSatisfy { $0.label.server == nil })
+            #expect(aggregation.entries.allSatisfy { $0.label.spokenText == $0.label.workspace })
+        }
+
+        @Test func oneServerWithOneWorkspaceShowsNoTagAtAll() {
+            let oneWorkspace = [
+                MultiServerSuite.Aggregation.session("a", directory: "/work/app", updated: 2000),
+                MultiServerSuite.Aggregation.session("b", directory: "/work/app", updated: 1000)
+            ]
+            #expect(!Self.aggregate(oneWorkspace).showsWorkspaceTags)
+            #expect(Self.aggregate(Self.sessions).showsWorkspaceTags)
         }
 
         @Test func oneServersLoadFailureProducesNoSectionNoticeAndKeepsItsSessions() {
@@ -107,10 +122,10 @@ extension MultiServerSuite {
             let aggregation = Self.aggregate(Self.sessions, failure: "timed out")
 
             #expect(aggregation.failures.allSatisfy { $0.tag == nil })
-            #expect(aggregation.groups.count == Self.legacyGroups(Self.sessions).count)
+            #expect(aggregation.entries.count == Self.sessions.count)
         }
 
-        @Test func twoSavedServersTagEveryGroupSoTheGateDetectsALeak() {
+        @Test func twoSavedServersNameTheServerOnEveryRowSoTheGateDetectsALeak() {
             let aggregation = SessionGrouping.aggregate(
                 results: [
                     ServerSessionsResult(serverID: "a", sessions: [MultiServerSuite.Aggregation.session("a1", directory: "/x", updated: 1)]),
@@ -121,7 +136,7 @@ extension MultiServerSuite {
                 customName: { _ in nil }
             )
 
-            #expect(aggregation.groups.allSatisfy { $0.tag != nil })
+            #expect(aggregation.entries.allSatisfy { $0.label.server != nil })
         }
 
         @Test func oneSavedServerOffersNoSwitcherAndTheCapsuleStaysNonInteractive() {

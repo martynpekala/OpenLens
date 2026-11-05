@@ -27,7 +27,6 @@ struct SessionsListView: View {
         let connection: ConnectionManager
     }
 
-    private static let sessionExpansionAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.9)
 
     // MARK: - View State
 
@@ -62,7 +61,6 @@ struct SessionsListView: View {
     @State private var newSessionRequest: NewSessionRequest?
     @State private var sessionToDelete: PendingDeletion?
     @State private var showDeleteConfirmation = false
-    @State private var expandedProjectIDs = Set<String>()
     @State private var showArchivedSessions = false
 
     /// Chooses which swipe action a full swipe triggers on a conversation row.
@@ -213,6 +211,7 @@ struct SessionsListView: View {
             results: results(for: shownSources),
             tags: serverTags,
             showsServerTags: showsServerTags,
+            statuses: statusesByServer,
             customName: { workspaceNames.customName(forDirectory: $0) }
         )
     }
@@ -440,10 +439,14 @@ struct SessionsListView: View {
     /// as a header row followed by its session rows.
     private var sessionList: some View {
         let current = aggregation
+        let showsWorkspaceTags = current.showsWorkspaceTags
 
         return List {
-            ForEach(current.groups) { group in
-                projectSection(group)
+            ForEach(current.sections) { section in
+                sectionHeader(section)
+                ForEach(section.entries) { entry in
+                    entryRow(entry, showsWorkspaceTag: showsWorkspaceTags)
+                }
             }
             ForEach(current.failures, id: \.serverID) { failure in
                 serverFailureNotice(failure)
@@ -458,63 +461,52 @@ struct SessionsListView: View {
         }
     }
 
-    @ViewBuilder
-    private func projectSection(_ group: SessionGroup) -> some View {
-        let isExpanded = expandedProjectIDs.contains(group.id)
-        let displayedSessions = isExpanded ? group.sessions : group.visibleSessions
-        let canArchive = supportsArchiving(on: group.serverID)
+    private func entryRow(_ entry: SessionListEntry, showsWorkspaceTag: Bool) -> some View {
+        let session = entry.session
+        let serverID = entry.serverID
+        let canArchive = supportsArchiving(on: serverID)
 
-        projectHeader(group)
-
-        ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
-            sessionRowButton(session, serverID: group.serverID, supportsArchiving: canArchive)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(
-                    top: 0,
-                    leading: isSidebar ? 12.0 : 24.0,
-                    bottom: 0,
-                    trailing: isSidebar ? 12.0 : 24.0
-                ))
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    // The first action is what a full swipe triggers; the
-                    // Settings preference decides whether that archives or
-                    // starts the delete confirmation.
-                    if canArchive, fullSwipeAction == .delete {
-                        deleteSwipeButton(session, serverID: group.serverID)
-                        archiveSwipeButton(session, serverID: group.serverID)
-                    } else {
-                        if canArchive {
-                            archiveSwipeButton(session, serverID: group.serverID)
-                        }
-                        deleteSwipeButton(session, serverID: group.serverID)
+        return sessionRowButton(session, serverID: serverID, supportsArchiving: canArchive, label: showsWorkspaceTag ? entry.label : nil)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(
+                top: 0,
+                leading: isSidebar ? 12.0 : 24.0,
+                bottom: 0,
+                trailing: isSidebar ? 12.0 : 24.0
+            ))
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                // The first action is what a full swipe triggers; the
+                // Settings preference decides whether that archives or
+                // starts the delete confirmation.
+                if canArchive, fullSwipeAction == .delete {
+                    deleteSwipeButton(session, serverID: serverID)
+                    archiveSwipeButton(session, serverID: serverID)
+                } else {
+                    if canArchive {
+                        archiveSwipeButton(session, serverID: serverID)
                     }
+                    deleteSwipeButton(session, serverID: serverID)
                 }
-                .transition(.asymmetric(
-                    insertion: .opacity
-                        .combined(with: .move(edge: .top))
-                        .combined(with: .scale(scale: 0.98, anchor: .top)),
-                    removal: .opacity
-                        .combined(with: .scale(scale: 0.98, anchor: .top))
-                ))
-        }
+            }
+            .transition(.asymmetric(
+                insertion: .opacity
+                    .combined(with: .move(edge: .top))
+                    .combined(with: .scale(scale: 0.98, anchor: .top)),
+                removal: .opacity
+                    .combined(with: .scale(scale: 0.98, anchor: .top))
+            ))
     }
 
-    /// The server leads, because two machines can share a project name: trailing the tag put the
-    /// only thing telling two "Client work" sections apart at the far end of the line, after the
-    /// eye had already anchored on the left edge -- and it lost a fight for space with Show More,
-    /// truncating the host it exists to name.
-    ///
-    /// With one server there is no tag and this returns the title line *itself*, not a stack
-    /// wrapping it: wrapping a single child still changes the layout, which measurably shifted
-    /// every header and row below it against the single-server baseline.
-    private func projectHeader(_ group: SessionGroup) -> some View {
-        projectHeaderContent(group)
+    /// A section header: the group header treatment, now naming a time bucket or the Running
+    /// block. The row modifiers stay here so they style the List row, not a nested view.
+    private func sectionHeader(_ section: SessionListSection) -> some View {
+        sectionHeaderLine(section)
             .padding(.bottom, 6)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(
-                top: isSidebar ? 12.0 : 12.0,
+                top: 12.0,
                 leading: isSidebar ? 12.0 : 24.0,
                 bottom: 0,
                 trailing: isSidebar ? 12.0 : 24.0
@@ -522,33 +514,9 @@ struct SessionsListView: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    /// The server leads, because two machines can share a project name: trailing the tag put the
-    /// only thing telling two "Client work" sections apart at the far end of the line, after the
-    /// eye had already anchored on the left edge -- and it lost a fight for space with Show More,
-    /// truncating the host it exists to name.
-    ///
-    /// With one server there is no tag and this is the title line *itself*, not a stack wrapping
-    /// it: wrapping a single child still changes layout, which measurably shifted every header
-    /// and row below it against the single-server baseline. The row modifiers stay on the caller
-    /// so they style the List row rather than whatever this returns -- nested inside the stack
-    /// they silently stopped applying, costing the header its 24pt margin and themed background.
-    @ViewBuilder
-    private func projectHeaderContent(_ group: SessionGroup) -> some View {
-        let isExpanded = expandedProjectIDs.contains(group.id)
-
-        if let tag = group.tag {
-            VStack(alignment: .leading, spacing: 2) {
-                ServerBadge(tag: tag)
-                projectHeaderTitleLine(group, isExpanded: isExpanded)
-            }
-        } else {
-            projectHeaderTitleLine(group, isExpanded: isExpanded)
-        }
-    }
-
-    private func projectHeaderTitleLine(_ group: SessionGroup, isExpanded: Bool) -> some View {
+    private func sectionHeaderLine(_ section: SessionListSection) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(group.title)
+            Text(AppText.sessionSectionTitle(section.kind))
                 .font(.system(size: isSidebar ? 15 : 16, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.appPrimary)
                 .lineLimit(1)
@@ -557,22 +525,11 @@ struct SessionsListView: View {
                 .font(theme.typography.captionRounded)
                 .foregroundStyle(Color.appSecondary)
 
-            Text(AppText.groupedProjectCount(group.sessions.count))
+            Text(AppText.groupedProjectCount(section.entries.count))
                 .font(theme.typography.captionRounded)
                 .foregroundStyle(Color.appSecondary)
 
             Spacer()
-
-            if group.hiddenSessionCount > 0 {
-                Button {
-                    toggleProjectExpansion(group.id)
-                } label: {
-                    Text(isExpanded ? AppText.showFewerSessions : AppText.showMoreSessions(group.hiddenSessionCount))
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.appAccent)
-                }
-                .buttonStyle(.plain)
-            }
         }
     }
 
@@ -593,12 +550,12 @@ struct SessionsListView: View {
             ))
     }
 
-    private func sessionRowButton(_ session: OCSession, serverID: String, supportsArchiving: Bool) -> some View {
+    private func sessionRowButton(_ session: OCSession, serverID: String, supportsArchiving: Bool, label: ServerQualifiedTitle?) -> some View {
         Button {
             openedSessionIDs.insert(session.id)
             selectSession(session, serverID: serverID)
         } label: {
-            sessionRow(session, serverID: serverID)
+            sessionRow(session, serverID: serverID, label: label)
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -637,7 +594,7 @@ struct SessionsListView: View {
         }
     }
 
-    private func sessionRow(_ session: OCSession, serverID: String) -> some View {
+    private func sessionRow(_ session: OCSession, serverID: String, label: ServerQualifiedTitle?) -> some View {
         let status = statusesByServer[serverID]?[session.id]
         let isBusy = status?.type == .busy || status?.type == .retry
         let isSelected = isSidebar && selectedSessionID == session.id
@@ -662,6 +619,10 @@ struct SessionsListView: View {
                             .font(.system(size: 13, design: .rounded))
                             .foregroundStyle(Color.appSecondary)
                     }
+                }
+
+                if let label {
+                    workspaceTag(label)
                 }
 
                 // Unread results earn their own line: the badge gets breathing
@@ -692,6 +653,26 @@ struct SessionsListView: View {
         )
         .contentShape(Rectangle())
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// `server · workspace`, a tier below the title. The workspace is path-ish data, so it is
+    /// monospaced; the server leads in its own badge face.
+    private func workspaceTag(_ label: ServerQualifiedTitle) -> some View {
+        HStack(spacing: 4) {
+            if let server = label.server {
+                ServerBadge(tag: server)
+                Text("\u{00B7}")
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundStyle(Color.appSecondary)
+            }
+            Text(label.workspace)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Color.appSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label.spokenText)
     }
 
     // MARK: - Empty State
@@ -843,7 +824,6 @@ struct SessionsListView: View {
         statusesByServer[serverID] = snapshot.statuses
         failedOutcomeIDsByServer[serverID] = snapshot.failedOutcomeSessionIDs
         openedSessionIDs.subtract(requestedIDs)
-        pruneExpandedProjects()
     }
 
     /// A session on another server makes that server the active one first, so the chat opens
@@ -880,7 +860,6 @@ struct SessionsListView: View {
         openedSessionIDs.insert(session.id)
         viewState = .loaded
         sessionsByServer[id] = [session] + sessions(for: id)
-        pruneExpandedProjects()
         selectSession(session, serverID: id)
     }
 
@@ -891,7 +870,6 @@ struct SessionsListView: View {
                 outcomeRefreshGeneration &+= 1
                 if case .loading = viewState { viewState = .loaded }
                 sessionsByServer[serverID] = sessions(for: serverID).filter { $0.id != session.id }
-                pruneExpandedProjects()
                 onDelete(session)
             } catch {
                 viewState = .error(error.localizedDescription)
@@ -906,7 +884,6 @@ struct SessionsListView: View {
                 outcomeRefreshGeneration &+= 1
                 if case .loading = viewState { viewState = .loaded }
                 sessionsByServer[serverID] = sessions(for: serverID).filter { $0.id != session.id }
-                pruneExpandedProjects()
                 onArchive(session)
             } catch {
                 viewState = .error(error.localizedDescription)
@@ -926,25 +903,6 @@ struct SessionsListView: View {
         guard timestamp > 0 else { return "" }
         let date = Date(timeIntervalSince1970: timestamp)
         return Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date())
-    }
-
-    private func toggleProjectExpansion(_ groupID: String) {
-        withAnimation(Self.sessionExpansionAnimation) {
-            if expandedProjectIDs.contains(groupID) {
-                expandedProjectIDs.remove(groupID)
-            } else {
-                expandedProjectIDs.insert(groupID)
-            }
-        }
-    }
-
-    /// Forgets expansion for groups that no longer exist, on any server. Uses every server, not
-    /// just the filtered ones, so switching the filter does not collapse what was opened.
-    private func pruneExpandedProjects() {
-        let validGroupIDs = Set(sources.flatMap { source in
-            sessions(for: source.id).map { SessionGrouping.groupID(serverID: source.id, for: $0) }
-        })
-        expandedProjectIDs = expandedProjectIDs.intersection(validGroupIDs)
     }
 }
 
@@ -1596,17 +1554,5 @@ private struct ConnectedHostCapsule: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(AppText.sessions), \(host)")
-    }
-}
-
-private extension SessionGroup {
-    static let collapsedSessionLimit = 4
-
-    var visibleSessions: [OCSession] {
-        Array(sessions.prefix(Self.collapsedSessionLimit))
-    }
-
-    var hiddenSessionCount: Int {
-        max(sessions.count - Self.collapsedSessionLimit, 0)
     }
 }

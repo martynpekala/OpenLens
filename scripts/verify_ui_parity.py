@@ -40,6 +40,9 @@ MASK_TOP = 160
 # this sits well below that and well above the handful an animation produces.
 BAND_GAP = 16
 
+# Above this, treat the capture as suspect rather than the layout as changed.
+IMPLAUSIBLE_DIFFERENCE = 20.0
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -307,6 +310,17 @@ def main():
                 continue
 
             percent, bands, _ = compare(baseline, shot, work)
+
+            # A capture that differs this much is almost never a layout change: the app was
+            # still painting when the shot was taken, which system.md records as a known
+            # hazard ("7s once photographed a blank list"). Re-capture once before failing,
+            # the way the test runner retries a startup failure, so a slow frame does not
+            # read as a regression.
+            if percent > IMPLAUSIBLE_DIFFERENCE:
+                report(f"{scenario.name}: {percent:.3f}% differing; re-capturing once")
+                shot = capture(scenario, args.simulator, args.settle * 2, out_dir, args.timeout)
+                percent, bands, _ = compare(baseline, shot, work)
+
             detail = ", ".join(f"y {s}-{e}" for s, e in bands) or "none"
             line = f"{scenario.name}: {percent:.3f}% differing, bands: {detail}"
 
@@ -315,8 +329,9 @@ def main():
                 # screen -- the app launched without its fixture flags -- not
                 # that the layout moved by that much.
                 hint = (
-                    "  (so large that the app may not have launched in fixture mode)"
-                    if percent > 20
+                    "  (still this large after a re-capture, so the app may not have "
+                    "launched in fixture mode)"
+                    if percent > IMPLAUSIBLE_DIFFERENCE
                     else ""
                 )
                 failures.append(f"{line} > {scenario.tolerance:.3f}%{hint}")

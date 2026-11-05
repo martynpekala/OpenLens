@@ -46,9 +46,20 @@ content — group headers use weight, not size, to separate from rows.
 - `FileChangeRow` (FileDiffViews.swift) — the one changed-file row everywhere:
   status badge capsule, 14pt medium monospaced path (2-line, middle-trunc),
   themed +/− counts 12pt, chevron. Do not build per-tab variants.
-- Sessions list — header and rows share the same leading edge (24pt screen /
-  12pt sidebar); no folder icon, no extra row indent. Group separation comes
-  from the header's top/bottom padding (12/6), not separators.
+- Sessions list — one flat, recency-ordered feed, not project groups. A pinned
+  Running section leads, then Today / Yesterday / Earlier. Sections reuse the
+  group-header treatment unchanged (16pt semibold + secondary `· N chats`,
+  12/6 padding); only their meaning changed, from project to time. Header and
+  rows share the same leading edge (24pt screen / 12pt sidebar); no folder
+  icon, no extra row indent; separation comes from header padding, not
+  separators. There is no per-section cap: the old four-per-project limit was
+  what buried a session touched minutes ago inside a busy project.
+- Session row tag — second line under the title, 12pt `appSecondary`, workspace
+  monospaced, server prefixed only when more than one server is saved. Hidden
+  entirely when every row in view shares one workspace, so repeating one word
+  down the list never happens. A nickname stays in the rounded face and a host
+  in monospaced: the difference says which is a name you chose and which is an
+  address.
 - Archived sessions (`ArchivedSessionsView`) mirrors the Sessions row anatomy:
   single-line, title leading with `.frame(maxWidth: .infinity)`, trailing
   metadata (here a relative "archived" date, 13pt rounded) at
@@ -80,10 +91,10 @@ content — group headers use weight, not size, to separate from rows.
   2. `SCREENSHOT_EXECUTION_OUTCOMES SCREENSHOT_UNREAD_RESULTS` (succeeded /
      failed / interrupted with relative times, busy shimmer row, unread
      badges on their own line).
-  Expect ≈35 content bands for the date variant and ≈46 for the state
-  variant (single-server fixture only: the three-server `SCREENSHOT_MULTI_SERVER`
-  list has more sections and no band baseline, so judge it by eye); archive both boards under `.scratch/ui-review/`
-  (`compare-chat-*-both-states.png` pattern for the two-up board).
+  Band counts are no longer a useful baseline: `scripts/verify-ui-parity.sh`
+  compares against the committed PNGs directly and reports differing bands, so
+  judge a change by that rather than by counting. Archive review boards under
+  `.scratch/ui-review/` (`compare-chat-*-both-states.png` for the two-up).
 - Single-server parity baselines live in `.interface-design/baselines/`
   (`baseline-single-default.png`, `baseline-single-states.png`), captured from
   the single-server fixture before multi-server aggregation existed. The
