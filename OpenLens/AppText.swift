@@ -29,6 +29,12 @@ enum AppText {
     static let serversNickname = "Nickname"
     static let serversNicknamePlaceholder = "optional"
     static let serversRenameTitle = "Rename Server"
+    static let serversScanQRCode = "Scan QR Code"
+    static let serversScanQRCodeHintPrefix = "Run "
+    static let serversScanQRCodeCommand = "opencode pair"
+    static let serversScanQRCodeHintSuffix = " on your computer, then scan the code it prints."
+    static let serversPairing = "Pairing…"
+    static func serversPairingFailed(_ reason: String) -> String { "Pairing failed. \(reason)" }
     static let serversSave = "Save"
     static let serversAtLimitNotice = "OpenLens is already connected to the most servers it can hold at once. This server will be saved, not connected."
     static func serversCount(_ count: Int) -> String {

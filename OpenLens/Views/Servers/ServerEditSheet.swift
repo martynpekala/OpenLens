@@ -20,13 +20,22 @@ struct ServerEditSheet: View {
     @State private var password = ""
     @State private var nickname = ""
     @State private var didSeedFields = false
+    @State private var isScannerPresented = false
+    @State private var pairing: PairingState = .idle
+
+    private enum PairingState: Equatable {
+        case idle
+        case exchanging
+        case failed(String)
+    }
 
     private var isRename: Bool {
         if case .rename = mode { true } else { false }
     }
 
     private var canSave: Bool {
-        isRename || connectionServerDisplayName(serverURL) != nil
+        guard pairing != .exchanging else { return false }
+        return isRename || connectionServerDisplayName(serverURL) != nil
     }
 
     private var isAtConnectionLimit: Bool {
@@ -85,6 +94,12 @@ struct ServerEditSheet: View {
                 }
             }
             .onAppear(perform: seedFields)
+            .fullScreenCover(isPresented: $isScannerPresented) {
+                QRScannerView(
+                    onScanned: handleScannedCode,
+                    onDismiss: { isScannerPresented = false }
+                )
+            }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
@@ -95,6 +110,8 @@ struct ServerEditSheet: View {
 
     private var addFields: some View {
         VStack(alignment: .leading, spacing: 22) {
+            scanSection
+
             field(AppText.serversServerURL) {
                 TextField(AppText.serversServerURLPlaceholder, text: $serverURL)
                     .font(.system(size: 15, design: .monospaced))
@@ -116,6 +133,49 @@ struct ServerEditSheet: View {
                 SecureField(AppText.serversPasswordPlaceholder, text: $password)
                     .font(.system(size: 15, design: .monospaced))
                     .textContentType(.password)
+            }
+        }
+    }
+
+    /// Pairing by QR is how most people add their first server, so it leads rather than sitting
+    /// under the manual fields -- the same order the connect screen offers.
+    @ViewBuilder
+    private var scanSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                isScannerPresented = true
+            } label: {
+                Label(AppText.serversScanQRCode, systemImage: "qrcode.viewfinder")
+            }
+            .primaryCTAStyle()
+            .disabled(pairing == .exchanging)
+
+            if pairing == .exchanging {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(AppText.serversPairing)
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
+                }
+            } else if case .failed(let reason) = pairing {
+                noticeRow(
+                    icon: "exclamationmark.triangle.fill",
+                    message: AppText.serversPairingFailed(reason),
+                    tint: Color.appDanger
+                )
+            } else {
+                // The command is set in monospace rather than wrapped in backticks: this is a
+                // rendered label, not Markdown, and a literal backtick reads as leaked markup.
+                (
+                    Text(AppText.serversScanQRCodeHintPrefix)
+                        .font(.system(size: 13, design: .rounded))
+                        + Text(AppText.serversScanQRCodeCommand)
+                        .font(.system(size: 13, design: .monospaced))
+                        + Text(AppText.serversScanQRCodeHintSuffix)
+                        .font(.system(size: 13, design: .rounded))
+                )
+                .foregroundStyle(Color.appSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -168,6 +228,49 @@ struct ServerEditSheet: View {
         didSeedFields = true
         if case .rename(let profile) = mode {
             nickname = profile.nickname ?? ""
+        }
+    }
+
+    private func handleScannedCode(_ code: ScannedOpenLensCode) {
+        isScannerPresented = false
+        switch code {
+        case .direct(let link):
+            // Carries its own credentials, so there is nothing to exchange: fill the fields and
+            // let the user confirm, as typing them would.
+            serverURL = link.serverURL
+            username = link.username
+            password = link.password
+            pairing = .idle
+        case .openCodePairing(let link):
+            exchangePairingCode(link)
+        }
+    }
+
+    /// Resolves a pairing code and saves the result immediately, rather than filling the fields
+    /// and waiting for the user to confirm. The exchange consumes a single-use code that expires
+    /// in five minutes, so a server left unsaved here could not be added by scanning again --
+    /// the connect screen persists before connecting for the same reason.
+    private func exchangePairingCode(_ link: OpenCodePairingLink) {
+        pairing = .exchanging
+        serverURL = link.serverURL.absoluteString
+        Task {
+            do {
+                let credential = try await OpenCodePairingClient().pair(using: link)
+                let trimmedNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+                let profile = registry.add(
+                    serverURL: credential.serverURL,
+                    username: credential.username,
+                    password: credential.password,
+                    nickname: trimmedNickname.isEmpty ? nil : trimmedNickname
+                )
+                pairing = .idle
+                onSaved(profile)
+                dismiss()
+            } catch {
+                pairing = .failed(
+                    (error as? OpenCodePairingError)?.localizedDescription ?? error.localizedDescription
+                )
+            }
         }
     }
 
