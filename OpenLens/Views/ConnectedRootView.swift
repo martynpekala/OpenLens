@@ -22,6 +22,10 @@ func shouldUseConnectedRootSidebarLayout(horizontalSizeClass: UserInterfaceSizeC
 struct ConnectedRootView: View {
     @Bindable var chatClient: ChatClient
     let initialSessions: SessionsListView.InitialState
+    /// The server `initialSessions` came from.
+    var initialServerID: String?
+    /// Makes a server active; the Sessions list calls it before opening another server's session.
+    var onActivateServer: (String) -> Void = { _ in }
 
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -34,7 +38,9 @@ struct ConnectedRootView: View {
             if shouldUseConnectedRootSidebarLayout(horizontalSizeClass: horizontalSizeClass) {
                 ConnectedSidebarLayout(
                     chatClient: chatClient,
-                    initialSessions: initialSessions
+                    initialSessions: initialSessions,
+                    initialServerID: initialServerID,
+                    onActivateServer: onActivateServer
                 )
             } else {
                 TabView(selection: $router.selectedTab) {
@@ -159,7 +165,9 @@ struct ConnectedRootView: View {
         case .chat:
             SessionsListView(
                 initialState: initialSessions,
+                initialServerID: initialServerID,
                 onSelect: selectChatSession,
+                onActivateServer: onActivateServer,
                 onDelete: handleDeletedSession,
                 onArchive: handleArchivedSession,
                 newSessionModel: { await chatClient.newSessionModelPreference() }
@@ -193,6 +201,8 @@ struct ConnectedRootView: View {
 private struct ConnectedSidebarLayout: View {
     @Bindable var chatClient: ChatClient
     let initialSessions: SessionsListView.InitialState
+    var initialServerID: String?
+    var onActivateServer: (String) -> Void
 
     @Environment(AppRouter.self) private var router
 
@@ -231,7 +241,9 @@ private struct ConnectedSidebarLayout: View {
                 initialState: initialSessions,
                 presentationStyle: .sidebar,
                 selectedSessionID: router.selectedChatSessionID,
+                initialServerID: initialServerID,
                 onSelect: selectChatSession,
+                onActivateServer: onActivateServer,
                 onDelete: handleDeletedSession,
                 onArchive: handleArchivedSession,
                 newSessionModel: { await chatClient.newSessionModelPreference() }

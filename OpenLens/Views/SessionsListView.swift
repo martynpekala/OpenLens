@@ -12,21 +12,18 @@ struct SessionsListView: View {
         let id = UUID()
     }
 
-    private struct SessionProjectGroup: Identifiable {
+    /// A session waiting on the delete confirmation, with the server that owns it.
+    private struct PendingDeletion {
+        let session: OCSession
+        let serverID: String
+    }
+
+    /// One server this list can load from. The active server uses the environment's service and
+    /// connection, which the composition root keeps equal to the active context's own.
+    private struct Source {
         let id: String
-        let title: String
-        let subtitle: String?
-        let sessions: [OCSession]
-
-        var visibleSessions: [OCSession] {
-            Array(sessions.prefix(Self.collapsedSessionLimit))
-        }
-
-        var hiddenSessionCount: Int {
-            max(sessions.count - Self.collapsedSessionLimit, 0)
-        }
-
-        static let collapsedSessionLimit = 4
+        let sessionsService: SessionsService
+        let connection: ConnectionManager
     }
 
     private static let sessionExpansionAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.9)
@@ -46,14 +43,21 @@ struct SessionsListView: View {
     }
 
     @State private var viewState: ViewState
-    @State private var sessions: [OCSession]
-    @State private var sessionStatuses: [String: OCSessionStatus]
+    /// What each server last returned, by server id. A server with no entry has not been loaded;
+    /// the seed stands in for it until then (see `sessions(for:)`).
+    @State private var sessionsByServer: [String: [OCSession]] = [:]
+    @State private var failureByServer: [String: String] = [:]
+    @State private var statusesByServer: [String: [String: OCSessionStatus]] = [:]
+    @State private var failedOutcomeIDsByServer: [String: Set<String>] = [:]
+    /// Sessions the list opened with, before any refresh of its own.
+    @State private var seedSessions: [OCSession]
+    /// Which server the list shows; nil is every server.
+    @State private var serverFilterID: String?
     @State private var openedSessionIDs: Set<String> = []
-    @State private var failedOutcomeSessionIDs: Set<String> = []
     @State private var outcomeRefreshGeneration = 0
 
     @State private var newSessionRequest: NewSessionRequest?
-    @State private var sessionToDelete: OCSession?
+    @State private var sessionToDelete: PendingDeletion?
     @State private var showDeleteConfirmation = false
     @State private var expandedProjectIDs = Set<String>()
     @State private var showArchivedSessions = false
@@ -63,7 +67,11 @@ struct SessionsListView: View {
 
     let presentationStyle: PresentationStyle
     let selectedSessionID: String?
+    /// The server `initialState`'s sessions came from. Nil means the active server.
+    let initialServerID: String?
     var onSelect: (OCSession) -> Void
+    /// Makes a server the active one. Called before `onSelect` for a session on another server.
+    var onActivateServer: (String) -> Void
     var onDelete: (OCSession) -> Void
     var onArchive: (OCSession) -> Void
     /// Resolves the model a new session starts with; nil uses the server default.
@@ -72,6 +80,7 @@ struct SessionsListView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.connection) private var connection
+    @Environment(\.serverRegistry) private var registry
     @Environment(\.workspaceNames) private var workspaceNames
     @Environment(\.openLensTheme) private var theme
 
@@ -79,14 +88,18 @@ struct SessionsListView: View {
         initialState: InitialState,
         presentationStyle: PresentationStyle = .navigation,
         selectedSessionID: String? = nil,
+        initialServerID: String? = nil,
         onSelect: @escaping (OCSession) -> Void,
+        onActivateServer: @escaping (String) -> Void = { _ in },
         onDelete: @escaping (OCSession) -> Void = { _ in },
         onArchive: @escaping (OCSession) -> Void = { _ in },
         newSessionModel: @escaping @MainActor () async -> OCV2ModelRef? = { nil }
     ) {
         self.presentationStyle = presentationStyle
         self.selectedSessionID = selectedSessionID
+        self.initialServerID = initialServerID
         self.onSelect = onSelect
+        self.onActivateServer = onActivateServer
         self.onDelete = onDelete
         self.onArchive = onArchive
         self.newSessionModel = newSessionModel
@@ -94,13 +107,11 @@ struct SessionsListView: View {
         switch initialState {
         case .loaded(let sessions):
             self._viewState = State(initialValue: .loaded)
-            self._sessions = State(initialValue: sessions)
+            self._seedSessions = State(initialValue: sessions)
         case .error(let message):
             self._viewState = State(initialValue: .error(message))
-            self._sessions = State(initialValue: [])
+            self._seedSessions = State(initialValue: [])
         }
-
-        self._sessionStatuses = State(initialValue: [:])
     }
 
     // MARK: - Convenience
@@ -125,31 +136,98 @@ struct SessionsListView: View {
         connection.serverCapabilities?.protocolVersion == .v2 || ScreenshotFixtures.isEnabled
     }
 
-    private var groupedSessions: [SessionProjectGroup] {
-        var groupedByID: [String: [OCSession]] = [:]
-        var groupOrder: [String] = []
-        var titles: [String: String] = [:]
-        var subtitles: [String: String?] = [:]
+    // MARK: - Servers
 
-        for session in sessions {
-            let groupID = projectGroupID(for: session)
-            if groupedByID[groupID] == nil {
-                groupOrder.append(groupID)
-            }
-            groupedByID[groupID, default: []].append(session)
-            titles[groupID] = projectTitle(for: session)
-            subtitles[groupID] = projectSubtitle(for: session)
-        }
-
-        return groupOrder.compactMap { groupID in
-            guard let groupedSessions = groupedByID[groupID] else { return nil }
-            return SessionProjectGroup(
-                id: groupID,
-                title: titles[groupID] ?? AppText.projectFallback,
-                subtitle: subtitles[groupID] ?? nil,
-                sessions: groupedSessions
+    /// Every saved server, in display order. With nothing saved (the connect screen's draft, or
+    /// screenshot mode) the active context stands alone.
+    private var sources: [Source] {
+        let active = registry.activeContext
+        var contexts = registry.savedServerContexts
+        if contexts.isEmpty { contexts = [active] }
+        return contexts.map { context in
+            let isActive = context.id == active.id
+            return Source(
+                id: context.id,
+                sessionsService: isActive ? sessionsService : context.sessionsService,
+                connection: isActive ? connection : context.connection
             )
         }
+    }
+
+    private var activeServerID: String { registry.activeContext.id }
+
+    /// The server `seedSessions` belongs to.
+    private var seedServerID: String { initialServerID ?? activeServerID }
+
+    /// One saved server means one list exactly as it always was: no tags, no switcher.
+    private var showsServerTags: Bool {
+        isMultiServerUIEnabled(savedServerCount: registry.savedServerContexts.count)
+    }
+
+    private var serverTags: [String: ServerTag] {
+        var tags: [String: ServerTag] = [:]
+        for context in registry.savedServerContexts {
+            guard let profile = registry.profile(for: context) else { continue }
+            tags[context.id] = ServerTag(nickname: profile.nickname, serverURL: profile.serverURL)
+        }
+        return tags
+    }
+
+    private var switchTargets: ServerSwitchTargets {
+        let tags = serverTags
+        return serverSwitchTargets(registry.savedServerContexts.compactMap { context in
+            tags[context.id].map { (id: context.id, tag: $0) }
+        })
+    }
+
+    /// The servers the list currently shows: all of them, or the one the filter names.
+    private var shownSources: [Source] {
+        guard let serverFilterID else { return sources }
+        let filtered = sources.filter { $0.id == serverFilterID }
+        return filtered.isEmpty ? sources : filtered
+    }
+
+    /// Sources that can answer now. The active server is always asked, so a failure there is
+    /// reported as it always was; the others are asked only while connected, because a saved but
+    /// idle server is not a failing one.
+    private var loadableSources: [Source] {
+        sources.filter { $0.id == activeServerID || $0.connection.isConnected }
+    }
+
+    private func sessions(for serverID: String) -> [OCSession] {
+        if let loaded = sessionsByServer[serverID] { return loaded }
+        return serverID == seedServerID ? seedSessions : []
+    }
+
+    private func results(for sources: [Source]) -> [ServerSessionsResult] {
+        sources.map {
+            ServerSessionsResult(serverID: $0.id, sessions: sessions(for: $0.id), failureMessage: failureByServer[$0.id])
+        }
+    }
+
+    private var aggregation: SessionAggregation {
+        SessionGrouping.aggregate(
+            results: results(for: shownSources),
+            tags: serverTags,
+            showsServerTags: showsServerTags,
+            customName: { workspaceNames.customName(forDirectory: $0) }
+        )
+    }
+
+    private var allSessionsEmpty: Bool {
+        sources.allSatisfy { sessions(for: $0.id).isEmpty }
+    }
+
+    private func showsExecutionOutcomes(on connection: ConnectionManager) -> Bool {
+        connection.serverCapabilities?.protocolVersion == .v2 || ScreenshotFixtures.showsExecutionOutcomes
+    }
+
+    private func connection(for serverID: String) -> ConnectionManager {
+        sources.first { $0.id == serverID }?.connection ?? connection
+    }
+
+    private func service(for serverID: String) -> SessionsService {
+        sources.first { $0.id == serverID }?.sessionsService ?? sessionsService
     }
 
     // MARK: - Body
@@ -178,8 +256,8 @@ struct SessionsListView: View {
             isPresented: $showDeleteConfirmation,
             presenting: sessionToDelete
         ) { session in
-            Button("\(AppText.delete) \"\(session.title)\"", role: .destructive) {
-                deleteSession(session)
+            Button("\(AppText.delete) \"\(session.session.title)\"", role: .destructive) {
+                deleteSession(session.session, serverID: session.serverID)
             }
             Button(AppText.cancel, role: .cancel) {}
         } message: { _ in
@@ -190,7 +268,14 @@ struct SessionsListView: View {
             openedSessionIDs.formUnion([previousID, currentID].compactMap { $0 })
         }
         .onChange(of: sessionsService.confirmedViewedMarkers, initial: true) { _, _ in
-            sessions = sessionsService.applyingConfirmedViewedMarkers(to: sessions)
+            let id = activeServerID
+            sessionsByServer[id] = sessionsService.applyingConfirmedViewedMarkers(to: sessions(for: id))
+        }
+        .task(id: loadableSources.map(\.id)) {
+            // The first load seeds one server; the rest fill in as they are connected.
+            let unloaded = Set(loadableSources.map(\.id).filter { sessionsByServer[$0] == nil && $0 != seedServerID })
+            guard !unloaded.isEmpty else { return }
+            await loadSessions(servers: unloaded)
         }
         .onChange(of: sessionsService.archiveMutationCount) {
             // Archive mutations can happen in the archived list while this view
@@ -200,7 +285,7 @@ struct SessionsListView: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await loadSessionStatuses(refreshInactive: true)
-            guard connection.serverCapabilities?.protocolVersion == .v2
+            guard loadableSources.contains(where: { $0.connection.serverCapabilities?.protocolVersion == .v2 })
                     || (ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes) else { return }
             var lastAttentionRefresh = Date()
             while !Task.isCancelled {
@@ -236,7 +321,12 @@ struct SessionsListView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationTitle(AppText.sessions)
                 .toolbar {
-                    if let host = connection.serverHostDisplay {
+                    if switchTargets.isInteractive {
+                        ToolbarItem(placement: .principal) {
+                            serverFilterMenu
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                    } else if let host = connection.serverHostDisplay {
                         ToolbarItem(placement: .principal) {
                             ConnectedHostCapsule(host: host, isReconnecting: connection.isReconnecting)
                         }
@@ -255,6 +345,46 @@ struct SessionsListView: View {
         }
     }
 
+    /// With several saved servers the capsule filters the list instead of naming one host.
+    private var serverFilterMenu: some View {
+        Menu {
+            Picker(AppText.servers, selection: serverFilterSelection) {
+                Text(AppText.sessionsAllServers)
+                    .tag(Self.allServersSelection)
+                ForEach(switchTargets.targets) { target in
+                    Text(target.tag.text)
+                        .tag(target.id)
+                }
+            }
+        } label: {
+            ServerFilterCapsule(title: serverFilterTitle)
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+    }
+
+    private static let allServersSelection = ""
+
+    private var serverFilterTitle: String {
+        guard let serverFilterID,
+              let target = switchTargets.targets.first(where: { $0.id == serverFilterID }) else {
+            return AppText.sessionsAllServers
+        }
+        return target.tag.text
+    }
+
+    private var serverFilterSelection: Binding<String> {
+        Binding(
+            get: { serverFilterID ?? Self.allServersSelection },
+            set: { id in
+                let newFilter = id == Self.allServersSelection ? nil : id
+                guard newFilter != serverFilterID,
+                      newFilter == nil || switchTargets.targets.contains(where: { $0.id == newFilter }) else { return }
+                serverFilterID = newFilter
+            }
+        )
+    }
+
     private var newSessionButton: some View {
         Button(action: presentNewSessionSheet) {
             Image(systemName: "plus")
@@ -270,16 +400,16 @@ struct SessionsListView: View {
 
     @ViewBuilder
     private var sessionStateContent: some View {
-        if isLoading && sessions.isEmpty {
+        if isLoading && allSessionsEmpty {
             ProgressView()
                 .tint(Color.appSecondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage, sessions.isEmpty {
+        } else if let errorMessage, allSessionsEmpty {
             SessionsLoadErrorView(
                 message: errorMessage,
                 retry: retryLoadingSessions
             )
-        } else if sessions.isEmpty {
+        } else if allSessionsEmpty {
             emptyState
         } else {
             sessionList
@@ -292,9 +422,14 @@ struct SessionsListView: View {
     /// backgrounds are cleared to keep the custom layout: project groups render
     /// as a header row followed by its session rows.
     private var sessionList: some View {
-        List {
-            ForEach(groupedSessions) { group in
+        let current = aggregation
+
+        return List {
+            ForEach(current.groups) { group in
                 projectSection(group)
+            }
+            ForEach(current.failures, id: \.serverID) { failure in
+                serverFailureNotice(failure)
             }
         }
         .listStyle(.plain)
@@ -307,14 +442,15 @@ struct SessionsListView: View {
     }
 
     @ViewBuilder
-    private func projectSection(_ group: SessionProjectGroup) -> some View {
+    private func projectSection(_ group: SessionGroup) -> some View {
         let isExpanded = expandedProjectIDs.contains(group.id)
         let displayedSessions = isExpanded ? group.sessions : group.visibleSessions
+        let canArchive = supportsArchiving(on: group.serverID)
 
         projectHeader(group)
 
         ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
-            sessionRowButton(session)
+            sessionRowButton(session, serverID: group.serverID, supportsArchiving: canArchive)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(
@@ -327,14 +463,14 @@ struct SessionsListView: View {
                     // The first action is what a full swipe triggers; the
                     // Settings preference decides whether that archives or
                     // starts the delete confirmation.
-                    if supportsArchiving, fullSwipeAction == .delete {
-                        deleteSwipeButton(session)
-                        archiveSwipeButton(session)
+                    if canArchive, fullSwipeAction == .delete {
+                        deleteSwipeButton(session, serverID: group.serverID)
+                        archiveSwipeButton(session, serverID: group.serverID)
                     } else {
-                        if supportsArchiving {
-                            archiveSwipeButton(session)
+                        if canArchive {
+                            archiveSwipeButton(session, serverID: group.serverID)
                         }
-                        deleteSwipeButton(session)
+                        deleteSwipeButton(session, serverID: group.serverID)
                     }
                 }
                 .transition(.asymmetric(
@@ -347,10 +483,54 @@ struct SessionsListView: View {
         }
     }
 
-    private func projectHeader(_ group: SessionProjectGroup) -> some View {
+    /// The server leads, because two machines can share a project name: trailing the tag put the
+    /// only thing telling two "Client work" sections apart at the far end of the line, after the
+    /// eye had already anchored on the left edge -- and it lost a fight for space with Show More,
+    /// truncating the host it exists to name.
+    ///
+    /// With one server there is no tag and this returns the title line *itself*, not a stack
+    /// wrapping it: wrapping a single child still changes the layout, which measurably shifted
+    /// every header and row below it against the single-server baseline.
+    private func projectHeader(_ group: SessionGroup) -> some View {
+        projectHeaderContent(group)
+            .padding(.bottom, 6)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(
+                top: isSidebar ? 12.0 : 12.0,
+                leading: isSidebar ? 12.0 : 24.0,
+                bottom: 0,
+                trailing: isSidebar ? 12.0 : 24.0
+            ))
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// The server leads, because two machines can share a project name: trailing the tag put the
+    /// only thing telling two "Client work" sections apart at the far end of the line, after the
+    /// eye had already anchored on the left edge -- and it lost a fight for space with Show More,
+    /// truncating the host it exists to name.
+    ///
+    /// With one server there is no tag and this is the title line *itself*, not a stack wrapping
+    /// it: wrapping a single child still changes layout, which measurably shifted every header
+    /// and row below it against the single-server baseline. The row modifiers stay on the caller
+    /// so they style the List row rather than whatever this returns -- nested inside the stack
+    /// they silently stopped applying, costing the header its 24pt margin and themed background.
+    @ViewBuilder
+    private func projectHeaderContent(_ group: SessionGroup) -> some View {
         let isExpanded = expandedProjectIDs.contains(group.id)
 
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+        if let tag = group.tag {
+            VStack(alignment: .leading, spacing: 2) {
+                ServerBadge(tag: tag)
+                projectHeaderTitleLine(group, isExpanded: isExpanded)
+            }
+        } else {
+            projectHeaderTitleLine(group, isExpanded: isExpanded)
+        }
+    }
+
+    private func projectHeaderTitleLine(_ group: SessionGroup, isExpanded: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(group.title)
                 .font(.system(size: isSidebar ? 15 : 16, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.appPrimary)
@@ -377,37 +557,44 @@ struct SessionsListView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.bottom, 6)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(
-            top: isSidebar ? 12.0 : 12.0,
-            leading: isSidebar ? 12.0 : 24.0,
-            bottom: 0,
-            trailing: isSidebar ? 12.0 : 24.0
-        ))
-        .accessibilityAddTraits(.isHeader)
     }
 
-    private func sessionRowButton(_ session: OCSession) -> some View {
+    /// One server's load failure, shown where its sections would be. The others still render.
+    private func serverFailureNotice(_ failure: SessionServerFailure) -> some View {
+        Text(AppText.sessionsServerUnavailable(failure.tag?.text))
+            .font(theme.typography.captionRounded)
+            .foregroundStyle(Color.appSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 6)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(
+                top: 12,
+                leading: isSidebar ? 12.0 : 24.0,
+                bottom: 0,
+                trailing: isSidebar ? 12.0 : 24.0
+            ))
+    }
+
+    private func sessionRowButton(_ session: OCSession, serverID: String, supportsArchiving: Bool) -> some View {
         Button {
             openedSessionIDs.insert(session.id)
-            onSelect(session)
+            selectSession(session, serverID: serverID)
         } label: {
-            sessionRow(session)
+            sessionRow(session, serverID: serverID)
         }
         .buttonStyle(.plain)
         .contextMenu {
             if supportsArchiving {
                 Button {
-                    archiveSession(session)
+                    archiveSession(session, serverID: serverID)
                 } label: {
                     Label(AppText.archive, systemImage: "archivebox")
                 }
             }
 
             Button(role: .destructive) {
-                sessionToDelete = session
+                sessionToDelete = PendingDeletion(session: session, serverID: serverID)
                 showDeleteConfirmation = true
             } label: {
                 Label(AppText.delete, systemImage: "trash")
@@ -415,29 +602,29 @@ struct SessionsListView: View {
         }
     }
 
-    private func archiveSwipeButton(_ session: OCSession) -> some View {
+    private func archiveSwipeButton(_ session: OCSession, serverID: String) -> some View {
         Button {
-            archiveSession(session)
+            archiveSession(session, serverID: serverID)
         } label: {
             Label(AppText.archive, systemImage: "archivebox")
         }
         .tint(Color.appAccent)
     }
 
-    private func deleteSwipeButton(_ session: OCSession) -> some View {
+    private func deleteSwipeButton(_ session: OCSession, serverID: String) -> some View {
         Button(role: .destructive) {
-            sessionToDelete = session
+            sessionToDelete = PendingDeletion(session: session, serverID: serverID)
             showDeleteConfirmation = true
         } label: {
             Label(AppText.delete, systemImage: "trash")
         }
     }
 
-    private func sessionRow(_ session: OCSession) -> some View {
-        let isBusy = sessionStatuses[session.id]?.type == .busy || sessionStatuses[session.id]?.type == .retry
+    private func sessionRow(_ session: OCSession, serverID: String) -> some View {
+        let status = statusesByServer[serverID]?[session.id]
+        let isBusy = status?.type == .busy || status?.type == .retry
         let isSelected = isSidebar && selectedSessionID == session.id
-        let showsListExecutionOutcomes = connection.serverCapabilities?.protocolVersion == .v2
-            || ScreenshotFixtures.showsExecutionOutcomes
+        let showsListExecutionOutcomes = showsExecutionOutcomes(on: connection(for: serverID))
 
         let showsUnreadBadge = !isBusy && session.hasUnreadResult && showsListExecutionOutcomes
 
@@ -525,7 +712,9 @@ struct SessionsListView: View {
 
     // MARK: - Side Effects (Service calls)
 
-    private func loadSessions() async {
+    /// Loads the given servers (every loadable one by default) side by side. Each server's
+    /// sessions are applied as they arrive, and one failing leaves the others untouched.
+    private func loadSessions(servers: Set<String>? = nil) async {
         guard !Task.isCancelled, !isLoading else { return }
         outcomeRefreshGeneration &+= 1
         let generation = outcomeRefreshGeneration
@@ -535,47 +724,122 @@ struct SessionsListView: View {
                 viewState = .loaded
             }
         }
-        do {
-            let result = try await sessionsService.listAllSessions()
-            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
-            let requestedIDs = openedSessionIDs.union(failedOutcomeSessionIDs)
-            let snapshot = await sessionsService.refreshSessionOutcomes(
-                in: result, previousStatuses: sessionStatuses, openedSessionIDs: requestedIDs, refreshInactive: true
-            )
-            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
-            applyExecutionSnapshot(snapshot, requestedIDs: requestedIDs)
+        let targets = loadableSources.filter { servers?.contains($0.id) ?? true }
+        let failures = await withTaskGroup(of: String?.self) { group in
+            for source in targets {
+                group.addTask { @MainActor in
+                    await loadSessions(from: source, generation: generation)
+                }
+            }
+            var failures: [String] = []
+            for await message in group {
+                if let message { failures.append(message) }
+            }
+            return failures
+        }
+        guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
+        // Only a list with nothing to show and nowhere that answered becomes a full-screen error.
+        if !targets.isEmpty, failures.count == targets.count, let first = failures.first {
+            viewState = .error(first)
+        } else {
             viewState = .loaded
+        }
+    }
+
+    /// Returns the failure message when this server could not be loaded.
+    private func loadSessions(from source: Source, generation: Int) async -> String? {
+        do {
+            let result = try await source.sessionsService.listAllSessions()
+            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return nil }
+            let requestedIDs = openedSessionIDs.union(failedOutcomeIDsByServer[source.id] ?? [])
+            let snapshot = await source.sessionsService.refreshSessionOutcomes(
+                in: result,
+                previousStatuses: statusesByServer[source.id] ?? [:],
+                openedSessionIDs: requestedIDs,
+                refreshInactive: true
+            )
+            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return nil }
+            failureByServer[source.id] = nil
+            applyExecutionSnapshot(snapshot, requestedIDs: requestedIDs, serverID: source.id, service: source.sessionsService)
+            return nil
         } catch is CancellationError {
-            return
+            return nil
         } catch {
-            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
-            viewState = .error(error.localizedDescription)
+            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return nil }
+            failureByServer[source.id] = error.localizedDescription
+            return error.localizedDescription
         }
     }
 
     private func loadSessionStatuses(refreshInactive: Bool = false, refreshAttention: Bool = false) async {
-        guard !sessions.isEmpty, !Task.isCancelled, !isLoading else { return }
+        let targets = loadableSources.filter { !sessions(for: $0.id).isEmpty }
+        guard !targets.isEmpty, !Task.isCancelled, !isLoading else { return }
         outcomeRefreshGeneration &+= 1
         let generation = outcomeRefreshGeneration
-        let requestedIDs = openedSessionIDs.union(failedOutcomeSessionIDs)
-        let snapshot = await sessionsService.refreshSessionOutcomes(
-            in: sessions, previousStatuses: sessionStatuses, openedSessionIDs: requestedIDs, refreshInactive: refreshInactive
-        )
-        guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
-        applyExecutionSnapshot(snapshot, requestedIDs: requestedIDs)
-        if refreshAttention {
-            let refreshed = await sessionsService.refreshUnreadResults(in: sessions, statuses: sessionStatuses)
-            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
-            sessions = sessionsService.applyingConfirmedViewedMarkers(to: refreshed)
+        await withTaskGroup(of: Void.self) { group in
+            for source in targets {
+                group.addTask { @MainActor in
+                    await refreshStatuses(
+                        from: source,
+                        generation: generation,
+                        refreshInactive: refreshInactive,
+                        refreshAttention: refreshAttention
+                    )
+                }
+            }
         }
     }
 
-    private func applyExecutionSnapshot(_ snapshot: SessionExecutionSnapshot, requestedIDs: Set<String>) {
-        sessions = sessionsService.applyingConfirmedViewedMarkers(to: snapshot.sessions)
-        sessionStatuses = snapshot.statuses
-        failedOutcomeSessionIDs = snapshot.failedOutcomeSessionIDs
+    private func refreshStatuses(
+        from source: Source,
+        generation: Int,
+        refreshInactive: Bool,
+        refreshAttention: Bool
+    ) async {
+        let current = sessions(for: source.id)
+        let requestedIDs = openedSessionIDs.union(failedOutcomeIDsByServer[source.id] ?? [])
+        let snapshot = await source.sessionsService.refreshSessionOutcomes(
+            in: current,
+            previousStatuses: statusesByServer[source.id] ?? [:],
+            openedSessionIDs: requestedIDs,
+            refreshInactive: refreshInactive
+        )
+        guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
+        applyExecutionSnapshot(snapshot, requestedIDs: requestedIDs, serverID: source.id, service: source.sessionsService)
+        if refreshAttention {
+            let refreshed = await source.sessionsService.refreshUnreadResults(
+                in: sessions(for: source.id),
+                statuses: statusesByServer[source.id] ?? [:]
+            )
+            guard !Task.isCancelled, generation == outcomeRefreshGeneration else { return }
+            sessionsByServer[source.id] = source.sessionsService.applyingConfirmedViewedMarkers(to: refreshed)
+        }
+    }
+
+    private func applyExecutionSnapshot(
+        _ snapshot: SessionExecutionSnapshot,
+        requestedIDs: Set<String>,
+        serverID: String,
+        service: SessionsService
+    ) {
+        sessionsByServer[serverID] = service.applyingConfirmedViewedMarkers(to: snapshot.sessions)
+        statusesByServer[serverID] = snapshot.statuses
+        failedOutcomeIDsByServer[serverID] = snapshot.failedOutcomeSessionIDs
         openedSessionIDs.subtract(requestedIDs)
-        pruneExpandedProjects(using: snapshot.sessions)
+        pruneExpandedProjects()
+    }
+
+    /// A session on another server makes that server the active one first, so the chat opens
+    /// against the connection that owns the session.
+    private func selectSession(_ session: OCSession, serverID: String) {
+        if serverID != activeServerID {
+            onActivateServer(serverID)
+        }
+        onSelect(session)
+    }
+
+    private func supportsArchiving(on serverID: String) -> Bool {
+        connection(for: serverID).serverCapabilities?.protocolVersion == .v2 || ScreenshotFixtures.isEnabled
     }
 
     private func retryLoadingSessions() {
@@ -592,19 +856,20 @@ struct SessionsListView: View {
         outcomeRefreshGeneration &+= 1
         openedSessionIDs.insert(session.id)
         viewState = .loaded
-        sessions.insert(session, at: 0)
-        pruneExpandedProjects(using: sessions)
+        let id = activeServerID
+        sessionsByServer[id] = [session] + sessions(for: id)
+        pruneExpandedProjects()
         onSelect(session)
     }
 
-    private func deleteSession(_ session: OCSession) {
+    private func deleteSession(_ session: OCSession, serverID: String) {
         Task {
             do {
-                try await sessionsService.deleteSession(session)
+                try await service(for: serverID).deleteSession(session)
                 outcomeRefreshGeneration &+= 1
                 if case .loading = viewState { viewState = .loaded }
-                sessions.removeAll { $0.id == session.id }
-                pruneExpandedProjects(using: sessions)
+                sessionsByServer[serverID] = sessions(for: serverID).filter { $0.id != session.id }
+                pruneExpandedProjects()
                 onDelete(session)
             } catch {
                 viewState = .error(error.localizedDescription)
@@ -612,14 +877,14 @@ struct SessionsListView: View {
         }
     }
 
-    private func archiveSession(_ session: OCSession) {
+    private func archiveSession(_ session: OCSession, serverID: String) {
         Task {
             do {
-                try await sessionsService.archiveSession(session)
+                try await service(for: serverID).archiveSession(session)
                 outcomeRefreshGeneration &+= 1
                 if case .loading = viewState { viewState = .loaded }
-                sessions.removeAll { $0.id == session.id }
-                pruneExpandedProjects(using: sessions)
+                sessionsByServer[serverID] = sessions(for: serverID).filter { $0.id != session.id }
+                pruneExpandedProjects()
                 onArchive(session)
             } catch {
                 viewState = .error(error.localizedDescription)
@@ -651,52 +916,13 @@ struct SessionsListView: View {
         }
     }
 
-    private func pruneExpandedProjects(using sessions: [OCSession]) {
-        let validGroupIDs = Set(sessions.map(projectGroupID(for:)))
+    /// Forgets expansion for groups that no longer exist, on any server. Uses every server, not
+    /// just the filtered ones, so switching the filter does not collapse what was opened.
+    private func pruneExpandedProjects() {
+        let validGroupIDs = Set(sources.flatMap { source in
+            sessions(for: source.id).map { SessionGrouping.groupID(serverID: source.id, for: $0) }
+        })
         expandedProjectIDs = expandedProjectIDs.intersection(validGroupIDs)
-    }
-
-    private func projectGroupID(for session: OCSession) -> String {
-        if let directory = normalizedDirectory(for: session), !directory.isEmpty {
-            return "directory:\(directory)"
-        }
-
-        if let projectID = session.projectID?.trimmingCharacters(in: .whitespacesAndNewlines), !projectID.isEmpty {
-            return "projectID:\(projectID)"
-        }
-
-        return "unknown"
-    }
-
-    private func projectTitle(for session: OCSession) -> String {
-        if let directory = normalizedDirectory(for: session),
-           let customName = workspaceNames.customName(forDirectory: directory) {
-            return customName
-        }
-
-        if let directory = normalizedDirectory(for: session) {
-            let lastComponent = URL(fileURLWithPath: directory).lastPathComponent
-            if !lastComponent.isEmpty {
-                return lastComponent
-            }
-        }
-
-        if let projectID = session.projectID?.trimmingCharacters(in: .whitespacesAndNewlines), !projectID.isEmpty {
-            return projectID
-        }
-
-        return AppText.projectFallback
-    }
-
-    private func projectSubtitle(for session: OCSession) -> String? {
-        guard let directory = normalizedDirectory(for: session) else { return nil }
-        return directory
-    }
-
-    private func normalizedDirectory(for session: OCSession) -> String? {
-        let trimmedDirectory = session.directory?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmedDirectory, !trimmedDirectory.isEmpty else { return nil }
-        return trimmedDirectory
     }
 }
 
@@ -1192,6 +1418,31 @@ private struct NewSessionSheet: View {
     }
 }
 
+// MARK: - Server Filter Capsule
+
+/// The toolbar capsule while several servers are saved: it filters the list rather than naming
+/// one host, so it carries no connection status.
+private struct ServerFilterCapsule: View {
+    let title: String
+
+    var body: some View {
+        GlassToolbarCapsule(isInteractive: true) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.appPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(Color.appSecondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(AppText.sessions), \(title)")
+        .accessibilityHint(AppText.servers)
+    }
+}
+
 // MARK: - Connected Host Capsule
 
 private struct ConnectedHostCapsule: View {
@@ -1211,5 +1462,17 @@ private struct ConnectedHostCapsule: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(AppText.sessions), \(host)")
+    }
+}
+
+private extension SessionGroup {
+    static let collapsedSessionLimit = 4
+
+    var visibleSessions: [OCSession] {
+        Array(sessions.prefix(Self.collapsedSessionLimit))
+    }
+
+    var hiddenSessionCount: Int {
+        max(sessions.count - Self.collapsedSessionLimit, 0)
     }
 }

@@ -98,10 +98,14 @@ struct InitialSessionsReadiness: Equatable {
 
     private(set) var state: State
     private(set) var generation = 0
+    /// The server the loaded sessions came from. The list attributes its seed to this server, so
+    /// switching the active server can never show one server's sessions under another.
+    private(set) var readyServerID: String?
 
-    init(initialSessions: [OCSession]? = nil) {
+    init(initialSessions: [OCSession]? = nil, serverID: String? = nil) {
         if let initialSessions {
             state = .loaded(initialSessions)
+            readyServerID = serverID
         } else {
             state = .idle
         }
@@ -122,9 +126,10 @@ struct InitialSessionsReadiness: Equatable {
         return generation
     }
 
-    mutating func succeed(with sessions: [OCSession], generation expectedGeneration: Int) {
+    mutating func succeed(with sessions: [OCSession], generation expectedGeneration: Int, serverID: String? = nil) {
         guard generation == expectedGeneration else { return }
         state = .loaded(sessions)
+        readyServerID = serverID
     }
 
     mutating func fail(with message: String, generation expectedGeneration: Int) {
@@ -140,6 +145,7 @@ struct InitialSessionsReadiness: Equatable {
     mutating func reset() {
         generation &+= 1
         state = .idle
+        readyServerID = nil
     }
 }
 
@@ -305,7 +311,8 @@ struct OpenLensApp: App {
         self.streamStressModeEnabled = streamStressModeEnabled
         self._initialSessionsReadiness = State(
             initialValue: InitialSessionsReadiness(
-                initialSessions: screenshotModeEnabled ? ScreenshotFixtures.sessions : nil
+                initialSessions: screenshotModeEnabled ? ScreenshotFixtures.sessions : nil,
+                serverID: screenshotModeEnabled ? ScreenshotFixtures.defaultServerID : nil
             )
         )
 
@@ -490,7 +497,9 @@ struct OpenLensApp: App {
                 case .connected(let initialSessions):
                     ConnectedRootView(
                         chatClient: chatClient,
-                        initialSessions: initialSessions
+                        initialSessions: initialSessions,
+                        initialServerID: initialSessionsReadiness.readyServerID,
+                        onActivateServer: switchServer(to:)
                     )
                         .environment(\.connection, connection)
                         .environment(router)
@@ -659,14 +668,38 @@ struct OpenLensApp: App {
             guard case .idle = initialSessionsReadiness.state else { return }
             let generation = initialSessionsReadiness.beginLoading()
 
-            do {
-                let sessions = try await sessionsService.listAllSessions()
-                guard !Task.isCancelled, connection.isConnected else { return }
-                initialSessionsReadiness.succeed(with: sessions, generation: generation)
-            } catch is CancellationError {
+            // The list shows every server, so the first one to answer opens it; the others fill
+            // in as they arrive. With one server this is that server's own load.
+            let activeID = serverContext.id
+            var servers = serverRegistry.savedServerContexts.filter { $0.id == activeID || $0.connection.isConnected }
+            if servers.isEmpty { servers = [serverContext] }
+            let outcome = await withTaskGroup(of: (String, Result<[OCSession], Error>).self) { group in
+                for context in servers {
+                    let service = context.id == activeID ? sessionsService : context.sessionsService
+                    group.addTask { @MainActor in
+                        do { return (context.id, .success(try await service.listAllSessions())) }
+                        catch { return (context.id, .failure(error)) }
+                    }
+                }
+                var firstFailure: Error?
+                for await (serverID, result) in group {
+                    switch result {
+                    case .success(let sessions):
+                        group.cancelAll()
+                        return (serverID, Result<[OCSession], Error>.success(sessions))
+                    case .failure(let error):
+                        if serverID == activeID || firstFailure == nil { firstFailure = error }
+                    }
+                }
+                return (activeID, Result<[OCSession], Error>.failure(firstFailure ?? CancellationError()))
+            }
+            guard !Task.isCancelled, connection.isConnected else { return }
+            switch outcome.1 {
+            case .success(let sessions):
+                initialSessionsReadiness.succeed(with: sessions, generation: generation, serverID: outcome.0)
+            case .failure(is CancellationError):
                 return
-            } catch {
-                guard !Task.isCancelled, connection.isConnected else { return }
+            case .failure(let error):
                 initialSessionsReadiness.fail(
                     with: error.localizedDescription,
                     generation: generation

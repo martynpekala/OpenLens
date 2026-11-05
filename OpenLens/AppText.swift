@@ -3,6 +3,11 @@ import Foundation
 enum AppText {
     // MARK: Servers
     static let servers = "Servers"
+    static let sessionsAllServers = "All servers"
+    static func serverBadgeAccessibility(_ name: String) -> String { "Server \(name)" }
+    static func sessionsServerUnavailable(_ server: String?) -> String {
+        server.map { "Couldn't load sessions from \($0)." } ?? "Couldn't load sessions."
+    }
     static let serversEmptyTitle = "No Saved Servers"
     static let serversEmptyMessage = "Add a server to connect OpenLens to it."
     static let serversAdd = "Add Server"
