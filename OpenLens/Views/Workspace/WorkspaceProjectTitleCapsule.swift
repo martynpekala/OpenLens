@@ -9,7 +9,7 @@ struct WorkspaceProjectTitleCapsule: View {
     let isSelectable: Bool
 
     var body: some View {
-        HStack(spacing: 6) {
+        GlassToolbarCapsule(isInteractive: isSelectable) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.appPrimary)
@@ -25,13 +25,8 @@ struct WorkspaceProjectTitleCapsule: View {
                     .foregroundStyle(Color.appSecondary)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .frame(maxWidth: 240)
-        .glassEffect(isSelectable ? .regular.interactive() : .regular, in: Capsule())
-        .contentShape(Capsule())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Project, \(title)")
-        .accessibilityHint(isSelectable ? "Choose another project" : "")
+        .accessibilityLabel(AppText.workspaceProjectAccessibilityLabel(title))
+        .accessibilityHint(isSelectable ? AppText.workspaceProjectHint : "")
     }
 }
