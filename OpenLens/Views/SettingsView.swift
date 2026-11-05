@@ -75,11 +75,16 @@ struct SettingsView: View {
                 } label: {
                     Label(AppText.settingsSupportReviewCTA, systemImage: "star.bubble.fill")
                 }
+                .tint(Color.appUserAccent)
             } header: {
                 Text(AppText.settingsAboutSupport)
             }
 
             Text(appVersionBuild)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .listRowBackground(Color.clear)
 
             #if DEBUG
             Section(AppText.developer) {
@@ -134,6 +139,8 @@ struct SettingsView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .scrollContentBackground(.hidden)
+        .background(Color.appBackground)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
         .onChange(of: liveActivitiesEnabled) { _, enabled in
             if !enabled {
@@ -175,9 +182,10 @@ struct SettingsView: View {
     }
 
     private func preferenceLabel(_ title: String, subtitle: String, icon: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
                 .frame(width: 24)
+                .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
