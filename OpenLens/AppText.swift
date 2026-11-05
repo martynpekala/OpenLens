@@ -5,6 +5,7 @@ enum AppText {
     static let servers = "Servers"
     static let sessionsAllServers = "All servers"
     static let sessionsAllWorkspaces = "All workspaces"
+    static let sessionsClearFilter = "Clear filter"
     static let workspaces = "Workspaces"
     static func serverBadgeAccessibility(_ name: String) -> String { "Server \(name)" }
     static func sessionsServerUnavailable(_ server: String?) -> String {

@@ -96,5 +96,111 @@ extension MultiServerSuite {
             #expect(sessionFilterIsInteractive(serverCount: 1, workspaceCount: 2))
             #expect(sessionFilterIsInteractive(serverCount: 2, workspaceCount: 1))
         }
+
+        // MARK: - Filter popover counts
+
+        private static func counts(
+            unavailable: Set<String> = [],
+            serverID: String? = nil,
+            workspaceID: String? = nil
+        ) -> SessionFilterCounts {
+            SessionGrouping.filterCounts(
+                entries: aggregate().entries,
+                serverIDs: ["a", "b", "c", "d"],
+                unavailableServerIDs: unavailable,
+                serverFilterID: serverID,
+                workspaceFilterID: workspaceID
+            )
+        }
+
+        @Test func eachServerCountsItsOwnSessionsAndAllServersCountsEverything() {
+            let counts = Self.counts()
+
+            #expect(counts.count(forServer: "a") == 3)
+            #expect(counts.count(forServer: "b") == 2)
+            #expect(counts.allServers == 5)
+        }
+
+        @Test func eachWorkspaceCountsItsSessionsAndTheSameFolderOnTwoServersCountsSeparately() {
+            let counts = Self.counts()
+
+            #expect(counts.count(forWorkspace: "a|directory:/work/app") == 2)
+            #expect(counts.count(forWorkspace: "b|directory:/work/app") == 1)
+            #expect(counts.count(forWorkspace: "a|directory:/work/site") == 1)
+            #expect(counts.count(forWorkspace: "b|directory:/work/docs") == 1)
+            #expect(counts.allWorkspaces == 5)
+        }
+
+        @Test func workspaceCountsRespectTheServerFilterAndAllWorkspacesTotalsOnlyThatServer() {
+            let counts = Self.counts(serverID: "b")
+
+            #expect(counts.count(forWorkspace: "b|directory:/work/app") == 1)
+            #expect(counts.count(forWorkspace: "a|directory:/work/app") == nil)
+            #expect(counts.allWorkspaces == 2)
+        }
+
+        @Test func serverCountsRespectTheWorkspaceFilterAndAllServersTotalsOnlyThatWorkspace() {
+            let counts = Self.counts(workspaceID: "a|directory:/work/app")
+
+            #expect(counts.count(forServer: "a") == 2)
+            #expect(counts.count(forServer: "b") == 0)
+            #expect(counts.allServers == 2)
+        }
+
+        @Test func aDroppedServerIsCountedByWhatItStillShowsNotByItsHealth() {
+            let counts = Self.counts(unavailable: ["b"])
+
+            // b has dropped, but its last-loaded sessions are still on screen. Showing "--"
+            // beside them while b's own workspace row showed a count contradicted itself, and
+            // the status dot already says b is unhealthy.
+            #expect(counts.count(forServer: "b") == 2)
+            #expect(counts.count(forServer: "a") == 3)
+            #expect(counts.count(forWorkspace: "b|directory:/work/docs") == 1)
+            #expect(counts.allServers == 5)
+            #expect(counts.allWorkspaces == 5)
+        }
+
+        @Test func aServerWithNothingOnScreenHasNoCountOnlyWhileItCannotAnswer() {
+            // Neither c nor d holds any session here. c cannot answer, so it has no count to
+            // give; d can answer and genuinely has nothing, which is a different fact and
+            // reads as zero rather than a dash.
+            let counts = Self.counts(unavailable: ["c"])
+
+            #expect(counts.count(forServer: "c") == nil)
+            #expect(counts.count(forServer: "d") == 0)
+        }
+
+        @Test func anAvailableServerWithNoSessionsCountsZeroNotAnEmDash() {
+            let counts = SessionGrouping.filterCounts(
+                entries: Self.aggregate(serverIDs: ["a"]).entries,
+                serverIDs: ["a", "b", "c", "d"],
+                unavailableServerIDs: [],
+                serverFilterID: nil,
+                workspaceFilterID: nil
+            )
+
+            #expect(counts.count(forServer: "a") == 3)
+            #expect(counts.count(forServer: "b") == 0)
+        }
+
+        @Test func theServersSectionIsLeftOutWhileOnlyOneServerIsSaved() {
+            #expect(!sessionFilterShowsServersSection(serverCount: 0))
+            #expect(!sessionFilterShowsServersSection(serverCount: 1))
+            #expect(sessionFilterShowsServersSection(serverCount: 2))
+        }
+
+        @Test func clearingTheFilterResetsBothTheServerAndTheWorkspace() {
+            let selection = SessionFilterSelection(serverID: "a", workspaceID: "a|directory:/work/app")
+            let cleared = selection.cleared()
+
+            #expect(selection.isActive)
+            #expect(cleared == SessionFilterSelection(serverID: nil, workspaceID: nil))
+            #expect(!cleared.isActive)
+        }
+
+        @Test func aWorkspaceAloneOrAServerAloneCountsAsAnActiveFilter() {
+            #expect(SessionFilterSelection(serverID: "a", workspaceID: nil).isActive)
+            #expect(SessionFilterSelection(serverID: nil, workspaceID: "a|directory:/work/app").isActive)
+        }
     }
 }

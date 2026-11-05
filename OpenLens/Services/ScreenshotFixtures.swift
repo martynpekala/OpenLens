@@ -506,6 +506,23 @@ enum ScreenshotFixtures {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_REVIEW_PICKER")
     }
 
+    /// Opens the Sessions filter popover, for capturing it: a `Menu`'s open state cannot be photographed.
+    ///
+    /// Argument *and* environment key, like the other flags a capture may need to set either way.
+    static var opensSessionFilter: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SESSION_FILTER")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SESSION_FILTER"] == "1")
+    }
+
+    /// Starts the Sessions list narrowed to one server and one of its workspaces, for capturing
+    /// the capsule's clear control and the popover's selected rows.
+    static var filtersSessions: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SESSION_FILTERED")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SESSION_FILTERED"] == "1")
+    }
+
     static var opensArchivedSessions: Bool {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_ARCHIVED_SESSIONS")
     }

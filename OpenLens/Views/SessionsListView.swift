@@ -57,6 +57,7 @@ struct SessionsListView: View {
     @State private var serverFilterID: String?
     /// Which workspace the list shows; nil is every workspace. Scoped to the server filter.
     @State private var workspaceFilterID: String?
+    @State private var isFilterPopoverPresented = false
     @State private var openedSessionIDs: Set<String> = []
     @State private var outcomeRefreshGeneration = 0
 
@@ -302,6 +303,14 @@ struct SessionsListView: View {
         }
         .task {
             if ScreenshotFixtures.opensNewSessionSheet { presentNewSessionSheet() }
+            if ScreenshotFixtures.filtersSessions {
+                serverFilterID = ScreenshotFixtures.devboxServerID
+                workspaceFilterID = "\(ScreenshotFixtures.devboxServerID)|directory:/srv/api-gateway"
+            }
+            if ScreenshotFixtures.opensSessionFilter {
+                try? await Task.sleep(for: .seconds(2))
+                isFilterPopoverPresented = true
+            }
         }
         .task(id: loadableSources.map(\.id)) {
             // The first load seeds one server; the rest fill in as they are connected.
@@ -337,15 +346,8 @@ struct SessionsListView: View {
         if isSidebar {
             VStack(spacing: 0) {
                 SessionsSidebarHeader(
-                    serverFilter: isFilterInteractive
-                        ? SessionsSidebarHeader.ServerFilter(
-                            title: serverFilterTitle,
-                            targets: switchTargets.targets,
-                            selection: serverFilterSelection,
-                            workspaces: workspaceMenuOptions,
-                            workspaceSelection: workspaceFilterSelection
-                        )
-                        : nil,
+                    serverFilter: isFilterInteractive ? filterModel : nil,
+                    isFilterPresented: $isFilterPopoverPresented,
                     onCreate: presentNewSessionSheet,
                     onShowArchived: supportsArchiving ? { showArchivedSessions = true } : nil
                 )
@@ -388,40 +390,70 @@ struct SessionsListView: View {
 
     /// The capsule filters the list by server and by workspace instead of naming one host.
     private var serverFilterMenu: some View {
-        Menu {
-            if switchTargets.targets.count > 1 {
-                Picker(AppText.servers, selection: serverFilterSelection) {
-                    Text(AppText.sessionsAllServers)
-                        .tag(Self.allServersSelection)
-                    ForEach(switchTargets.targets) { target in
-                        Text(target.tag.text)
-                            .tag(target.id)
-                    }
-                }
-            }
-            Picker(AppText.workspaces, selection: workspaceFilterSelection) {
-                Text(AppText.sessionsAllWorkspaces)
-                    .tag(Self.allServersSelection)
-                ForEach(workspaceMenuOptions) { option in
-                    Text(option.text)
-                        .tag(option.id)
-                }
-            }
-        } label: {
-            ServerFilterCapsule(title: serverFilterTitle)
+        ServerFilterCapsule(
+            title: serverFilterTitle,
+            isFiltered: filterModel.isFiltered,
+            isPresented: isFilterPopoverPresented,
+            onOpen: { isFilterPopoverPresented = true },
+            onClear: filterModel.onClear
+        )
+        .popover(isPresented: $isFilterPopoverPresented, arrowEdge: .top) {
+            SessionFilterPopover(model: filterModel) { isFilterPopoverPresented = false }
         }
-        .menuIndicator(.hidden)
-        .buttonStyle(.plain)
+    }
+
+    /// Servers that cannot answer now (idle, or the last load failed) have no count to show.
+    private var unavailableServerIDs: Set<String> {
+        let loadable = Set(loadableSources.map(\.id))
+        return Set(sources.map(\.id).filter { !loadable.contains($0) || failureByServer[$0] != nil })
+    }
+
+    private var filterModel: SessionFilterModel {
+        let counts = SessionGrouping.filterCounts(
+            entries: aggregation(for: sources, workspaceFilterID: nil).entries,
+            serverIDs: sources.map(\.id),
+            unavailableServerIDs: unavailableServerIDs,
+            serverFilterID: serverFilterID,
+            workspaceFilterID: effectiveWorkspaceFilterID
+        )
+        let showsServers = sessionFilterShowsServersSection(serverCount: switchTargets.targets.count)
+        let servers = showsServers ? switchTargets.targets.map { target in
+            SessionFilterModel.ServerOption(
+                id: target.id,
+                tag: target.tag,
+                status: serverRowStatus(
+                    connectionState: connection(for: target.id).state,
+                    isActive: target.id == activeServerID
+                ),
+                count: counts.count(forServer: target.id)
+            )
+        } : []
+        let selection = SessionFilterSelection(serverID: serverFilterID, workspaceID: effectiveWorkspaceFilterID)
+        return SessionFilterModel(
+            title: serverFilterTitle,
+            servers: servers,
+            allServersCount: counts.allServers,
+            workspaces: workspaceOptions.map { option in
+                .init(
+                    id: option.id,
+                    text: option.label.workspace,
+                    server: serverFilterID == nil ? option.label.server : nil,
+                    count: counts.count(forWorkspace: option.id)
+                )
+            },
+            allWorkspacesCount: counts.allWorkspaces,
+            serverSelection: serverFilterSelection,
+            workspaceSelection: workspaceFilterSelection,
+            isFiltered: selection.isActive,
+            onClear: {
+                let cleared = selection.cleared()
+                serverFilterID = cleared.serverID
+                workspaceFilterID = cleared.workspaceID
+            }
+        )
     }
 
     private static let allServersSelection = ""
-
-    /// A workspace row names its server only while the list spans several.
-    private var workspaceMenuOptions: [SessionsSidebarHeader.WorkspaceChoice] {
-        workspaceOptions.map {
-            .init(id: $0.id, text: serverFilterID == nil ? $0.label.text : $0.label.workspace)
-        }
-    }
 
     private var serverFilterTitle: String {
         let server = serverFilterID.flatMap { id in switchTargets.targets.first(where: { $0.id == id }) }
@@ -969,21 +1001,9 @@ struct SessionsListView: View {
 }
 
 private struct SessionsSidebarHeader: View {
-    /// The sidebar's form of the toolbar capsule: present only while several servers are saved.
-    struct ServerFilter {
-        let title: String
-        let targets: [ServerSwitchTargets.Target]
-        let selection: Binding<String>
-        let workspaces: [WorkspaceChoice]
-        let workspaceSelection: Binding<String>
-    }
-
-    struct WorkspaceChoice: Identifiable, Equatable {
-        let id: String
-        let text: String
-    }
-
-    let serverFilter: ServerFilter?
+    /// The sidebar's form of the toolbar capsule: present only while the filter is interactive.
+    let serverFilter: SessionFilterModel?
+    @Binding var isFilterPresented: Bool
     let onCreate: () -> Void
     var onShowArchived: (() -> Void)?
 
@@ -1027,43 +1047,42 @@ private struct SessionsSidebarHeader: View {
         .padding(.bottom, 2)
     }
 
-    private func filterMenu(_ filter: ServerFilter) -> some View {
-        Menu {
-            if filter.targets.count > 1 {
-                Picker(AppText.servers, selection: filter.selection) {
-                    Text(AppText.sessionsAllServers)
-                        .tag("")
-                    ForEach(filter.targets) { target in
-                        Text(target.tag.text)
-                            .tag(target.id)
-                    }
+    private func filterMenu(_ filter: SessionFilterModel) -> some View {
+        HStack(spacing: 4) {
+            Button {
+                isFilterPresented = true
+            } label: {
+                HStack(spacing: 4) {
+                    Text(filter.title)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.appSecondary)
                 }
+                .contentShape(Rectangle())
             }
-            Picker(AppText.workspaces, selection: filter.workspaceSelection) {
-                Text(AppText.sessionsAllWorkspaces)
-                    .tag("")
-                ForEach(filter.workspaces) { workspace in
-                    Text(workspace.text)
-                        .tag(workspace.id)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(AppText.sessions), \(filter.title)")
+            .accessibilityHint(AppText.servers)
+            .popover(isPresented: $isFilterPresented, arrowEdge: .top) {
+                SessionFilterPopover(model: filter) { isFilterPresented = false }
+            }
+
+            if filter.isFiltered {
+                Button(action: filter.onClear) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.appSecondary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppText.sessionsClearFilter)
             }
-        } label: {
-            HStack(spacing: 4) {
-                Text(filter.title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(Color.appSecondary)
-            }
-            .contentShape(Rectangle())
         }
-        .menuIndicator(.hidden)
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(AppText.sessions), \(filter.title)")
-        .accessibilityHint(AppText.servers)
     }
 }
 
@@ -1595,22 +1614,52 @@ private struct NewSessionSheet: View {
 /// one host, so it carries no connection status.
 private struct ServerFilterCapsule: View {
     let title: String
+    let isFiltered: Bool
+    let isPresented: Bool
+    let onOpen: () -> Void
+    let onClear: () -> Void
 
     var body: some View {
         GlassToolbarCapsule(isInteractive: true) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.appPrimary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            // Two hit areas in one capsule: the label opens the popover, the glyph clears.
+            Button(action: onOpen) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.appPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
-            Image(systemName: "chevron.down")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(Color.appSecondary)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.appSecondary)
+                        .rotationEffect(.degrees(isPresented ? 180 : 0))
+                        .animation(.snappy, value: isPresented)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(AppText.sessions), \(title)")
+            .accessibilityHint(AppText.servers)
+
+            if isFiltered {
+                Button(action: onClear) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appSecondary)
+                        // The capsule is ~32pt tall, so 44pt is out of reach. The glyph takes the
+                        // full capsule height and reaches into its padding on three sides; the
+                        // negative padding keeps the capsule's own geometry unchanged.
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                        .padding(.vertical, -6)
+                        .padding(.trailing, -10)
+                        .padding(.leading, -6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppText.sessionsClearFilter)
+            }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(AppText.sessions), \(title)")
-        .accessibilityHint(AppText.servers)
     }
 }
 

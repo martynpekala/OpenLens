@@ -307,6 +307,90 @@ func sessionFilterTitle(server: ServerTag?, workspace: String?, hasSeveralServer
     return hasSeveralServers ? AppText.sessionsAllServers : AppText.sessionsAllWorkspaces
 }
 
+/// How many sessions sit behind each option of the Sessions filter popover.
+///
+/// Counts match what the list shows. The one exception is a server row: a server that is idle or
+/// failed to load has no count (nil), which is different from having none.
+struct SessionFilterCounts: Equatable {
+    /// Sessions across every server, under the current workspace filter.
+    let allServers: Int
+    /// Sessions across the workspaces in view, under the current server filter.
+    let allWorkspaces: Int
+    private let servers: [String: Int]
+    private let workspaces: [String: Int]
+
+    fileprivate init(allServers: Int, allWorkspaces: Int, servers: [String: Int], workspaces: [String: Int]) {
+        self.allServers = allServers
+        self.allWorkspaces = allWorkspaces
+        self.servers = servers
+        self.workspaces = workspaces
+    }
+
+    /// Nil for a server without a count.
+    func count(forServer id: String) -> Int? { servers[id] }
+
+    /// Nil for a workspace that has no sessions in view.
+    func count(forWorkspace id: String) -> Int? { workspaces[id] }
+}
+
+/// The two Sessions filters as one value, so "clear" cannot reset one and forget the other.
+struct SessionFilterSelection: Equatable {
+    var serverID: String?
+    var workspaceID: String?
+
+    var isActive: Bool { serverID != nil || workspaceID != nil }
+
+    /// Both filters back to All.
+    func cleared() -> SessionFilterSelection { SessionFilterSelection(serverID: nil, workspaceID: nil) }
+}
+
+/// The popover's Servers section is a group of one while a single server is saved, so it is
+/// left out entirely.
+func sessionFilterShowsServersSection(serverCount: Int) -> Bool {
+    isMultiServerUIEnabled(savedServerCount: serverCount)
+}
+
+extension SessionGrouping {
+    /// - Parameters:
+    ///   - entries: Every server's entries, before any filter.
+    ///   - serverIDs: Every saved server, so one that holds nothing still gets a count of zero.
+    ///   - unavailableServerIDs: Servers that are idle or failed to load.
+    ///   - serverFilterID: Narrows the workspace counts, as it narrows the workspace options.
+    ///   - workspaceFilterID: Narrows the server counts: a server holds only what that
+    ///     workspace has on it.
+    static func filterCounts(
+        entries: [SessionListEntry],
+        serverIDs: [String],
+        unavailableServerIDs: Set<String>,
+        serverFilterID: String?,
+        workspaceFilterID: String?
+    ) -> SessionFilterCounts {
+        let underWorkspace = workspaceFilterID.map { id in entries.filter { $0.workspaceID == id } } ?? entries
+        // Count what each server actually contributes, a dropped server included: its
+        // last-loaded sessions are still on screen, and saying "--" beside them while its own
+        // workspaces showed counts contradicted itself. The status dot carries health; the
+        // count says how many rows this server accounts for.
+        var servers: [String: Int] = [:]
+        for entry in underWorkspace { servers[entry.serverID, default: 0] += 1 }
+        // Zero means "reported nothing"; no count at all means "has not reported", which only
+        // an unavailable server with nothing on screen can be.
+        for id in serverIDs where servers[id] == nil && !unavailableServerIDs.contains(id) {
+            servers[id] = 0
+        }
+
+        let underServer = serverFilterID.map { id in entries.filter { $0.serverID == id } } ?? entries
+        var workspaces: [String: Int] = [:]
+        for entry in underServer { workspaces[entry.workspaceID, default: 0] += 1 }
+
+        return SessionFilterCounts(
+            allServers: underWorkspace.count,
+            allWorkspaces: underServer.count,
+            servers: servers,
+            workspaces: workspaces
+        )
+    }
+}
+
 extension ServerRegistry {
     /// The active server's identity, or nil while one server (or none) is saved.
     var activeServerTagWhenMultiServer: ServerTag? {
