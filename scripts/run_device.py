@@ -128,12 +128,9 @@ def arguments():
 def main():
     args = arguments()
     device = resolve_device(args.device)
+    # tunnelState is reported, never gated on: an install and launch both succeeded while it
+    # read "disconnected", so it does not predict reachability and advice based on it misleads.
     report(f"Device: {device['name']} ({device['udid']}) — tunnel {device['state']}")
-    if device["state"] != "connected":
-        # Paired is not the same as reachable. devicectl will often bring the tunnel up on
-        # demand, so this is a heads-up rather than a refusal.
-        report("  Tunnel is not up; if install fails, unlock the phone and check the cable "
-               "or that both are on the same network.")
 
     if not args.skip_build:
         report("Generating project")
@@ -156,10 +153,21 @@ def main():
     app = built_app()
     identifier = bundle_id(app)
     report(f"Installing {identifier}")
-    run(
+    install = run(
         ["xcrun", "devicectl", "device", "install", "app", "--device", device["udid"], str(app)],
         timeout=600,
+        check=False,
     )
+    if install.returncode != 0:
+        detail = install.stderr or install.stdout or ""
+        # A locked phone drops the install connection mid-transfer and reports it as a
+        # CoreDevice/IXRemote pair that never mentions the lock screen. Observed: locked ->
+        # error 3002 / IXRemoteErrorDomain 6; unlocked, the same bundle installed unchanged.
+        if "IXRemoteErrorDomain error 6" in detail or "CoreDeviceError error 3002" in detail:
+            report("Install dropped mid-transfer. The usual cause is a locked phone.")
+            report("Unlock it, keep it awake, then: scripts/run-device.sh --skip-build")
+            return 2
+        raise RuntimeError(f"install failed ({install.returncode})\n{detail.strip()[-1500:]}")
 
     if args.no_launch:
         report("Installed. Not launching (--no-launch).")
