@@ -56,7 +56,9 @@ struct SessionListEntry: Identifiable, Equatable {
 enum SessionSectionKind: String, Equatable, Sendable {
     case running
     case today
-    case yesterday
+    /// Everything before today, in one bucket. A separate Yesterday reads as a landmark but
+    /// earns little: the row already carries its own relative time, so the section only needs
+    /// to say "not today".
     case earlier
 }
 
@@ -120,11 +122,7 @@ enum SessionGrouping {
     static func timeBucket(for session: OCSession, now: Date, calendar: Calendar) -> SessionSectionKind {
         let updated = Date(timeIntervalSince1970: session.updatedAt)
         let startOfToday = calendar.startOfDay(for: now)
-        if updated >= startOfToday { return .today }
-        if let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday), updated >= startOfYesterday {
-            return .yesterday
-        }
-        return .earlier
+        return updated >= startOfToday ? .today : .earlier
     }
 
     /// Merges every server's sessions into one recency-ordered list: running sessions pinned in
@@ -186,7 +184,7 @@ enum SessionGrouping {
                 : timeBucket(for: entry.session, now: now, calendar: calendar)
             buckets[kind, default: []].append(entry)
         }
-        let order: [SessionSectionKind] = [.running, .today, .yesterday, .earlier]
+        let order: [SessionSectionKind] = [.running, .today, .earlier]
         let sections = order.compactMap { kind -> SessionListSection? in
             guard let entries = buckets[kind], !entries.isEmpty else { return nil }
             return SessionListSection(kind: kind, entries: entries)

@@ -47,7 +47,9 @@ content — group headers use weight, not size, to separate from rows.
   status badge capsule, 14pt medium monospaced path (2-line, middle-trunc),
   themed +/− counts 12pt, chevron. Do not build per-tab variants.
 - Sessions list — one flat, recency-ordered feed, not project groups. A pinned
-  Running section leads, then Today / Yesterday / Earlier. Sections reuse the
+  Running section leads, then Today and Earlier -- two time buckets, not a day
+  ladder: each row already carries its own relative time, so a section only
+  needs to say whether it is today. Sections reuse the
   group-header treatment unchanged (16pt semibold + secondary `· N chats`,
   12/6 padding); only their meaning changed, from project to time. Header and
   rows share the same leading edge (24pt screen / 12pt sidebar); no folder

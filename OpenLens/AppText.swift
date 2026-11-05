@@ -484,7 +484,6 @@ enum AppText {
         switch kind {
         case .running: "Running"
         case .today: "Today"
-        case .yesterday: "Yesterday"
         case .earlier: "Earlier"
         }
     }

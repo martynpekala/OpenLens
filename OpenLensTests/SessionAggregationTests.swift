@@ -32,7 +32,7 @@ extension MultiServerSuite {
             return calendar
         }()
 
-        /// Noon UTC, so "today" and "yesterday" have room on both sides.
+        /// Noon UTC, so "today" and "earlier" have room on both sides.
         static let now = Date(timeIntervalSince1970: 1_799_971_200 + 12 * 3600)
 
         /// A session last touched `hours` before `now`.
@@ -120,22 +120,25 @@ extension MultiServerSuite {
             #expect(aggregation.sections[1].entries.map(\.serverID) == ["b"])
         }
 
-        @Test func sessionsFallIntoTodayYesterdayAndEarlierNewestFirst() {
+        @Test func sessionsFallIntoTodayAndEarlierNewestFirst() {
             let aggregation = Self.aggregate([
                 ServerSessionsResult(serverID: "a", sessions: [
                     Self.session("last-month", hoursAgo: 24 * 30),
                     Self.session("this-morning", hoursAgo: 2),
-                    Self.session("yesterday-late", hoursAgo: 13),
-                    Self.session("yesterday-early", hoursAgo: 30),
+                    Self.session("late-last-night", hoursAgo: 13),
+                    Self.session("early-last-night", hoursAgo: 30),
                     Self.session("last-week", hoursAgo: 24 * 7),
                     Self.session("just-now", hoursAgo: 0.01)
                 ])
             ])
 
-            #expect(aggregation.sections.map(\.kind) == [.today, .yesterday, .earlier])
+            // Two buckets, not three: everything before today shares one, ordered by recency,
+            // because each row already carries its own relative time.
+            #expect(aggregation.sections.map(\.kind) == [.today, .earlier])
             #expect(Self.ids(aggregation.sections[0]) == ["just-now", "this-morning"])
-            #expect(Self.ids(aggregation.sections[1]) == ["yesterday-late", "yesterday-early"])
-            #expect(Self.ids(aggregation.sections[2]) == ["last-week", "last-month"])
+            #expect(Self.ids(aggregation.sections[1]) == [
+                "late-last-night", "early-last-night", "last-week", "last-month"
+            ])
         }
 
         @Test func emptySectionsAreOmitted() {
