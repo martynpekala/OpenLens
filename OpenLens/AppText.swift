@@ -312,6 +312,57 @@ enum AppText {
         "Limit resets " + date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened))
     }
     static let review = "Review"
+    static let reviewEmptyTitle = "No Sessions"
+    static let reviewEmptyDescription = "Start a chat or pick a session once one exists."
+    static let reviewUnavailableTitle = "Review Unavailable"
+    static let reviewScopeAccessibility = "Review scope"
+    static let reviewScopeSession = "Whole session"
+    static let reviewScopeUpdate = "Single update"
+    static let reviewUpdatePickerLabel = "Update"
+    static func reviewUpdateLabel(isLatest: Bool, date: String) -> String {
+        isLatest ? "\(reviewLatest) · \(date)" : date
+    }
+    static let reviewLatest = "Latest"
+    static let reviewFilesHeaderSession = "Session changes"
+    static let reviewFilesHeaderUpdate = "Update changes"
+    static let reviewNoFileChanges = "No file changes available for this selection."
+    static func reviewFileCount(_ count: Int) -> String {
+        count == 1 ? "1 file" : "\(count) files"
+    }
+    static func reviewUpdateCount(_ count: Int) -> String {
+        count == 1 ? "1 agent update" : "\(count) agent updates"
+    }
+    static func reviewFilesFooterSession(files: String, updates: String) -> String {
+        "\(files) across \(updates)"
+    }
+    static func reviewFilesFooterUpdate(files: String) -> String {
+        "\(files) in this update"
+    }
+    static let reviewUpdateFooter = "Undo only the changes introduced by this update. The session itself is kept, but the code changes from this update are removed after confirmation."
+    static let reviewRevertUpdate = "Revert update"
+    static let reviewRevertDialogTitle = "Revert changes"
+    static func reviewRevertDialogAction(_ title: String) -> String { "Revert \"\(title)\"" }
+    static let reviewRevertDialogMessage = "This will revert the selected change set from the selected review session."
+    static let reviewRevertRefreshFailed = "The revert state could not be refreshed. Pull to refresh and retry once the session is idle."
+    static let inbox = "Inbox"
+    static let inboxOpen = "Open inbox"
+    static func inboxOpenPending(_ count: Int) -> String {
+        let itemLabel = count == 1 ? "item" : "items"
+        return "Open inbox, \(count) pending \(itemLabel)"
+    }
+    static let reviewPickerHint = "Choose another session to review"
+    static func reviewPickerAccessibility(title: String, additions: Int, deletions: Int) -> String {
+        "Reviewed session, \(title), \(additions) lines added, \(deletions) lines removed"
+    }
+    static let reviewPickerLoadMore = "Load more sessions"
+    static let workspaceProjectAccessibility = "Project"
+    static func workspaceProjectAccessibilityLabel(_ title: String) -> String {
+        "\(workspaceProjectAccessibility), \(title)"
+    }
+    static let workspaceProjectHint = "Choose another project"
+    static let workspaceBranchLabel = "Branch"
+    static let workspaceWorkingTreeLabel = "Working tree"
+    static let workspaceLoadingWorkspaces = "Loading workspaces..."
     static let reasoning = "Reasoning"
     static let reconnecting = "Reconnecting..."
     static let reconnectingSubtitle = "Reconnecting to your saved server"
