@@ -182,6 +182,20 @@ actor OpenCodeClient {
         )
     }
 
+    /// List archived sessions across every directory known to the connected
+    /// server. Legacy v1 servers have no archive contract, so they report none.
+    func listArchivedSessions() async throws -> [OCSession] {
+        guard usesV2 else { return [] }
+
+        return try await getAllV2Pages(
+            endpoint: "/api/session",
+            order: "desc",
+            includesLocation: false,
+            allowsEmptyContinuationPages: true,
+            queryItems: [URLQueryItem(name: "archived", value: "true")]
+        )
+    }
+
     func getSession(id: String) async throws -> OCSession {
         if usesV2 {
             let response: OCV2Envelope<OCSession> = try await getV2(
@@ -262,6 +276,22 @@ actor OpenCodeClient {
         return try await patch("/session/\(id)", body: ["title": title])
     }
 
+    /// Archive (`archived: true`) or restore (`archived: false`) a session.
+    /// Servers acknowledge with 204; some older v2 servers silently ignore the
+    /// field, so callers must confirm the canonical state via `getSession`.
+    func setSessionArchived(id: String, archived: Bool) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Archiving a session requires a v2 OpenCode server.")
+        }
+        try await sendV2RequestDiscardingResponse(
+            method: "PATCH",
+            path: "/api/session",
+            pathParameter: id,
+            body: ["archived": archived],
+            includesLocation: false
+        )
+    }
+
     /// Advance only the idle watermark the viewer actually observed.
     func viewSessionResult(id: String, idle: Double) async throws {
         guard usesV2, idle.isFinite, idle > 0 else {
@@ -289,6 +319,19 @@ actor OpenCodeClient {
             )
         }
         return try await get("/session/status")
+    }
+
+    /// Stored integration credentials, including secret values (v2 only).
+    /// Secrets must never be logged or persisted outside the Keychain.
+    func getCredentialEntries() async throws -> [OCCredentialEntry] {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Stored credentials require a V2 server.")
+        }
+        let response: OCV2Envelope<[OCCredentialEntry]> = try await getV2(
+            "/api/credential",
+            includesLocation: false
+        )
+        return response.data
     }
 
     func abortSession(id: String) async throws -> Bool {

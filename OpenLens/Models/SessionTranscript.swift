@@ -62,6 +62,8 @@ nonisolated struct SessionContextEntry: Decodable, Identifiable, Sendable {
     let subagentResult: SubagentResult?
     let compactionStatus: String?
     let idleOutcome: String?
+    /// Provider error recorded with a failed execution (e.g. `provider.quota`).
+    let idleError: OCAPIError?
 
     nonisolated struct SubagentResult: Equatable, Sendable {
         let childID: String?
@@ -121,6 +123,7 @@ nonisolated struct SessionContextEntry: Decodable, Identifiable, Sendable {
         let status = text(.status)
         compactionStatus = kind == .compaction ? status : nil
         idleOutcome = kind == .idle ? text(.outcome) : nil
+        idleError = kind == .idle ? (try? values.decode(OCAPIError.self, forKey: .error)) : nil
         let fullDetails: String
         var outputWasTruncated = false
         switch kind {
@@ -186,8 +189,8 @@ nonisolated struct SessionContextEntry: Decodable, Identifiable, Sendable {
             case "interrupted": title = "Execution interrupted"
             default: title = "Execution ended"
             }
-            summary = ""
-            fullDetails = ""
+            summary = idleError?.message.map { StreamDisplayValue.preview($0, maximumBytes: 512) } ?? ""
+            fullDetails = idleError?.message ?? ""
         }
         if fullDetails.count > Self.maximumDetailCharacters {
             let notice = "\n\n" + joined(["Preview shortened.", outputWasTruncated ? "Output truncated." : ""])

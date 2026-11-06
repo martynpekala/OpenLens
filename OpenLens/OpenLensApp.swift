@@ -182,8 +182,11 @@ struct OpenLensApp: App {
     private let reviewService: ReviewService
     private let inboxService: InboxService
     private let workspaceService: WorkspaceService
+
+    private let workspaceNameStore: WorkspaceNameStore
     private let sessionInsightsService: SessionInsightsService
     private let gitHubStarsService: GitHubStarsService
+    private let usageQuotaService: UsageQuotaService
     private let savedConnectionsStore: SavedConnectionsStore
     private let recordedReplayStore: RecordedReplayStore
     private let chatEasterEgg: ChatEasterEggController
@@ -306,6 +309,10 @@ struct OpenLensApp: App {
             initialRouter.selectedTab = .chat
             initialRouter.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
         }
+        if screenshotModeEnabled, ScreenshotFixtures.opensArchivedSessions {
+            initialRouter.selectedTab = .chat
+            initialRouter.chatPath = [.archivedSessions]
+        }
         if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
             initialRouter.selectedTab = launchTab
         }
@@ -331,8 +338,13 @@ struct OpenLensApp: App {
         let review = ReviewService(connection: connection)
         let inbox = InboxService(connection: connection)
         let workspace = WorkspaceService(connection: connection)
+        let workspaceNames = WorkspaceNameStore()
         let sessionInsights = SessionInsightsService()
         let gitHubStars = GitHubStarsService()
+        let usageQuota = UsageQuotaService()
+        if screenshotModeEnabled {
+            ScreenshotFixtures.applyUsageQuota(to: usageQuota)
+        }
         let recordedReplayStore = RecordedReplayStore()
         let chatEasterEgg = ChatEasterEggController()
         let pendingAppActions = PendingAppActions()
@@ -348,8 +360,10 @@ struct OpenLensApp: App {
         self.reviewService = review
         self.inboxService = inbox
         self.workspaceService = workspace
+        self.workspaceNameStore = workspaceNames
         self.sessionInsightsService = sessionInsights
         self.gitHubStarsService = gitHubStars
+        self.usageQuotaService = usageQuota
         self.recordedReplayStore = recordedReplayStore
         self.chatEasterEgg = chatEasterEgg
         self.pendingAppActions = pendingAppActions
@@ -496,8 +510,10 @@ struct OpenLensApp: App {
             .environment(\.reviewService, reviewService)
             .environment(\.inboxService, inboxService)
             .environment(\.workspaceService, workspaceService)
+            .environment(\.workspaceNames, workspaceNameStore)
             .environment(\.sessionInsightsService, sessionInsightsService)
             .environment(\.gitHubStarsService, gitHubStarsService)
+            .environment(\.usageQuotaService, usageQuotaService)
             .environment(\.recordedReplayStore, recordedReplayStore)
             .environment(\.chatEasterEgg, chatEasterEgg)
             .environment(\.requestReviewPrompt, {

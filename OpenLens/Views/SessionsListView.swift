@@ -56,17 +56,24 @@ struct SessionsListView: View {
     @State private var sessionToDelete: OCSession?
     @State private var showDeleteConfirmation = false
     @State private var expandedProjectIDs = Set<String>()
+    @State private var showArchivedSessions = false
+
+    /// Chooses which swipe action a full swipe triggers on a conversation row.
+    @AppStorage(AppPreferenceKeys.fullSwipeAction) private var fullSwipeAction = SessionFullSwipeAction.archive
 
     let presentationStyle: PresentationStyle
     let selectedSessionID: String?
     var onSelect: (OCSession) -> Void
     var onDelete: (OCSession) -> Void
+    var onArchive: (OCSession) -> Void
     /// Resolves the model a new session starts with; nil uses the server default.
     var newSessionModel: @MainActor () async -> OCV2ModelRef?
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.connection) private var connection
+    @Environment(\.workspaceNames) private var workspaceNames
+    @Environment(\.openLensTheme) private var theme
 
     init(
         initialState: InitialState,
@@ -74,12 +81,14 @@ struct SessionsListView: View {
         selectedSessionID: String? = nil,
         onSelect: @escaping (OCSession) -> Void,
         onDelete: @escaping (OCSession) -> Void = { _ in },
+        onArchive: @escaping (OCSession) -> Void = { _ in },
         newSessionModel: @escaping @MainActor () async -> OCV2ModelRef? = { nil }
     ) {
         self.presentationStyle = presentationStyle
         self.selectedSessionID = selectedSessionID
         self.onSelect = onSelect
         self.onDelete = onDelete
+        self.onArchive = onArchive
         self.newSessionModel = newSessionModel
 
         switch initialState {
@@ -108,6 +117,12 @@ struct SessionsListView: View {
 
     private var isSidebar: Bool {
         presentationStyle == .sidebar
+    }
+
+    /// Archiving needs the v2 session archive contract; v1 servers never
+    /// support it, so their rows only offer deletion.
+    private var supportsArchiving: Bool {
+        connection.serverCapabilities?.protocolVersion == .v2 || ScreenshotFixtures.isEnabled
     }
 
     private var groupedSessions: [SessionProjectGroup] {
@@ -151,6 +166,13 @@ struct SessionsListView: View {
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.appBackground)
         }
+        .sheet(isPresented: $showArchivedSessions) {
+            NavigationStack {
+                ArchivedSessionsView(dismissable: true)
+            }
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.appBackground)
+        }
         .confirmationDialog(
             AppText.deleteSession,
             isPresented: $showDeleteConfirmation,
@@ -169,6 +191,11 @@ struct SessionsListView: View {
         }
         .onChange(of: sessionsService.confirmedViewedMarkers, initial: true) { _, _ in
             sessions = sessionsService.applyingConfirmedViewedMarkers(to: sessions)
+        }
+        .onChange(of: sessionsService.archiveMutationCount) {
+            // Archive mutations can happen in the archived list while this view
+            // is beneath it; reconcile the catalog when one is confirmed.
+            Task { await loadSessions() }
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
@@ -192,7 +219,10 @@ struct SessionsListView: View {
     private var presentationContent: some View {
         if isSidebar {
             VStack(spacing: 0) {
-                SessionsSidebarHeader(onCreate: presentNewSessionSheet)
+                SessionsSidebarHeader(
+                    onCreate: presentNewSessionSheet,
+                    onShowArchived: supportsArchiving ? { showArchivedSessions = true } : nil
+                )
                 sessionStateContent
             }
         } else {
@@ -211,6 +241,15 @@ struct SessionsListView: View {
                             ConnectedHostCapsule(host: host, isReconnecting: connection.isReconnecting)
                         }
                         .sharedBackgroundVisibility(.hidden)
+                    }
+
+                    if supportsArchiving {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            NavigationLink(value: RouterDestination.archivedSessions) {
+                                Image(systemName: "archivebox")
+                            }
+                            .accessibilityLabel(AppText.archivedSessions)
+                        }
                     }
                 }
         }
@@ -249,90 +288,148 @@ struct SessionsListView: View {
 
     // MARK: - Session List
 
+    /// Rows are hosted in a `List` so swipe actions behave natively. Insets and
+    /// backgrounds are cleared to keep the custom layout: project groups render
+    /// as a header row followed by its session rows.
     private var sessionList: some View {
-        ScrollView {
-            LazyVStack(spacing: isSidebar ? 12 : 18) {
-                ForEach(groupedSessions) { group in
-                    projectSection(group)
-                }
+        List {
+            ForEach(groupedSessions) { group in
+                projectSection(group)
             }
-            .padding(.horizontal, isSidebar ? 12 : 24)
-            .padding(.top, isSidebar ? 10 : 16)
-            .padding(.bottom, 16)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.top, isSidebar ? 10 : 16, for: .scrollContent)
+        .contentMargins(.bottom, 16, for: .scrollContent)
         .refreshable {
             await loadSessions()
         }
     }
 
+    @ViewBuilder
     private func projectSection(_ group: SessionProjectGroup) -> some View {
         let isExpanded = expandedProjectIDs.contains(group.id)
         let displayedSessions = isExpanded ? group.sessions : group.visibleSessions
 
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading) {
-                    HStack(alignment: .center) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
+        projectHeader(group)
 
-                        Text(group.title)
-                            .font(.system(size: isSidebar ? 15 : 18, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                            .lineLimit(1)
-
-                        Text("\u{00B7}")
-                            .font(.system(size: 12, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-
-                        Text(AppText.groupedProjectCount(group.sessions.count))
-                            .font(.system(size: 12, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                }
-
-                Spacer()
-
-                if group.hiddenSessionCount > 0 {
-                    Button {
-                        toggleProjectExpansion(group.id)
-                    } label: {
-                        Text(isExpanded ? AppText.showFewerSessions : AppText.showMoreSessions(group.hiddenSessionCount))
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appAccent)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            VStack(spacing: 0) {
-                ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
-                    Button {
-                        openedSessionIDs.insert(session.id)
-                        onSelect(session)
-                    } label: {
-                        sessionRow(session)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(role: .destructive) {
-                            sessionToDelete = session
-                            showDeleteConfirmation = true
-                        } label: {
-                            Label(AppText.delete, systemImage: "trash")
+        ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
+            sessionRowButton(session)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(
+                    top: 0,
+                    leading: isSidebar ? 12.0 : 24.0,
+                    bottom: 0,
+                    trailing: isSidebar ? 12.0 : 24.0
+                ))
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    // The first action is what a full swipe triggers; the
+                    // Settings preference decides whether that archives or
+                    // starts the delete confirmation.
+                    if supportsArchiving, fullSwipeAction == .delete {
+                        deleteSwipeButton(session)
+                        archiveSwipeButton(session)
+                    } else {
+                        if supportsArchiving {
+                            archiveSwipeButton(session)
                         }
+                        deleteSwipeButton(session)
                     }
-                    .transition(.asymmetric(
-                        insertion: .opacity
-                            .combined(with: .move(edge: .top))
-                            .combined(with: .scale(scale: 0.98, anchor: .top)),
-                        removal: .opacity
-                            .combined(with: .scale(scale: 0.98, anchor: .top))
-                    ))
+                }
+                .transition(.asymmetric(
+                    insertion: .opacity
+                        .combined(with: .move(edge: .top))
+                        .combined(with: .scale(scale: 0.98, anchor: .top)),
+                    removal: .opacity
+                        .combined(with: .scale(scale: 0.98, anchor: .top))
+                ))
+        }
+    }
+
+    private func projectHeader(_ group: SessionProjectGroup) -> some View {
+        let isExpanded = expandedProjectIDs.contains(group.id)
+
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(group.title)
+                .font(.system(size: isSidebar ? 15 : 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.appPrimary)
+                .lineLimit(1)
+
+            Text("\u{00B7}")
+                .font(theme.typography.captionRounded)
+                .foregroundStyle(Color.appSecondary)
+
+            Text(AppText.groupedProjectCount(group.sessions.count))
+                .font(theme.typography.captionRounded)
+                .foregroundStyle(Color.appSecondary)
+
+            Spacer()
+
+            if group.hiddenSessionCount > 0 {
+                Button {
+                    toggleProjectExpansion(group.id)
+                } label: {
+                    Text(isExpanded ? AppText.showFewerSessions : AppText.showMoreSessions(group.hiddenSessionCount))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appAccent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.bottom, 6)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(
+            top: isSidebar ? 12.0 : 12.0,
+            leading: isSidebar ? 12.0 : 24.0,
+            bottom: 0,
+            trailing: isSidebar ? 12.0 : 24.0
+        ))
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private func sessionRowButton(_ session: OCSession) -> some View {
+        Button {
+            openedSessionIDs.insert(session.id)
+            onSelect(session)
+        } label: {
+            sessionRow(session)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if supportsArchiving {
+                Button {
+                    archiveSession(session)
+                } label: {
+                    Label(AppText.archive, systemImage: "archivebox")
                 }
             }
-            .padding(.leading, 22)
+
+            Button(role: .destructive) {
+                sessionToDelete = session
+                showDeleteConfirmation = true
+            } label: {
+                Label(AppText.delete, systemImage: "trash")
+            }
+        }
+    }
+
+    private func archiveSwipeButton(_ session: OCSession) -> some View {
+        Button {
+            archiveSession(session)
+        } label: {
+            Label(AppText.archive, systemImage: "archivebox")
+        }
+        .tint(Color.appAccent)
+    }
+
+    private func deleteSwipeButton(_ session: OCSession) -> some View {
+        Button(role: .destructive) {
+            sessionToDelete = session
+            showDeleteConfirmation = true
+        } label: {
+            Label(AppText.delete, systemImage: "trash")
         }
     }
 
@@ -342,34 +439,39 @@ struct SessionsListView: View {
         let showsListExecutionOutcomes = connection.serverCapabilities?.protocolVersion == .v2
             || ScreenshotFixtures.showsExecutionOutcomes
 
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                SessionWorkingTitle(
-                    title: session.title.isEmpty ? AppText.titleUntitled : session.title,
-                    isWorking: isBusy
-                )
+        let showsUnreadBadge = !isBusy && session.hasUnreadResult && showsListExecutionOutcomes
 
-                if !isBusy, showsListExecutionOutcomes,
-                          let outcome = session.executionOutcomeVisibleOnSessionList() {
-                    ExecutionStatusView(state: outcome, idleTime: session.time.idle)
-                } else if !isBusy, !showsListExecutionOutcomes {
-                    Text(formattedDate(session.updatedAt))
-                        .font(.system(size: 14, design: .rounded))
-                        .foregroundStyle(Color.appSecondary)
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    SessionWorkingTitle(
+                        title: session.title.isEmpty ? AppText.titleUntitled : session.title,
+                        isWorking: isBusy
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if !isBusy, showsListExecutionOutcomes,
+                              let outcome = session.executionOutcomeVisibleOnSessionList() {
+                        ExecutionStatusView(state: outcome, idleTime: session.time.idle, isCompact: true)
+                    } else if !isBusy, !showsListExecutionOutcomes {
+                        Text(formattedDate(session.updatedAt))
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundStyle(Color.appSecondary)
+                    }
                 }
-            }
 
-            Spacer()
-
-            if !isBusy, session.hasUnreadResult, showsListExecutionOutcomes {
-                Text(AppText.unreadResult)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.appAccent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.appAccent.opacity(0.12), in: Capsule())
-                    .accessibilityLabel(AppText.unreadResultAccessibility)
-                    .accessibilityIdentifier("session.unreadResult.\(session.id)")
+                // Unread results earn their own line: the badge gets breathing
+                // room and the row itself stands taller than read rows.
+                if showsUnreadBadge {
+                    Text(AppText.unreadResult)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.appAccent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.appAccent.opacity(0.12), in: Capsule())
+                        .accessibilityLabel(AppText.unreadResultAccessibility)
+                        .accessibilityIdentifier("session.unreadResult.\(session.id)")
+                }
             }
 
             if !isSidebar {
@@ -392,7 +494,7 @@ struct SessionsListView: View {
 
     private var emptyState: some View {
         VStack(spacing: 20) {
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: theme.radius.card)
                 .fill(Color.appTertiary)
                 .frame(width: 72, height: 72)
                 .overlay {
@@ -412,19 +514,10 @@ struct SessionsListView: View {
                     .multilineTextAlignment(.center)
             }
 
-            Button {
+            Button(AppText.newSession) {
                 presentNewSessionSheet()
-            } label: {
-                Text(AppText.newSession)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.appOnAccent)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 13)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14)
-                            .fill(Color.appAccent)
-                    )
             }
+            .primaryCTAStyle()
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -519,6 +612,21 @@ struct SessionsListView: View {
         }
     }
 
+    private func archiveSession(_ session: OCSession) {
+        Task {
+            do {
+                try await sessionsService.archiveSession(session)
+                outcomeRefreshGeneration &+= 1
+                if case .loading = viewState { viewState = .loaded }
+                sessions.removeAll { $0.id == session.id }
+                pruneExpandedProjects(using: sessions)
+                onArchive(session)
+            } catch {
+                viewState = .error(error.localizedDescription)
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private static let relativeDateFormatter: RelativeDateTimeFormatter = {
@@ -561,6 +669,11 @@ struct SessionsListView: View {
     }
 
     private func projectTitle(for session: OCSession) -> String {
+        if let directory = normalizedDirectory(for: session),
+           let customName = workspaceNames.customName(forDirectory: directory) {
+            return customName
+        }
+
         if let directory = normalizedDirectory(for: session) {
             let lastComponent = URL(fileURLWithPath: directory).lastPathComponent
             if !lastComponent.isEmpty {
@@ -589,6 +702,7 @@ struct SessionsListView: View {
 
 private struct SessionsSidebarHeader: View {
     let onCreate: () -> Void
+    var onShowArchived: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -597,6 +711,18 @@ private struct SessionsSidebarHeader: View {
                 .foregroundStyle(Color.appSecondary)
 
             Spacer()
+
+            if let onShowArchived {
+                Button(action: onShowArchived) {
+                    Image(systemName: "archivebox")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.appPrimary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppText.archivedSessions)
+            }
 
             Button(action: onCreate) {
                 Image(systemName: "plus")
@@ -652,6 +778,7 @@ private struct NewSessionSheet: View {
     @Environment(\.savedConnections) private var savedConnections
     @Environment(\.sessionsService) private var sessionsService
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.openLensTheme) private var theme
 
     @State private var title = ""
     @State private var workspaceState: WorkspaceLoadState = .idle
@@ -758,7 +885,7 @@ private struct NewSessionSheet: View {
     private var titleSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(AppText.newSessionPlaceholder)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .font(theme.typography.sectionLabel)
                 .foregroundStyle(Color.appSecondary)
                 .textCase(.uppercase)
 
@@ -770,9 +897,9 @@ private struct NewSessionSheet: View {
                 .autocorrectionDisabled(false)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 13)
-                .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous)
                         .stroke(Color.appSeparator, lineWidth: 1)
                 }
         }
@@ -782,7 +909,7 @@ private struct NewSessionSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(AppText.workspace)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .font(theme.typography.sectionLabel)
                     .foregroundStyle(Color.appSecondary)
                     .textCase(.uppercase)
 
@@ -829,10 +956,10 @@ private struct NewSessionSheet: View {
                 )
             } label: {
                 Label(AppText.browseFolders, systemImage: "folder.badge.plus")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .font(theme.typography.rowTitleEmphasized)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14)
-                    .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous))
             }
             .buttonStyle(.plain)
             .foregroundStyle(Color.appAccent)
@@ -846,13 +973,13 @@ private struct NewSessionSheet: View {
             ProgressView()
                 .controlSize(.small)
                 .tint(Color.appAccent)
-            Text("Loading workspaces...")
+            Text(AppText.workspaceLoadingWorkspaces)
                 .font(.system(size: 14, design: .rounded))
                 .foregroundStyle(Color.appSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous))
     }
 
     private var workspaceOptionsList: some View {
@@ -868,9 +995,9 @@ private struct NewSessionSheet: View {
                 }
             }
         }
-        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: theme.radius.listGroup, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.radius.listGroup, style: .continuous)
                 .stroke(Color.appSeparator, lineWidth: 1)
         }
     }
@@ -886,12 +1013,12 @@ private struct NewSessionSheet: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(iconTint(for: option))
                     .frame(width: 28, height: 28)
-                    .background(iconTint(for: option).opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(iconTint(for: option).opacity(0.12), in: RoundedRectangle(cornerRadius: theme.radius.iconTile, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         Text(option.title)
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .font(theme.typography.rowTitleEmphasized)
                             .foregroundStyle(option.canCreateSession ? Color.appPrimary : Color.appSecondary)
                             .lineLimit(1)
 
@@ -960,7 +1087,7 @@ private struct NewSessionSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
-        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: theme.radius.rowHighlight, style: .continuous))
     }
 
     private func iconName(for option: WorkspaceSelectionOption) -> String {
@@ -1072,7 +1199,7 @@ private struct ConnectedHostCapsule: View {
     let isReconnecting: Bool
 
     var body: some View {
-        HStack(spacing: 6) {
+        GlassToolbarCapsule(isInteractive: false) {
             Circle()
                 .fill(isReconnecting ? Color.appWarning : Color.appSuccess)
                 .frame(width: 7, height: 7)
@@ -1082,9 +1209,6 @@ private struct ConnectedHostCapsule: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .glassEffect(.regular, in: Capsule())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(AppText.sessions), \(host)")
     }

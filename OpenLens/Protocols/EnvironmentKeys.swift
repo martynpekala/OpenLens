@@ -71,12 +71,20 @@ private struct WorkspaceServiceKey: EnvironmentKey {
     }()
 }
 
+private struct WorkspaceNameStoreKey: EnvironmentKey {
+    static let defaultValue: WorkspaceNameStore = WorkspaceNameStore()
+}
+
 private struct SessionInsightsServiceKey: EnvironmentKey {
     static let defaultValue: SessionInsightsService = SessionInsightsService()
 }
 
 private struct GitHubStarsServiceKey: EnvironmentKey {
     static let defaultValue: GitHubStarsService = GitHubStarsService()
+}
+
+private struct UsageQuotaServiceKey: EnvironmentKey {
+    static let defaultValue: UsageQuotaService = UsageQuotaService()
 }
 
 private struct RecordedReplayStoreKey: EnvironmentKey {
@@ -144,6 +152,11 @@ extension EnvironmentValues {
         set { self[WorkspaceServiceKey.self] = newValue }
     }
 
+    var workspaceNames: WorkspaceNameStore {
+        get { self[WorkspaceNameStoreKey.self] }
+        set { self[WorkspaceNameStoreKey.self] = newValue }
+    }
+
     var sessionInsightsService: SessionInsightsService {
         get { self[SessionInsightsServiceKey.self] }
         set { self[SessionInsightsServiceKey.self] = newValue }
@@ -152,6 +165,11 @@ extension EnvironmentValues {
     var gitHubStarsService: GitHubStarsService {
         get { self[GitHubStarsServiceKey.self] }
         set { self[GitHubStarsServiceKey.self] = newValue }
+    }
+
+    var usageQuotaService: UsageQuotaService {
+        get { self[UsageQuotaServiceKey.self] }
+        set { self[UsageQuotaServiceKey.self] = newValue }
     }
 
     var recordedReplayStore: RecordedReplayStore {

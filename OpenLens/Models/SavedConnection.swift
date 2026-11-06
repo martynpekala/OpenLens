@@ -26,6 +26,7 @@ enum ModelQuickAction: String, CaseIterable, Hashable, Identifiable {
     case code
     case review
     case prsAndStuff
+    case free
 
     var id: String { rawValue }
 
@@ -34,6 +35,7 @@ enum ModelQuickAction: String, CaseIterable, Hashable, Identifiable {
         case .code: AppText.code
         case .review: AppText.review
         case .prsAndStuff: AppText.prsAndStuff
+        case .free: AppText.free
         }
     }
 
@@ -42,6 +44,7 @@ enum ModelQuickAction: String, CaseIterable, Hashable, Identifiable {
         case .code: "chevron.left.forwardslash.chevron.right"
         case .review: "checkmark.circle"
         case .prsAndStuff: "arrow.triangle.merge"
+        case .free: "gift"
         }
     }
 }

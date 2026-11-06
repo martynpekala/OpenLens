@@ -22,6 +22,7 @@ enum AppText {
     static let browseCapturesSubtitle = "Replay saved assistant turns without a live server"
     static let cancel = "Cancel"
     static let code = "Code"
+    static let free = "Free"
     static let connect = "Connect"
     static let connected = "Connected"
     static let connecting = "Connecting..."
@@ -76,6 +77,11 @@ enum AppText {
     static let delete = "Delete"
     static let deleteSessionMessage = "This will permanently delete the session and all its messages."
     static let deleteSession = "Delete Session"
+    static let archive = "Archive"
+    static let archivedSessions = "Archived"
+    static let archivedSessionsEmptyMessage = "Conversations you archive stay here until you restore or delete them."
+    static let archivedSessionsEmptyTitle = "No Archived Conversations"
+    static let unarchive = "Unarchive"
     static let developer = "Developer"
     static let deny = "Deny"
     static let sessionSummaryButton = "Catch up"
@@ -296,7 +302,67 @@ enum AppText {
     static let responseGenerating = "Generating"
     static let responseStopped = "Stopped"
     static let responseStopping = "Stopping..."
+    static let responseTurnFailed = "The assistant response failed."
+    static let retrying = "Retrying…"
+    static func retryingIn(_ duration: String) -> String { "Retrying in \(duration)" }
+    static func retryAttempt(_ attempt: Int) -> String { "attempt \(attempt)" }
+    static let usageLimitReached = "Usage limit reached"
+    static let usageLimitNoResetTime = "The provider usage limit was reached. Wait for the limit to reset before sending again."
+    static func usageLimitResetsAt(_ date: Date) -> String {
+        "Limit resets " + date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened))
+    }
     static let review = "Review"
+    static let reviewEmptyTitle = "No Sessions"
+    static let reviewEmptyDescription = "Start a chat or pick a session once one exists."
+    static let reviewUnavailableTitle = "Review Unavailable"
+    static let reviewScopeAccessibility = "Review scope"
+    static let reviewScopeSession = "Whole session"
+    static let reviewScopeUpdate = "Single update"
+    static let reviewUpdatePickerLabel = "Update"
+    static func reviewUpdateLabel(isLatest: Bool, date: String) -> String {
+        isLatest ? "\(reviewLatest) · \(date)" : date
+    }
+    static let reviewLatest = "Latest"
+    static let reviewFilesHeaderSession = "Session changes"
+    static let reviewFilesHeaderUpdate = "Update changes"
+    static let reviewNoFileChanges = "No file changes available for this selection."
+    static func reviewFileCount(_ count: Int) -> String {
+        count == 1 ? "1 file" : "\(count) files"
+    }
+    static func reviewUpdateCount(_ count: Int) -> String {
+        count == 1 ? "1 agent update" : "\(count) agent updates"
+    }
+    static func reviewFilesFooterSession(files: String, updates: String) -> String {
+        "\(files) across \(updates)"
+    }
+    static func reviewFilesFooterUpdate(files: String) -> String {
+        "\(files) in this update"
+    }
+    static let reviewUpdateFooter = "Undo only the changes introduced by this update. The session itself is kept, but the code changes from this update are removed after confirmation."
+    static let reviewRevertUpdate = "Revert update"
+    static let reviewRevertDialogTitle = "Revert changes"
+    static func reviewRevertDialogAction(_ title: String) -> String { "Revert \"\(title)\"" }
+    static let reviewRevertDialogMessage = "This will revert the selected change set from the selected review session."
+    static let reviewRevertRefreshFailed = "The revert state could not be refreshed. Pull to refresh and retry once the session is idle."
+    static let inbox = "Inbox"
+    static let inboxOpen = "Open inbox"
+    static func inboxOpenPending(_ count: Int) -> String {
+        let itemLabel = count == 1 ? "item" : "items"
+        return "Open inbox, \(count) pending \(itemLabel)"
+    }
+    static let reviewPickerHint = "Choose another session to review"
+    static func reviewPickerAccessibility(title: String, additions: Int, deletions: Int) -> String {
+        "Reviewed session, \(title), \(additions) lines added, \(deletions) lines removed"
+    }
+    static let reviewPickerLoadMore = "Load more sessions"
+    static let workspaceProjectAccessibility = "Project"
+    static func workspaceProjectAccessibilityLabel(_ title: String) -> String {
+        "\(workspaceProjectAccessibility), \(title)"
+    }
+    static let workspaceProjectHint = "Choose another project"
+    static let workspaceBranchLabel = "Branch"
+    static let workspaceWorkingTreeLabel = "Working tree"
+    static let workspaceLoadingWorkspaces = "Loading workspaces..."
     static let reasoning = "Reasoning"
     static let reconnecting = "Reconnecting..."
     static let reconnectingSubtitle = "Reconnecting to your saved server"
@@ -351,6 +417,25 @@ enum AppText {
     static let settingsHapticsSubtitle = "Subtle feedback for agent events"
     static let settingsLiveActivities = "Live Activities"
     static let settingsLiveActivitiesSubtitle = "Show agent progress on the Lock Screen"
+    static let settingsFullSwipeAction = "Full Swipe Action"
+    static let settingsFullSwipeActionSubtitle = "What a full swipe does on a conversation"
+    static let settingsUsageLimits = "Usage Limits"
+    static let settingsUsageLimitsSubtitle = "Track remaining provider coding-plan usage"
+    static let settingsUsagePlan = "Plan"
+    static let settingsUsageReadingKey = "Reading key from server"
+    static let settingsUsageZaiOnlyFooter = "Currently supports z.ai / BigModel GLM coding plans only. The API key is read automatically from your connected OpenCode server (v2) and stored in your Keychain."
+    static let settingsUsageImportNoServer = "Connect to your OpenCode server first."
+    static let settingsUsageImportNotFound = "No z.ai / BigModel API key found in the server's stored credentials."
+    static let settingsUsageImportUnsupported = "Stored credentials need a V2 OpenCode server."
+    static let settingsUsageImportFailed = "Couldn't read credentials from the server."
+    static let settingsUsageRefresh = "Refresh Usage"
+    static let settingsUsageKeyRejected = "This API key can't read usage limits. It is invalid or lacks the required grants — check the key's permissions in your provider console."
+    static let settingsUsageNoLimits = "The key is valid, but it reports no usage limits. The account may have no coding plan, or the key lacks usage grants."
+    static let settingsUsageFailed = "Couldn't load usage limits."
+    static let settingsUsagePercentUsed = "used"
+    static let quotaWindow5Hour = "5-Hour Window"
+    static let quotaWindowWeekly = "Weekly Window"
+    static let quotaWindowUsage = "Usage Window"
     static let settingsServerEventsStreaming = "Streaming"
     static let settingsServerEventsUnavailable = "Unavailable"
     static let settingsWorktree = "Worktree"

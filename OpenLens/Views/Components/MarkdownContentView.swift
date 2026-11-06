@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Renders markdown text as native SwiftUI views.
-/// Supports: code blocks, headings, lists, and inline formatting via AttributedString.
+/// Supports: code blocks, headings, lists, tables, and inline formatting via AttributedString.
 ///
 /// Long messages are automatically truncated to `initialBlockLimit` blocks.
 /// The user can tap "Show more" to reveal additional content incrementally.
@@ -178,6 +178,37 @@ struct MarkdownContentView: View {
         case unorderedList([ListFragment])
         case orderedList([ListFragment])
         case blockquote([TextFragment])
+        case table(Table)
+    }
+
+    /// Horizontal alignment for a parsed table column, taken from the
+    /// delimiter row's colons (`:--`, `:-:`, `--:`).
+    enum TableAlignment {
+        case leading
+        case center
+        case trailing
+    }
+
+    /// One cell of a parsed table. Inline markdown is resolved at parse time,
+    /// like every other block's text.
+    struct TableCell: Identifiable {
+        let id: Int
+        let attributed: AttributedString?
+        let raw: String
+    }
+
+    /// A header or body row, always sized to the table's column count so
+    /// rows with missing or extra cells still render in alignment.
+    struct TableRow {
+        let cells: [TableCell]
+    }
+
+    /// A parsed GFM table ready for bounded rendering.
+    struct Table {
+        let header: TableRow
+        let rows: [TableRow]
+        let alignments: [TableAlignment]
+        let columnWidths: [CGFloat]
     }
 
     /// A bounded piece of prose that can be laid out independently. Quotes use
@@ -333,13 +364,21 @@ struct MarkdownContentView: View {
                 continue
             }
 
+            if let (table, endIndex) = parseTable(at: i, in: lines) {
+                blocks.append(Block(id: nextID, kind: .table(table)))
+                nextID += 1
+                i = endIndex
+                continue
+            }
+
             // Paragraph: collect consecutive non-special lines
             var paraLines: [String] = []
             while i < lines.count {
                 let current = lines[i]
                 let trimmed = current.trimmingCharacters(in: .whitespaces)
                 if trimmed.isEmpty || current.hasPrefix("```") || current.hasPrefix("#") ||
-                   current.hasPrefix("> ") || current.hasPrefix("- ") || current.hasPrefix("* ") {
+                   current.hasPrefix("> ") || current.hasPrefix("- ") || current.hasPrefix("* ") ||
+                   tableStart(at: i, in: lines) != nil {
                     break
                 }
                 paraLines.append(current)
@@ -356,6 +395,156 @@ struct MarkdownContentView: View {
         }
 
         return blocks
+    }
+
+    // MARK: - Table parsing
+
+    /// GFM table detection: a header row containing a pipe, followed by a
+    /// delimiter row of hyphen/colon cells with a matching cell count. Like
+    /// GitHub, a table may interrupt a paragraph, so the paragraph collector
+    /// also consults this before swallowing a line.
+    private static func tableStart(
+        at index: Int,
+        in lines: [String]
+    ) -> (cells: [String], alignments: [TableAlignment])? {
+        guard index + 1 < lines.count else { return nil }
+        guard lines[index].contains("|") else { return nil }
+
+        let headerCells = splitTableCells(lines[index])
+        guard headerCells.contains(where: { !$0.isEmpty }) else { return nil }
+
+        guard let alignments = tableAlignments(from: splitTableCells(lines[index + 1])),
+              alignments.count == headerCells.count else { return nil }
+
+        return (headerCells, alignments)
+    }
+
+    /// Delimiter cells may only contain hyphens and colons, with at least one
+    /// hyphen each. Colons select the column alignment.
+    private static func tableAlignments(from cells: [String]) -> [TableAlignment]? {
+        guard !cells.isEmpty else { return nil }
+
+        var alignments: [TableAlignment] = []
+        for cell in cells {
+            let trimmed = cell.trimmingCharacters(in: .whitespaces)
+            guard trimmed.contains("-"),
+                  trimmed.allSatisfy({ $0 == "-" || $0 == ":" }) else { return nil }
+
+            if trimmed.count > 1, trimmed.hasPrefix(":"), trimmed.hasSuffix(":") {
+                alignments.append(.center)
+            } else if trimmed.hasSuffix(":") {
+                alignments.append(.trailing)
+            } else {
+                alignments.append(.leading)
+            }
+        }
+        return alignments
+    }
+
+    /// Splits one table line into cells: strips the optional outer pipes and
+    /// splits on unescaped pipes. An escaped `\|` stays inside its cell as `|`.
+    private static func splitTableCells(_ line: String) -> [String] {
+        var content = line.trimmingCharacters(in: .whitespaces)
+        if content.hasPrefix("|") {
+            content = String(content.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }
+        if content.hasSuffix("|") {
+            content = String(content.dropLast()).trimmingCharacters(in: .whitespaces)
+        }
+
+        var cells: [String] = []
+        var cell = ""
+        var isEscaped = false
+        for character in content {
+            if isEscaped {
+                if character == "|" {
+                    cell.append("|")
+                } else {
+                    cell.append("\\")
+                    cell.append(character)
+                }
+                isEscaped = false
+            } else if character == "\\" {
+                isEscaped = true
+            } else if character == "|" {
+                cells.append(cell.trimmingCharacters(in: .whitespaces))
+                cell = ""
+            } else {
+                cell.append(character)
+            }
+        }
+        if isEscaped {
+            cell.append("\\")
+        }
+        cells.append(cell.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    /// Parses a table starting at `index`: header, delimiter, then every
+    /// consecutive non-empty pipe row. Returns the parsed table and the index
+    /// of the first unconsumed line.
+    private static func parseTable(at index: Int, in lines: [String]) -> (table: Table, endIndex: Int)? {
+        guard let start = tableStart(at: index, in: lines) else { return nil }
+
+        var bodyLines: [String] = []
+        var lineIndex = index + 2
+        while lineIndex < lines.count {
+            let line = lines[lineIndex]
+            if line.trimmingCharacters(in: .whitespaces).isEmpty || !line.contains("|") {
+                break
+            }
+            if line.hasPrefix("```") || line.hasPrefix("#") || line.hasPrefix("> ") ||
+                line.hasPrefix("- ") || line.hasPrefix("* ") {
+                break
+            }
+            bodyLines.append(line)
+            lineIndex += 1
+        }
+
+        let columnCount = start.cells.count
+        let header = TableRow(
+            cells: start.cells.enumerated().map { column, raw in
+                TableCell(id: column, attributed: makeAttributed(raw), raw: raw)
+            }
+        )
+
+        let bodyRows = bodyLines.map(splitTableCells)
+        var columnCharCounts = start.cells.map(\.count)
+        for cells in bodyRows {
+            for column in 0..<min(cells.count, columnCount) {
+                columnCharCounts[column] = max(columnCharCounts[column], cells[column].count)
+            }
+        }
+
+        let rows = bodyRows.map { cells in
+            TableRow(
+                cells: (0..<columnCount).map { column in
+                    let raw = column < cells.count ? cells[column] : ""
+                    return TableCell(id: column, attributed: makeAttributed(raw), raw: raw)
+                }
+            )
+        }
+
+        let table = Table(
+            header: header,
+            rows: rows,
+            alignments: start.alignments,
+            columnWidths: columnCharCounts.map(tableColumnWidth(characterCount:))
+        )
+        return (table, lineIndex)
+    }
+
+    /// Column width from the longest cell so every row lines up. Wide columns
+    /// clamp instead of forcing an unbounded layout pass; the table scrolls
+    /// horizontally when the columns together exceed the available width.
+    private static let tableMinimumColumnWidth: CGFloat = 64
+    private static let tableMaximumColumnWidth: CGFloat = 280
+    private static let tablePerCharacterWidth: CGFloat = 8
+    private static let tableColumnPadding: CGFloat = 16
+
+    private static func tableColumnWidth(characterCount: Int) -> CGFloat {
+        let width = CGFloat(characterCount) * tablePerCharacterWidth + tableColumnPadding
+        return min(max(width, tableMinimumColumnWidth), tableMaximumColumnWidth)
     }
 
     private static func textFragments(from text: String) -> [TextFragment] {
@@ -489,6 +678,13 @@ struct MarkdownContentView: View {
         case .blockquote(let fragments):
             MarkdownBlockquoteView(
                 fragments: fragments,
+                usesRetroTypography: usesRetroTypography
+            )
+
+        case .table(let table):
+            MarkdownTableBlockView(
+                table: table,
+                foregroundColor: foregroundColor,
                 usesRetroTypography: usesRetroTypography
             )
         }
@@ -704,6 +900,93 @@ private struct MarkdownCodeBlockView: View {
             Button(AppText.copyCode) {
                 UIPasteboard.general.string = chunks.joined()
             }
+        }
+    }
+}
+
+/// A parsed table renders a bounded prefix of its rows inside a horizontal
+/// scroll view, so a generated report table cannot force one unbounded layout
+/// pass while the transcript scrolls.
+private struct MarkdownTableBlockView: View {
+    private static let initialRowLimit = 12
+    private static let expandStep = 20
+
+    let table: MarkdownContentView.Table
+    let foregroundColor: Color
+    let usesRetroTypography: Bool
+
+    @State private var visibleRowCount: Int?
+
+    private var shownRowCount: Int {
+        min(visibleRowCount ?? Self.initialRowLimit, table.rows.count)
+    }
+
+    private var isTruncated: Bool {
+        shownRowCount < table.rows.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Row overlays draw the separators so each line always
+                    // spans exactly the row's (i.e. the table's) width.
+                    rowView(table.header, isHeader: true)
+                        .overlay(alignment: .bottom) {
+                            Rectangle()
+                                .fill(Color(.systemGray3))
+                                .frame(height: 1)
+                        }
+
+                    ForEach(Array(table.rows.prefix(shownRowCount).enumerated()), id: \.offset) { _, row in
+                        rowView(row, isHeader: false)
+                            .overlay(alignment: .bottom) {
+                                Rectangle()
+                                    .fill(Color(.systemGray5))
+                                    .frame(height: 1)
+                            }
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
+
+            if isTruncated {
+                Button {
+                    visibleRowCount = min(shownRowCount + Self.expandStep, table.rows.count)
+                } label: {
+                    Text(AppText.markdownShowMore(table.rows.count - shownRowCount))
+                        .font(usesRetroTypography ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func rowView(_ row: MarkdownContentView.TableRow, isHeader: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(Array(row.cells.enumerated()), id: \.offset) { column, cell in
+                MarkdownInlineText(
+                    attributed: cell.attributed,
+                    fallback: cell.raw,
+                    foregroundColor: foregroundColor,
+                    usesRetroTypography: usesRetroTypography
+                )
+                .bold(isHeader)
+                .padding(.vertical, 6)
+                .frame(
+                    width: column < table.columnWidths.count ? table.columnWidths[column] : nil,
+                    alignment: frameAlignment(for: column)
+                )
+            }
+        }
+    }
+
+    private func frameAlignment(for column: Int) -> Alignment {
+        guard column < table.alignments.count else { return Alignment.leading }
+        switch table.alignments[column] {
+        case .leading: return Alignment.leading
+        case .center: return Alignment.center
+        case .trailing: return Alignment.trailing
         }
     }
 }

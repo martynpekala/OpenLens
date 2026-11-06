@@ -45,7 +45,9 @@ struct OpenLensColorTokens {
 struct OpenLensTypographyTokens {
     let sectionLabel = Font.system(size: 12, weight: .semibold, design: .rounded)
     let rowTitle = Font.system(size: 15, weight: .medium, design: .rounded)
+    let rowTitleEmphasized = Font.system(size: 15, weight: .semibold, design: .rounded)
     let rowSubtitle = Font.system(size: 13)
+    let captionRounded = Font.system(size: 12, design: .rounded)
     let body = Font.system(size: 15)
 }
 
@@ -61,6 +63,8 @@ struct OpenLensSpacingTokens {
 struct OpenLensRadiusTokens {
     let control: CGFloat = 14
     let iconTile: CGFloat = 10
+    let rowHighlight: CGFloat = 12
+    let listGroup: CGFloat = 16
     let card: CGFloat = 20
     let largeCard: CGFloat = 24
     let heroCard: CGFloat = 36
