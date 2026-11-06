@@ -27,6 +27,10 @@ final class SessionsService {
     private var viewedMarkers: [String: Double] = [:]
     private var viewedClientID: ObjectIdentifier?
 
+    /// Bumped after each server-confirmed archive mutation so session lists can
+    /// reconcile their catalog (a restored conversation reappears, for example).
+    private(set) var archiveMutationCount = 0
+
     var confirmedViewedMarkers: [String: Double] {
         guard let client = connection.client, viewedClientID == ObjectIdentifier(client) else { return [:] }
         return viewedMarkers
@@ -184,6 +188,80 @@ final class SessionsService {
         let _ = try await client.deleteSession(id: session.id)
     }
 
+    // MARK: - Archive
+
+    /// Archive a session, hiding it from the active list without deleting it.
+    ///
+    /// The response can be lost after the server commits, and older v2 servers
+    /// acknowledge the mutation while silently ignoring the field. Always
+    /// reconcile the canonical archive state; never hide a row the server has
+    /// not confirmed archiving.
+    func archiveSession(_ session: OCSession) async throws {
+        if ScreenshotFixtures.isEnabled {
+            return
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        try await client.setSessionArchived(id: session.id, archived: true)
+        try Task.checkCancellation()
+        let recovered = try await getSession(id: session.id)
+        guard recovered.id == session.id, recovered.isArchived else {
+            throw OpenCodeError.invalidPayload("The server has not confirmed archiving this session.")
+        }
+        archiveMutationCount &+= 1
+    }
+
+    /// Restore an archived session, returning the canonical session.
+    ///
+    /// Mirrors `archiveSession(_:):` older v2 servers acknowledge the mutation
+    /// while silently ignoring the field, so the restored state is confirmed
+    /// against the canonical session before the row leaves the archive.
+    func unarchiveSession(_ session: OCSession) async throws -> OCSession {
+        if ScreenshotFixtures.isEnabled {
+            return session
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        try await client.setSessionArchived(id: session.id, archived: false)
+        try Task.checkCancellation()
+        let recovered = try await getSession(id: session.id)
+        guard recovered.id == session.id, !recovered.isArchived else {
+            throw OpenCodeError.invalidPayload("The server has not confirmed restoring this session.")
+        }
+        archiveMutationCount &+= 1
+        return recovered
+    }
+
+    /// List archived sessions across every directory known to the connected
+    /// server. Legacy v1 servers have no archive contract, so they report none.
+    ///
+    /// Older v2 servers acknowledge the `archived` filter by ignoring it and
+    /// returning every session, so the decoded rows are confirmed against the
+    /// canonical archive state instead of trusting the filter.
+    func listArchivedSessions() async throws -> [OCSession] {
+        if ScreenshotFixtures.isEnabled {
+            return []
+        }
+
+        guard let client = connection.client else {
+            throw OpenCodeError.notConnected
+        }
+
+        let sessions = try await client.listArchivedSessions()
+        return resolvingProjectDirectories(in: sessions)
+            .filter { $0.isArchived }
+            .filter { $0.parentID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false }
+            .sorted {
+                ($0.time.archived ?? $0.time.updated) > ($1.time.archived ?? $1.time.updated)
+            }
+    }
+
     // MARK: - Update Title
 
     /// Rename a session.
@@ -253,15 +331,17 @@ final class SessionsService {
     static func rootSessions(in sessions: [OCSession]) -> [OCSession] {
         sessions.filter { session in
             session.parentID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+                && !session.isArchived
         }
     }
 
     private func visibleSessions(from sessions: [OCSession]) -> [OCSession] {
-        let rootSessions = sessions.filter { session in
+        let activeSessions = sessions.filter { !$0.isArchived }
+        let rootSessions = activeSessions.filter { session in
             session.parentID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
         }
 
-        let source = rootSessions.isEmpty ? sessions : rootSessions
+        let source = rootSessions.isEmpty ? activeSessions : rootSessions
         return source.sorted { $0.updatedAt > $1.updatedAt }
     }
 
