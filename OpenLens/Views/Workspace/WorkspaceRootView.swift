@@ -50,7 +50,7 @@ struct WorkspaceRootView: View {
             case .info:
                 .secondary
             case .error:
-                .orange
+                Color.appWarning
             }
         }
     }
@@ -59,7 +59,9 @@ struct WorkspaceRootView: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.connection) private var connection
+    @Environment(\.serverRegistry) private var registry
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.workspaceNames) private var workspaceNames
     @Environment(\.savedConnections) private var savedConnections
 
     @State private var viewState: ViewState = .idle
@@ -82,6 +84,7 @@ struct WorkspaceRootView: View {
     @State private var showsCommands = false
     @State private var activityRefreshToken = 0
     @State private var selectedDiffFile: ReviewFileChange?
+    @State private var showsAllChangedFiles = false
     @State private var pendingWorkspaceAction: PendingWorkspaceAction?
     @State private var showsBranchPrompt = false
     @State private var branchNameDraft = ""
@@ -100,6 +103,7 @@ struct WorkspaceRootView: View {
                 content
             }
         }
+        .background(Color.appBackground)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             projectToolbarItem
@@ -111,6 +115,7 @@ struct WorkspaceRootView: View {
             browserPath = "."
             selectedDiffFile = nil
             pendingWorkspaceAction = nil
+            showsAllChangedFiles = false
         }
         .task(id: chatClient.currentSession?.id) {
             guard chatClient.currentSession != nil else { return }
@@ -179,13 +184,15 @@ struct WorkspaceRootView: View {
 
     private var content: some View {
         Form {
+            workspaceIdentitySection
+
             if let errorMessage {
                 Section {
                     Label {
                         Text(errorMessage)
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Color.appWarning)
                     }
                 }
             }
@@ -195,6 +202,7 @@ struct WorkspaceRootView: View {
             changedFilesSection
             filesSection
         }
+        .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
@@ -206,7 +214,7 @@ struct WorkspaceRootView: View {
                 Menu {
                     Picker("Project", selection: projectSelection) {
                         ForEach(workspaceOptions) { option in
-                            Text(option.title)
+                            Text(pickerTitle(for: option))
                                 .tag(option.id)
                         }
                     }
@@ -214,6 +222,7 @@ struct WorkspaceRootView: View {
                 } label: {
                     WorkspaceProjectTitleCapsule(
                         title: currentWorkspaceTitle,
+                        serverTag: registry.activeServerTagWhenMultiServer,
                         isSwitching: switchingProjectID != nil,
                         isSelectable: true
                     )
@@ -223,6 +232,7 @@ struct WorkspaceRootView: View {
             } else {
                 WorkspaceProjectTitleCapsule(
                     title: currentWorkspaceTitle,
+                    serverTag: registry.activeServerTagWhenMultiServer,
                     isSwitching: switchingProjectID != nil,
                     isSelectable: false
                 )
@@ -242,24 +252,70 @@ struct WorkspaceRootView: View {
         )
     }
 
+    // MARK: - Workspace Identity
+
+    /// Names the active folder: the full path for reference first, then an
+    /// optional personalized name that replaces the folder name everywhere.
+    @ViewBuilder
+    private var workspaceIdentitySection: some View {
+        if let directory = activeWorkspaceDirectory {
+            Section {
+                pathRow("Path", value: snapshot.pathInfo?.directory?.nilIfBlank ?? directory)
+
+                LabeledContent("Name") {
+                    TextField(
+                        WorkspaceSelectionBuilder.displayName(for: directory),
+                        text: workspaceNameBinding(for: directory)
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .frame(maxWidth: 240, alignment: .trailing)
+                    .lineLimit(1)
+                }
+            } header: {
+                Text("Workspace")
+            } footer: {
+                Text("Personalize this folder to recognize it faster. The name appears in Sessions and the chat header; leave it empty to use the folder name.")
+            }
+        }
+    }
+
+    private func workspaceNameBinding(for directory: String) -> Binding<String> {
+        Binding(
+            get: { workspaceNames.customName(forDirectory: directory) ?? "" },
+            set: { workspaceNames.setCustomName($0, forDirectory: directory) }
+        )
+    }
+
+    /// The directory the active workspace is identified by — the same key the
+    /// Sessions list and chat header use for personalized names.
+    private var activeWorkspaceDirectory: String? {
+        WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.directory)
+            ?? WorkspaceSelectionBuilder.normalizedDirectory(snapshot.currentProject?.worktree)
+            ?? WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.worktree)
+    }
+
     // MARK: - Source Control
 
     private var sourceControlSection: some View {
         Section {
-            LabeledContent("Branch") {
+            LabeledContent(AppText.workspaceBranchLabel) {
                 Text(currentBranch)
                     .font(.body.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            LabeledContent("Files", value: "\(workingTreeSummary.fileCount)")
-            LabeledContent("Added") {
-                Text("+\(workingTreeSummary.additions)")
-                    .foregroundStyle(.green)
-            }
-            LabeledContent("Removed") {
-                Text("-\(workingTreeSummary.deletions)")
-                    .foregroundStyle(.red)
+
+            LabeledContent(AppText.workspaceWorkingTreeLabel) {
+                HStack(spacing: 8) {
+                    Text("\(workingTreeSummary.fileCount)")
+                        .foregroundStyle(.secondary)
+                    Text("+\(workingTreeSummary.additions)")
+                        .foregroundStyle(Color.appSuccess)
+                    Text("-\(workingTreeSummary.deletions)")
+                        .foregroundStyle(Color.appDanger)
+                }
             }
 
             if let workingTreeStatusNotice {
@@ -312,19 +368,36 @@ struct WorkspaceRootView: View {
         }
     }
 
+    // MARK: - Changed Files
+
+    /// Collapsed changed-file rows; big working trees otherwise clobber the
+    /// page's scroll performance.
+    private static let changedFilesCollapsedLimit = 5
+    private static let changedFilesExpansionAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.9)
+
     private var changedFilesSection: some View {
         Section {
             if snapshot.workingTree.isEmpty {
                 Text(workingTreeEmptyStateText)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(snapshot.workingTree) { file in
+                ForEach(visibleWorkingTree) { file in
                     Button {
                         selectedDiffFile = file
                     } label: {
-                        changedFileRow(file)
+                        FileChangeRow(file: file)
                     }
                     .tint(.primary)
+                }
+
+                if hiddenWorkingTreeCount > 0 {
+                    Button {
+                        withAnimation(Self.changedFilesExpansionAnimation) {
+                            showsAllChangedFiles.toggle()
+                        }
+                    } label: {
+                        Text(showsAllChangedFiles ? "Show less" : "Show all \(snapshot.workingTree.count) files")
+                    }
                 }
             }
         } header: {
@@ -336,24 +409,14 @@ struct WorkspaceRootView: View {
         }
     }
 
-    private func changedFileRow(_ file: ReviewFileChange) -> some View {
-        VStack(alignment: .leading) {
-            Text(file.path)
-                .font(.body.monospaced())
-                .lineLimit(2)
-                .truncationMode(.middle)
-            Text(file.statusLabel.capitalized)
-                .foregroundStyle(.secondary)
+    private var visibleWorkingTree: [ReviewFileChange] {
+        showsAllChangedFiles
+            ? snapshot.workingTree
+            : Array(snapshot.workingTree.prefix(Self.changedFilesCollapsedLimit))
+    }
 
-            HStack(spacing: 8) {
-                Text("+\(file.additions)")
-                    .foregroundStyle(.green)
-                Text("-\(file.deletions)")
-                    .foregroundStyle(.red)
-            }
-            .monospacedDigit()
-        }
-        .font(.footnote.monospaced())
+    private var hiddenWorkingTreeCount: Int {
+        max(snapshot.workingTree.count - Self.changedFilesCollapsedLimit, 0)
     }
 
     // MARK: - Activity & Insights
@@ -887,7 +950,7 @@ struct WorkspaceRootView: View {
     /// The same options the new-session sheet offers: what the server reports plus
     /// the folders chosen earlier, which the server's project list never names.
     private func makeWorkspaceOptions(from snapshot: WorkspaceSnapshot) -> [WorkspaceSelectionOption] {
-        let recentDirectories = savedConnections.activeConnectionID
+        let recentDirectories = connection.connectionID
             .map { savedConnections.recentProjectSelections(connectionID: $0) }
             ?? []
         return WorkspaceSelectionBuilder.makeOptions(
@@ -924,7 +987,15 @@ struct WorkspaceRootView: View {
     /// Names the active folder the way the picker lists it. The server calls a
     /// folder outside a git repository by its `global` project, rooted at `/`.
     private var currentWorkspaceTitle: String {
-        currentWorkspaceOption?.title ?? currentProjectName
+        workspaceNames.customName(forDirectory: activeWorkspaceDirectory)
+            ?? currentWorkspaceOption?.title
+            ?? currentProjectName
+    }
+
+    /// The picker row title: the personalized name when assigned, otherwise the
+    /// folder name the option was built with.
+    private func pickerTitle(for option: WorkspaceSelectionOption) -> String {
+        workspaceNames.customName(forDirectory: option.directory) ?? option.title
     }
 
     private func switchWorkspace(to option: WorkspaceSelectionOption) async {
@@ -944,7 +1015,7 @@ struct WorkspaceRootView: View {
     /// remembers it. Without this it drops out of the picker after the first
     /// switch whenever the server does not list it as a project.
     private func rememberActiveWorkspace() {
-        guard let connectionID = savedConnections.activeConnectionID,
+        guard let connectionID = connection.connectionID,
               let directory = WorkspaceSelectionBuilder.normalizedDirectory(snapshot.pathInfo?.directory),
               directory != "/" else { return }
         savedConnections.updateProjectSelection(connectionID: connectionID, directory: directory)

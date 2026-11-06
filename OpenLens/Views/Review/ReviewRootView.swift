@@ -22,8 +22,7 @@ struct ReviewRootView: View {
         )
 
         var fileCountLabel: String {
-            let count = files.count
-            return count == 1 ? "1 file" : "\(count) files"
+            AppText.reviewFileCount(files.count)
         }
     }
 
@@ -36,10 +35,17 @@ struct ReviewRootView: View {
 
     /// Whether the review shows everything the session changed or one agent update.
     private enum ScopeMode: String, CaseIterable, Identifiable {
-        case session = "Whole session"
-        case update = "Single update"
+        case session
+        case update
 
         var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .session: AppText.reviewScopeSession
+            case .update: AppText.reviewScopeUpdate
+            }
+        }
     }
 
     @Bindable var chatClient: ChatClient
@@ -47,6 +53,8 @@ struct ReviewRootView: View {
     @Environment(\.inboxService) private var inboxService
     @Environment(\.reviewService) private var reviewService
     @Environment(\.sessionsService) private var sessionsService
+    @Environment(\.serverRegistry) private var registry
+    @Environment(AppRouter.self) private var router: AppRouter?
 
     @State private var viewState: ViewState = .idle
     @State private var reviewSnapshot: SessionReviewSnapshot?
@@ -56,6 +64,8 @@ struct ReviewRootView: View {
     @State private var lastUpdateScopeID: String?
     @State private var selectedFile: ReviewFileChange?
     @State private var availableSessions: [OCSession] = []
+    /// The other connected servers' first pages, for the picker.
+    @State private var otherServerSessions: [ServerSessionsResult] = []
     @State private var nextSessionsCursor: String?
     @State private var sessionsPagingState: ReviewSessionPickerList.PagingState = .idle
     @State private var selectedReviewSession: OCSession?
@@ -68,11 +78,16 @@ struct ReviewRootView: View {
         Group {
             content
         }
+        .background(Color.appBackground)
         .toolbarTitleDisplayMode(.inline)
         .task {
             await refreshInboxBadgeCount()
             if ScreenshotFixtures.opensInbox {
                 isInboxPresented = true
+            }
+            if ScreenshotFixtures.opensReviewSessionPicker {
+                try? await Task.sleep(for: .seconds(2))
+                isSessionPickerPresented = true
             }
         }
         .task(id: chatClient.currentSession?.id) {
@@ -109,14 +124,14 @@ struct ReviewRootView: View {
             inboxToolbarItem
         }
         .confirmationDialog(
-            "Revert changes",
+            AppText.reviewRevertDialogTitle,
             isPresented: Binding(
                 get: { changeSetToRevert != nil },
                 set: { if !$0 { changeSetToRevert = nil } }
             ),
             presenting: changeSetToRevert
         ) { changeSet in
-            Button("Revert \"\(changeSet.title)\"", role: .destructive) {
+            Button(AppText.reviewRevertDialogAction(changeSet.title), role: .destructive) {
                 Task {
                     await revert(changeSet)
                 }
@@ -125,7 +140,7 @@ struct ReviewRootView: View {
                 changeSetToRevert = nil
             }
         } message: { _ in
-            Text("This will revert the selected change set from the selected review session.")
+            Text(AppText.reviewRevertDialogMessage)
         }
     }
 
@@ -134,20 +149,20 @@ struct ReviewRootView: View {
         switch viewState {
         case .idle where availableSessions.isEmpty && chatClient.currentSession == nil:
             ContentUnavailableView(
-                "No Sessions",
+                AppText.reviewEmptyTitle,
                 systemImage: "doc.text.magnifyingglass",
-                description: Text("Start a chat or pick a session once one exists.")
+                description: Text(AppText.reviewEmptyDescription)
             )
         case .idle, .loading where reviewSnapshot == nil:
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .error(let message) where reviewSnapshot == nil:
             ContentUnavailableView {
-                Label("Review Unavailable", systemImage: "exclamationmark.triangle")
+                Label(AppText.reviewUnavailableTitle, systemImage: "exclamationmark.triangle")
             } description: {
                 Text(message)
             } actions: {
-                Button("Retry") {
+                Button(AppText.tryAgain) {
                     Task {
                         await refreshAvailableSessions()
                         await loadReview(force: true)
@@ -167,12 +182,9 @@ struct ReviewRootView: View {
                 }
 
                 filesSection
-
-                if let selectedChangeSet = selectedScopeState.changeSet {
-                    revertSection(selectedChangeSet)
-                }
             }
         }
+        .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
         .safeAreaBar(edge: .top, spacing: 8) {
             if !isReviewReloading, let reviewSnapshot, !reviewSnapshot.changeSets.isEmpty {
@@ -193,13 +205,13 @@ struct ReviewRootView: View {
                 }
                 .popover(isPresented: $isSessionPickerPresented, arrowEdge: .top) {
                     ReviewSessionPickerList(
-                        sessions: sessionPickerSessions,
-                        selectedSessionID: selectedReviewSessionID,
+                        options: sessionPickerOptions,
+                        selectedOptionID: selectedReviewSessionID.map { "\(registry.activeContext.id)|\($0)" },
                         hasMore: nextSessionsCursor != nil,
                         pagingState: sessionsPagingState,
-                        onSelect: { session in
-                            selectedReviewSession = session
+                        onSelect: { option in
                             isSessionPickerPresented = false
+                            selectPickerOption(option)
                         },
                         onLoadMore: loadMoreSessions
                     )
@@ -216,20 +228,19 @@ struct ReviewRootView: View {
             Button {
                 isInboxPresented = true
             } label: {
-                Label("Inbox", systemImage: inboxBadgeCount > 0 ? "bell.badge" : "bell")
+                Label(AppText.inbox, systemImage: inboxBadgeCount > 0 ? "bell.badge" : "bell")
             }
             .accessibilityLabel(inboxAccessibilityLabel)
         }
-//        .badge(inboxBadgeCount)
     }
 
     /// Segmented switch between the whole session and a single agent update.
     /// It is pinned under the navigation bar instead of living in the form, so
     /// it stays visible while scrolling and adds no gap above the first section.
     private func scopeBar(_ snapshot: SessionReviewSnapshot) -> some View {
-        Picker("Review scope", selection: scopeModeBinding(for: snapshot)) {
+        Picker(AppText.reviewScopeAccessibility, selection: scopeModeBinding(for: snapshot)) {
             ForEach(ScopeMode.allCases) { mode in
-                Text(mode.rawValue).tag(mode)
+                Text(mode.title).tag(mode)
             }
         }
         .pickerStyle(.segmented)
@@ -237,16 +248,18 @@ struct ReviewRootView: View {
         .padding(.vertical, 8)
     }
 
-    /// Chooses which agent update to inspect. Only shown for "Single update".
+    /// Chooses which agent update to inspect, and offers the revert for the
+    /// selected update in the same section so the action lives with its data.
     private func updateSection(_ snapshot: SessionReviewSnapshot) -> some View {
         Section {
-            Picker("Update", selection: $selectedScopeID) {
+            Picker(AppText.reviewUpdatePickerLabel, selection: $selectedScopeID) {
                 ForEach(snapshot.changeSets) { changeSet in
                     Label {
                         Text(changeSet.title)
-                        Text(changeSet.id == snapshot.latestChangeSet?.id
-                            ? "Latest · \(shortDate(changeSet.createdAt))"
-                            : shortDate(changeSet.createdAt))
+                        Text(AppText.reviewUpdateLabel(
+                            isLatest: changeSet.id == snapshot.latestChangeSet?.id,
+                            date: shortDate(changeSet.createdAt)
+                        ))
                     } icon: {
                         Image(systemName: changeSet.id == snapshot.latestChangeSet?.id ? "sparkles" : "clock.arrow.circlepath")
                     }
@@ -254,6 +267,16 @@ struct ReviewRootView: View {
                 }
             }
             .pickerStyle(.navigationLink)
+
+            if let selectedChangeSet = selectedScopeState.changeSet {
+                Button(role: .destructive) {
+                    changeSetToRevert = selectedChangeSet
+                } label: {
+                    Label(AppText.reviewRevertUpdate, systemImage: "arrow.uturn.backward")
+                }
+            }
+        } footer: {
+            Text(AppText.reviewUpdateFooter)
         }
     }
 
@@ -281,65 +304,33 @@ struct ReviewRootView: View {
         guard let reviewSnapshot, !reviewSnapshot.changeSets.isEmpty else { return fileCount }
 
         if selectedScopeID == reviewSessionScopeID {
-            let updateCount = reviewSnapshot.changeSets.count
-            let updates = updateCount == 1 ? "1 agent update" : "\(updateCount) agent updates"
-            return "\(fileCount) across \(updates)"
+            return AppText.reviewFilesFooterSession(
+                files: fileCount,
+                updates: AppText.reviewUpdateCount(reviewSnapshot.changeSets.count)
+            )
         }
-        return "\(fileCount) in this update"
+        return AppText.reviewFilesFooterUpdate(files: fileCount)
     }
 
     private var filesSection: some View {
         Section {
             if selectedScopeState.files.isEmpty {
-                Text("No file changes available for this selection.")
+                Text(AppText.reviewNoFileChanges)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(selectedScopeState.files, id: \.id) { file in
                     Button {
                         selectedFile = file
                     } label: {
-                        fileRow(file)
+                        FileChangeRow(file: file)
                     }
                     .tint(.primary)
                 }
             }
         } header: {
-            Text(selectedScopeID == reviewSessionScopeID ? "Session changes" : "Update changes")
+            Text(selectedScopeID == reviewSessionScopeID ? AppText.reviewFilesHeaderSession : AppText.reviewFilesHeaderUpdate)
         } footer: {
             Text(filesFooter)
-        }
-    }
-
-    private func fileRow(_ file: ReviewFileChange) -> some View {
-        VStack(alignment: .leading) {
-            Text(file.path)
-                .font(.footnote.monospaced())
-                .lineLimit(2)
-            HStack(spacing: 8) {
-                Text("+\(file.additions)")
-                    .foregroundStyle(.green)
-                Text("-\(file.deletions)")
-                    .foregroundStyle(.red)
-            }
-            .font(.footnote.monospaced())
-        }
-    }
-
-    private func revertSection(_ changeSet: ReviewChangeSet) -> some View {
-        Section {
-            LabeledContent("Selected update") {
-                Text(changeSet.title)
-                    .lineLimit(2)
-            }
-            Button(role: .destructive) {
-                changeSetToRevert = changeSet
-            } label: {
-                Label("Revert update", systemImage: "arrow.uturn.backward")
-            }
-        } header: {
-            Text("Danger Zone")
-        } footer: {
-            Text("Undo only the changes introduced by this update. The session itself is kept, but the code changes from this update are removed after confirmation.")
         }
     }
 
@@ -367,6 +358,50 @@ struct ReviewRootView: View {
         return [selectedReviewSession] + availableSessions
     }
 
+    private var sessionPickerOptions: [ReviewPickerOption] {
+        reviewPickerOptions(
+            activeServerID: registry.activeContext.id,
+            activeSessions: sessionPickerSessions,
+            otherServers: otherServerSessions,
+            tags: registry.serverTags(),
+            showsServerTags: isMultiServerUIEnabled(savedServerCount: registry.savedServerContexts.count)
+        )
+    }
+
+    /// A session on another server makes that server the active one first, as the Sessions list
+    /// does. That rebuilds this view, so the choice is handed over through the router.
+    private func selectPickerOption(_ option: ReviewPickerOption) {
+        guard option.serverID != registry.activeContext.id else {
+            selectedReviewSession = option.session
+            return
+        }
+        router?.pendingReviewSession = option.session
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            guard registry.activate(id: option.serverID) else {
+                router?.pendingReviewSession = nil
+                return
+            }
+            router?.activate(serverID: option.serverID)
+        }
+    }
+
+    private func refreshOtherServerSessions() async {
+        let activeID = registry.activeContext.id
+        let others = registry.savedServerContexts.filter { $0.id != activeID && $0.connection.isConnected }
+        var results: [ServerSessionsResult] = []
+        for context in others {
+            do {
+                let page = try await context.sessionsService.listSessionsPage()
+                results.append(ServerSessionsResult(serverID: context.id, sessions: page.sessions))
+            } catch {
+                results.append(ServerSessionsResult(serverID: context.id, sessions: [], failureMessage: error.localizedDescription))
+            }
+        }
+        otherServerSessions = results
+    }
+
     private var isReviewReloading: Bool {
         if case .loading = viewState {
             return reviewSnapshot != nil
@@ -375,21 +410,7 @@ struct ReviewRootView: View {
     }
 
     private var inboxAccessibilityLabel: String {
-        if inboxBadgeCount == 0 {
-            return "Open inbox"
-        }
-
-        let itemLabel = inboxBadgeCount == 1 ? "item" : "items"
-        return "Open inbox, \(inboxBadgeCount) pending \(itemLabel)"
-    }
-
-    private func fileStatusLabel(_ status: String) -> String {
-        switch status.uppercased() {
-        case "A": "Added"
-        case "D": "Deleted"
-        case "R": "Renamed"
-        default: "Modified"
-        }
+        inboxBadgeCount == 0 ? AppText.inboxOpen : AppText.inboxOpenPending(inboxBadgeCount)
     }
 
     private func shortDate(_ date: Date?) -> String {
@@ -404,6 +425,13 @@ struct ReviewRootView: View {
             availableSessions = page.sessions
             nextSessionsCursor = page.nextCursor
             sessionsPagingState = .idle
+            await refreshOtherServerSessions()
+
+            if let pending = router?.pendingReviewSession {
+                router?.pendingReviewSession = nil
+                selectedReviewSession = pending
+                return
+            }
 
             let activeSession = chatClient.currentSession.flatMap { session in
                 session.parentID?.nilIfBlank == nil ? session : nil
@@ -472,7 +500,7 @@ struct ReviewRootView: View {
 
     private func refreshInboxBadgeCount() async {
         do {
-            let snapshot = try await inboxService.loadInbox()
+            let snapshot = try await registry.loadAggregatedInbox(activeInbox: inboxService)
             inboxBadgeCount = snapshot.pendingRequestCount
         } catch {
             inboxBadgeCount = 0
@@ -556,6 +584,6 @@ struct ReviewRootView: View {
         // for a safe recovery.
         reviewSnapshot = nil
         selectedScopeState = .empty
-        viewState = .error("The revert state could not be refreshed. Pull to refresh and retry once the session is idle.")
+        viewState = .error(AppText.reviewRevertRefreshFailed)
     }
 }

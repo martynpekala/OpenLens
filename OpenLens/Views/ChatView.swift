@@ -22,7 +22,9 @@ struct ChatView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.connection) private var connection
+    @Environment(\.serverRegistry) private var serverRegistry
     @Environment(\.workspaceService) private var workspaceService
+    @Environment(\.workspaceNames) private var workspaceNames
     @Environment(\.chatEasterEgg) private var chatEasterEgg
     @Environment(AppRouter.self) private var router: AppRouter?
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled: Bool = FeatureFlags.debugFeaturesDefault
@@ -83,7 +85,7 @@ struct ChatView: View {
         return OpenChildSessionAction { childSessionID in
             Task {
                 guard let child = await chatClient.resolveChildSession(id: childSessionID) else { return }
-                router.navigate(to: .chatSession(session: child))
+                router.navigate(to: router.chatSessionDestination(for: child))
             }
         }
     }
@@ -97,14 +99,29 @@ struct ChatView: View {
             .environment(\.chatSessionDirectory, chatClient.sessionDirectory)
             .environment(\.openChildSession, openChildSessionAction)
 
+            if let retry = chatClient.retryPresentation {
+                ChatRetryStatusView(presentation: retry, isRetroChat: isRetroChat)
+            }
+
             if let error = chatClient.presentedError {
                 HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
+                    Image(systemName: error.iconName)
                         .foregroundStyle(isRetroChat ? RetroChatStyle.danger : .orange)
                         .font(.system(size: 13))
-                    Text(error.message)
-                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
-                        .foregroundStyle(secondaryTextColor)
+                    if case .usageLimit(let info) = error {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(AppText.usageLimitReached)
+                                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold))
+                                .foregroundStyle(secondaryTextColor)
+                            Text(info.resetAt.map(AppText.usageLimitResetsAt) ?? AppText.usageLimitNoResetTime)
+                                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12))
+                                .foregroundStyle(secondaryTextColor.opacity(0.8))
+                        }
+                    } else {
+                        Text(error.message)
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
+                            .foregroundStyle(secondaryTextColor)
+                    }
                     Spacer()
                     Button(error.canRetry ? AppText.tryAgain : AppText.dismiss) {
                         switch error {
@@ -112,7 +129,7 @@ struct ChatView: View {
                             chatClient.synchronizeCurrentSessionFromServer()
                         case .viewing:
                             chatClient.retryViewingDisplayedResult()
-                        case .operation:
+                        case .operation, .usageLimit:
                             chatClient.dismissError()
                         }
                     }
@@ -148,9 +165,8 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ChatHeaderToolbar(
-                projectName: chatClient.sessionLocationState == .ready
-                    ? (headerSession?.workspaceDisplayName ?? connection.projectName)
-                    : connection.projectName,
+                projectName: headerWorkspaceName,
+                serverTag: serverRegistry.activeServerTagWhenMultiServer,
                 branch: connection.branch,
                 connectionState: connection.state,
                 sessionTitle: headerSession?.title,
@@ -163,6 +179,9 @@ struct ChatView: View {
                     } else {
                         chatClient.startStreamRecording()
                     }
+                },
+                onOpenWorkspace: {
+                    router?.selectedTab = .workspace
                 }
             )
         }
@@ -177,7 +196,6 @@ struct ChatView: View {
         }
         // Initial load: ensure session is loaded when view appears
         .task {
-            chatClient.setupSSEHandlers()
             if initialSession == nil {
                 await chatClient.ensureSession()
             }
@@ -209,18 +227,12 @@ struct ChatView: View {
             )
         }
 
-        // Foreground recovery: stream events may have been missed while iOS
-        // suspended the app, so reconcile session and transcript before the
-        // incremental stream is considered current again.
+        // Foreground recovery of the stream, the session and pending prompts belongs to
+        // `ServerContext.resume()`, driven by the registry. The view reloads only what it owns.
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                chatClient.setupSSEHandlers()
-                chatClient.synchronizeCurrentSessionFromServer()
                 Task {
                     await loadCommands(force: true)
-                    await chatClient.recoverPendingPermission()
-                    await chatClient.recoverPendingQuestions()
-                    await chatClient.recoverPendingForms()
                     await loadSkills(force: true)
                 }
             }
@@ -318,6 +330,17 @@ struct ChatView: View {
         return chatClient.currentSession?.id == initialSession.id
             ? chatClient.currentSession
             : initialSession
+    }
+
+    /// The workspace name shown in the header: the personalized name when one
+    /// is assigned, otherwise the folder's default display name.
+    private var headerWorkspaceName: String? {
+        if chatClient.sessionLocationState == .ready {
+            if let directory = headerSession?.workspaceDirectory {
+                return workspaceNames.displayName(forDirectory: directory) ?? connection.projectName
+            }
+        }
+        return connection.projectName
     }
 
     private var isRetroChat: Bool {
@@ -2463,6 +2486,73 @@ private struct ResponseStatusSiriIndicator: View {
                 Color(red: 0.2, green: 0.86, blue: 0.56)
             ]
         }
+    }
+}
+
+/// Quiet status line shown while the server retries a failed turn (for
+/// example after a provider usage limit). The countdown is the focal point.
+private struct ChatRetryStatusView: View {
+    let presentation: ChatClient.RetryPresentation
+    let isRetroChat: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "hourglass")
+                .foregroundStyle(isRetroChat ? RetroChatStyle.danger : .orange)
+                .font(.system(size: 13))
+
+            VStack(alignment: .leading, spacing: 2) {
+                if let nextAttempt = presentation.nextAttempt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(AppText.retryingIn(Self.countdown(from: context.date, to: nextAttempt)))
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold))
+                            .monospacedDigit()
+                    }
+                } else {
+                    Text(AppText.retrying)
+                        .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .semibold))
+                }
+                Text(subtitle)
+                    .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .overlay(alignment: .top) {
+            (isRetroChat ? RetroChatStyle.ink : Color.appSeparator)
+                .frame(height: isRetroChat ? 2 : 0.5)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        if presentation.usageLimit != nil {
+            parts.append(AppText.usageLimitReached)
+            if let resetAt = presentation.usageLimit?.resetAt {
+                parts.append(AppText.usageLimitResetsAt(resetAt))
+            }
+        } else if let message = presentation.message, !message.isEmpty {
+            parts.append(message)
+        }
+        if let attempt = presentation.attempt, attempt > 1 {
+            parts.append(AppText.retryAttempt(attempt))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func countdown(from now: Date, to target: Date) -> String {
+        let remaining = max(0, Int(target.timeIntervalSince(now).rounded()))
+        let minutes = remaining / 60
+        let seconds = remaining % 60
+        if remaining >= 3600 {
+            return "\(minutes / 60)h \(minutes % 60)m"
+        }
+        return "\(minutes)m \(seconds)s"
     }
 }
 

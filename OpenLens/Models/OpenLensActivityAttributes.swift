@@ -10,6 +10,8 @@ nonisolated struct OpenLensActivityAttributes: ActivityAttributes {
     var directory: String?
     /// Tells apart activities of sessions that run at the same time.
     var sessionTitle: String?
+    /// Server whose credentials replies use; nil for activities started before multi-server support.
+    var serverID: String?
     /// Preview activities from Settings answer prompts locally instead of calling the server.
     var isPreview = false
 
@@ -74,18 +76,30 @@ nonisolated struct OpenLensActivityAttributes: ActivityAttributes {
 extension OpenLensActivityAttributes {
     static let sessionURLHost = "session"
 
-    /// Link that opens the turn's session in the app.
+    /// The session an activity link points at, and the server it lives on.
+    struct SessionLink: Equatable {
+        var sessionID: String
+        /// Nil for links built before multi-server support, which name no server.
+        var serverID: String?
+    }
+
+    /// Link that opens the turn's session in the app. Carries the server so the right one opens
+    /// when several are connected.
     var sessionURL: URL? {
         guard let sessionID, !sessionID.isEmpty else { return nil }
         var components = URLComponents()
         components.scheme = "openlens"
         components.host = Self.sessionURLHost
-        components.queryItems = [URLQueryItem(name: "id", value: sessionID)]
+        var items = [URLQueryItem(name: "id", value: sessionID)]
+        if let serverID, !serverID.isEmpty {
+            items.append(URLQueryItem(name: "server", value: serverID))
+        }
+        components.queryItems = items
         return components.url
     }
 
-    /// The session ID from a link built by `sessionURL`, or nil for any other URL.
-    static func sessionID(from url: URL) -> String? {
+    /// The session and server from a link built by `sessionURL`, or nil for any other URL.
+    static func sessionLink(from url: URL) -> SessionLink? {
         guard url.scheme?.lowercased() == "openlens",
               url.host?.lowercased() == sessionURLHost,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -94,7 +108,13 @@ extension OpenLensActivityAttributes {
         else {
             return nil
         }
-        return sessionID
+        let serverID = components.queryItems?.first(where: { $0.name == "server" })?.value
+        return SessionLink(sessionID: sessionID, serverID: serverID.flatMap { $0.isEmpty ? nil : $0 })
+    }
+
+    /// The session ID from a link built by `sessionURL`, or nil for any other URL.
+    static func sessionID(from url: URL) -> String? {
+        sessionLink(from: url)?.sessionID
     }
 }
 
@@ -117,7 +137,7 @@ extension OpenLensActivityAttributes {
 
 extension OpenLensActivityAttributes {
     static var preview: OpenLensActivityAttributes {
-        OpenLensActivityAttributes(sessionID: nil, directory: nil, sessionTitle: "Refresh token rotation", isPreview: true)
+        OpenLensActivityAttributes(sessionID: nil, directory: nil, sessionTitle: "Refresh token rotation", serverID: nil, isPreview: true)
     }
 }
 

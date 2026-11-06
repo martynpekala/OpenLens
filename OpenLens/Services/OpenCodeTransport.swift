@@ -25,14 +25,21 @@ nonisolated protocol OpenCodeTransport: AnyObject, Sendable {
 }
 
 nonisolated final class DirectOpenCodeTransport: OpenCodeTransport, @unchecked Sendable {
-    private let session: URLSession
+    private let sessionLock = NSLock()
+    private var _session: URLSession?
 
-    init() {
+    /// Created on first `data(for:)`; the SSE path builds its own session and never needs this one.
+    private var session: URLSession {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        if let _session { return _session }
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 300
         configuration.waitsForConnectivity = true
-        session = URLSession(configuration: configuration)
+        let created = URLSession(configuration: configuration)
+        _session = created
+        return created
     }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {

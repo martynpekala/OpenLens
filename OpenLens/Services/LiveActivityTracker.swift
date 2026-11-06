@@ -25,9 +25,15 @@ final class LiveActivityTracker {
     // MARK: - Dependency
 
     private let liveActivity: any LiveActivityProviding
+    /// Reads the id of the server this tracker belongs to, at the moment of each call: a
+    /// connection learns its id only once it connects. `backgroundSessionIDs` is scoped by
+    /// construction, since each server's `ChatClient` owns its own tracker. Nil is the bucket
+    /// for activities that predate multi-server support, and for trackers with no server.
+    private let serverID: () -> String?
 
-    init(liveActivity: any LiveActivityProviding) {
+    init(liveActivity: any LiveActivityProviding, serverID: @escaping () -> String? = { nil }) {
         self.liveActivity = liveActivity
+        self.serverID = serverID
     }
 
     // MARK: - Lifecycle
@@ -37,7 +43,7 @@ final class LiveActivityTracker {
     /// shown keeps its activity.
     func start(session: OCSession?) {
         bind(sessionID: session?.id)
-        liveActivity.startActivity(sessionID: session?.id, directory: session?.directory, title: session?.title)
+        liveActivity.startActivity(serverID: serverID(), sessionID: session?.id, directory: session?.directory, title: session?.title)
         if pendingUserResponse != nil {
             pushCurrentState()
         }
@@ -74,7 +80,7 @@ final class LiveActivityTracker {
     }
 
     private func leaveSession() {
-        if let sessionID, liveActivity.isActive(sessionID: sessionID) {
+        if let sessionID, liveActivity.isActive(serverID: serverID(), sessionID: sessionID) {
             backgroundSessionIDs.insert(sessionID)
         }
         sessionID = nil
@@ -82,7 +88,7 @@ final class LiveActivityTracker {
     }
 
     func hasActivity(sessionID: String) -> Bool {
-        liveActivity.isActive(sessionID: sessionID)
+        liveActivity.isActive(serverID: serverID(), sessionID: sessionID)
     }
 
     func setPendingPermission(_ permission: OCPermissionRequest) {
@@ -123,13 +129,13 @@ final class LiveActivityTracker {
     /// End the attached session's Live Activity, showing how the turn ended.
     func end(phase: OpenLensActivityAttributes.Phase = .finished) {
         guard isAttached else { return }
-        liveActivity.endActivity(sessionID: sessionID, phase: phase)
+        liveActivity.endActivity(serverID: serverID(), sessionID: sessionID, phase: phase)
     }
 
     /// Incomplete execution evidence must not publish a successful completion.
     func dismiss() {
         guard isAttached else { return }
-        liveActivity.dismissImmediately(sessionID: sessionID)
+        liveActivity.dismissImmediately(serverID: serverID(), sessionID: sessionID)
     }
 
     /// End the activity of a session the chat is no longer following once its turn is over.
@@ -138,9 +144,9 @@ final class LiveActivityTracker {
         guard !isAttached || self.sessionID != sessionID else { return }
         backgroundSessionIDs.remove(sessionID)
         if let phase {
-            liveActivity.endActivity(sessionID: sessionID, phase: phase)
+            liveActivity.endActivity(serverID: serverID(), sessionID: sessionID, phase: phase)
         } else {
-            liveActivity.dismissImmediately(sessionID: sessionID)
+            liveActivity.dismissImmediately(serverID: serverID(), sessionID: sessionID)
         }
     }
 
@@ -151,8 +157,8 @@ final class LiveActivityTracker {
     }
 
     private func pushCurrentState() {
-        guard isAttached, liveActivity.isActive(sessionID: sessionID) else { return }
-        liveActivity.update(sessionID: sessionID, pendingUserResponse: pendingUserResponse)
+        guard isAttached, liveActivity.isActive(serverID: serverID(), sessionID: sessionID) else { return }
+        liveActivity.update(serverID: serverID(), sessionID: sessionID, pendingUserResponse: pendingUserResponse)
     }
 
     // MARK: - Prompt Details

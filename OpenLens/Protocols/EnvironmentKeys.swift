@@ -1,17 +1,44 @@
 import SwiftUI
+import os
+
+// MARK: - Placeholder Connection
+
+/// The one connection every un-injected environment fallback binds to. It is never connected,
+/// so a view rendered without injection shows "not connected" rather than talking to a server.
+/// Normal app flow always injects from the composition root; this exists for SwiftUI previews.
+private enum PlaceholderConnection {
+    static let shared: ConnectionManager = {
+#if DEBUG
+        Logger(subsystem: Bundle.main.bundleIdentifier ?? "OpenLens", category: "Environment")
+            .debug("Environment fallback in use: views are bound to a placeholder, never-connected ConnectionManager.")
+#endif
+        return ConnectionManager()
+    }()
+}
 
 // MARK: - ConnectionManager Environment Key
 
 private struct ConnectionManagerKey: EnvironmentKey {
     // Fallback only used if no explicit environment injection is provided
     // (e.g., in SwiftUI previews). Normal app flow always injects from the composition root.
-    static let defaultValue: ConnectionManager = ConnectionManager()
+    static let defaultValue: ConnectionManager = PlaceholderConnection.shared
 }
 
 // MARK: - SavedConnectionsStore Environment Key
 
 private struct SavedConnectionsStoreKey: EnvironmentKey {
     static let defaultValue: SavedConnectionsStore = SavedConnectionsStore()
+}
+
+// MARK: - ServerRegistry Environment Key
+
+private struct ServerRegistryKey: EnvironmentKey {
+    // Fallback only used if no explicit injection is provided (e.g. SwiftUI previews).
+    static let defaultValue: ServerRegistry = ServerRegistry(
+        savedConnectionsStore: SavedConnectionsStore(initialConnections: []),
+        liveActivity: LiveActivityManager(),
+        recordedReplayStore: RecordedReplayStore()
+    )
 }
 
 // MARK: - LiveActivityManager Environment Key
@@ -23,52 +50,35 @@ private struct LiveActivityManagerKey: EnvironmentKey {
 // MARK: - Service Environment Keys
 
 private struct SessionsServiceKey: EnvironmentKey {
-    static let defaultValue: SessionsService = {
-        let conn = ConnectionManager()
-        return SessionsService(connection: conn)
-    }()
+    static let defaultValue: SessionsService = SessionsService(connection: PlaceholderConnection.shared)
 }
 
 private struct MessagesServiceKey: EnvironmentKey {
-    static let defaultValue: MessagesService = {
-        let conn = ConnectionManager()
-        return MessagesService(connection: conn)
-    }()
+    static let defaultValue: MessagesService = MessagesService(connection: PlaceholderConnection.shared)
 }
 
 private struct ProvidersServiceKey: EnvironmentKey {
-    static let defaultValue: ProvidersService = {
-        let conn = ConnectionManager()
-        return ProvidersService(connection: conn)
-    }()
+    static let defaultValue: ProvidersService = ProvidersService(connection: PlaceholderConnection.shared)
 }
 
 private struct QuestionServiceKey: EnvironmentKey {
-    static let defaultValue: QuestionService = {
-        let conn = ConnectionManager()
-        return QuestionService(connection: conn)
-    }()
+    static let defaultValue: QuestionService = QuestionService(connection: PlaceholderConnection.shared)
 }
 
 private struct ReviewServiceKey: EnvironmentKey {
-    static let defaultValue: ReviewService = {
-        let conn = ConnectionManager()
-        return ReviewService(connection: conn)
-    }()
+    static let defaultValue: ReviewService = ReviewService(connection: PlaceholderConnection.shared)
 }
 
 private struct InboxServiceKey: EnvironmentKey {
-    static let defaultValue: InboxService = {
-        let conn = ConnectionManager()
-        return InboxService(connection: conn)
-    }()
+    static let defaultValue: InboxService = InboxService(connection: PlaceholderConnection.shared)
 }
 
 private struct WorkspaceServiceKey: EnvironmentKey {
-    static let defaultValue: WorkspaceService = {
-        let conn = ConnectionManager()
-        return WorkspaceService(connection: conn)
-    }()
+    static let defaultValue: WorkspaceService = WorkspaceService(connection: PlaceholderConnection.shared)
+}
+
+private struct WorkspaceNameStoreKey: EnvironmentKey {
+    static let defaultValue: WorkspaceNameStore = WorkspaceNameStore()
 }
 
 private struct SessionInsightsServiceKey: EnvironmentKey {
@@ -77,6 +87,10 @@ private struct SessionInsightsServiceKey: EnvironmentKey {
 
 private struct GitHubStarsServiceKey: EnvironmentKey {
     static let defaultValue: GitHubStarsService = GitHubStarsService()
+}
+
+private struct UsageQuotaServiceKey: EnvironmentKey {
+    static let defaultValue: UsageQuotaService = UsageQuotaService()
 }
 
 private struct RecordedReplayStoreKey: EnvironmentKey {
@@ -102,6 +116,11 @@ extension EnvironmentValues {
     var savedConnections: SavedConnectionsStore {
         get { self[SavedConnectionsStoreKey.self] }
         set { self[SavedConnectionsStoreKey.self] = newValue }
+    }
+
+    var serverRegistry: ServerRegistry {
+        get { self[ServerRegistryKey.self] }
+        set { self[ServerRegistryKey.self] = newValue }
     }
 
     var liveActivity: LiveActivityManager {
@@ -144,6 +163,11 @@ extension EnvironmentValues {
         set { self[WorkspaceServiceKey.self] = newValue }
     }
 
+    var workspaceNames: WorkspaceNameStore {
+        get { self[WorkspaceNameStoreKey.self] }
+        set { self[WorkspaceNameStoreKey.self] = newValue }
+    }
+
     var sessionInsightsService: SessionInsightsService {
         get { self[SessionInsightsServiceKey.self] }
         set { self[SessionInsightsServiceKey.self] = newValue }
@@ -152,6 +176,11 @@ extension EnvironmentValues {
     var gitHubStarsService: GitHubStarsService {
         get { self[GitHubStarsServiceKey.self] }
         set { self[GitHubStarsServiceKey.self] = newValue }
+    }
+
+    var usageQuotaService: UsageQuotaService {
+        get { self[UsageQuotaServiceKey.self] }
+        set { self[UsageQuotaServiceKey.self] = newValue }
     }
 
     var recordedReplayStore: RecordedReplayStore {

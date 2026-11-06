@@ -358,6 +358,12 @@ enum ScreenshotFixtures {
     static let formSheetEnvironmentKey = "OPENLENS_SCREENSHOT_FORM_SHEET"
     static let permissionAllowAllConfirmationEnvironmentKey = "OPENLENS_SCREENSHOT_PERMISSION_ALLOW_ALL_CONFIRMATION"
     static let settingsSectionEnvironmentKey = "OPENLENS_SCREENSHOT_SETTINGS_SECTION"
+    static let multiServerArgument = "SCREENSHOT_MULTI_SERVER"
+    static let multiServerEnvironmentKey = "OPENLENS_SCREENSHOT_MULTI_SERVER"
+    /// Ids of the two demo servers that multi-server screenshot mode adds beside the default one.
+    static let devboxServerID = "devbox-server"
+    static let ciServerID = "ci-server"
+    static let defaultServerID = "default"
 
     static var isEnabled: Bool {
         let processInfo = ProcessInfo.processInfo
@@ -379,6 +385,12 @@ enum ScreenshotFixtures {
         return AppTab(rawValue: String(rawValue).lowercased())
     }
 
+    /// Adds two more demo servers so the registry holds three contexts.
+    static var holdsMultipleServers: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains(multiServerArgument) || processInfo.environment[multiServerEnvironmentKey] == "1")
+    }
+
     static var opensDefaultChatSession: Bool {
         let processInfo = ProcessInfo.processInfo
         return processInfo.arguments.contains(chatSessionArgument) || processInfo.environment[chatSessionEnvironmentKey] == "1"
@@ -395,6 +407,124 @@ enum ScreenshotFixtures {
 
     static var opensInbox: Bool {
         isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_INBOX")
+    }
+
+    /// Pushes the Servers screen on the Settings tab.
+    ///
+    /// Argument *and* environment key: captures run through `xcrun simctl launch`, which injects
+    /// `SIMCTL_CHILD_`-prefixed environment variables and cannot pass launch arguments, so an
+    /// argument-only flag is unreachable from the capture path that needs it.
+    static var opensServers: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SERVERS")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SERVERS"] == "1")
+    }
+
+    /// Opens the add-server sheet over the Servers screen.
+    static var opensServerSheet: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SERVER_SHEET")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SERVER_SHEET"] == "1")
+    }
+
+    /// Profiles that give the demo servers a name to show. Only the multi-server fixture uses them.
+    /// One nickname and two bare hosts, so both naming treatments render.
+    static let defaultServerProfile = SavedConnection(
+        id: defaultServerID,
+        serverURL: "mac-studio.local:4096",
+        username: "opencode",
+        password: ""
+    )
+    static let devboxServerProfile = SavedConnection(
+        id: devboxServerID,
+        serverURL: "devbox.local:4096",
+        username: "nicola",
+        password: "",
+        nickname: "Devbox"
+    )
+    static let ciServerProfile = SavedConnection(
+        id: ciServerID,
+        serverURL: "ci-runner.local:4096",
+        username: "ci",
+        password: ""
+    )
+
+    /// The default server is connected and active, the devbox is reconnecting (`appWarning` dot)
+    /// and the CI runner has failed (`appDanger` dot, plus a failure notice in the sessions list).
+    static let devboxConnectionState: ConnectionManager.State = .reconnecting
+    static let ciConnectionState: ConnectionManager.State = .error("The network connection was lost.")
+
+    /// What each non-default demo server last returned, standing in for a load that already ran:
+    /// a reconnecting server keeps the sessions it had, a failed one never had any. The devbox
+    /// deliberately shares `projectPath` with the default server, so two sections carry the same
+    /// project title and only the server tag tells them apart. Empty outside the multi-server fixture.
+    static var sessionsByServerID: [String: [OCSession]] {
+        guard holdsMultipleServers else { return [:] }
+        return [devboxServerID: devboxSessions]
+    }
+
+    /// Servers whose last load failed. Empty outside the multi-server fixture.
+    static var sessionFailuresByServerID: [String: String] {
+        guard holdsMultipleServers else { return [:] }
+        return [ciServerID: "The network connection was lost."]
+    }
+
+    private static let devboxSessions: [OCSession] = [
+        OCSession(
+            id: "session-devbox-1",
+            projectID: "proj_openlens_devbox",
+            directory: projectPath,
+            title: "Profile the sessions list scroll",
+            version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (5 * hourMilliseconds), updated: nowMilliseconds - (42 * 60 * 1000))
+        ),
+        OCSession(
+            id: "session-devbox-2",
+            projectID: "proj_openlens_devbox",
+            directory: projectPath,
+            title: "Bisect the reconnect regression",
+            version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (2 * dayMilliseconds), updated: nowMilliseconds - (19 * hourMilliseconds))
+        ),
+        OCSession(
+            id: "session-devbox-3",
+            projectID: "proj_api_gateway",
+            directory: "/srv/api-gateway",
+            title: "Migrate the rate limiter to tokens",
+            version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (6 * dayMilliseconds), updated: nowMilliseconds - (3 * dayMilliseconds))
+        )
+    ]
+
+    /// Opens the New Session sheet over the Sessions list, for capturing its server picker.
+    static var opensNewSessionSheet: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_NEW_SESSION")
+    }
+
+    /// Opens the Review tab's session picker, for capturing its server marks.
+    static var opensReviewSessionPicker: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_REVIEW_PICKER")
+    }
+
+    /// Opens the Sessions filter popover, for capturing it: a `Menu`'s open state cannot be photographed.
+    ///
+    /// Argument *and* environment key, like the other flags a capture may need to set either way.
+    static var opensSessionFilter: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SESSION_FILTER")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SESSION_FILTER"] == "1")
+    }
+
+    /// Starts the Sessions list narrowed to one server and one of its workspaces, for capturing
+    /// the capsule's clear control and the popover's selected rows.
+    static var filtersSessions: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled && (processInfo.arguments.contains("SCREENSHOT_SESSION_FILTERED")
+            || processInfo.environment["OPENLENS_SCREENSHOT_SESSION_FILTERED"] == "1")
+    }
+
+    static var opensArchivedSessions: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains("SCREENSHOT_ARCHIVED_SESSIONS")
     }
 
     static var opensGlobalFormSheet: Bool {
@@ -436,6 +566,70 @@ enum ScreenshotFixtures {
         return processInfo.arguments
             .first { $0.hasPrefix(settingsSectionArgumentPrefix) }
             .map { String($0.dropFirst(settingsSectionArgumentPrefix.count)).lowercased() }
+    }
+
+    static let usageQuotaStateArgumentPrefix = "SCREENSHOT_USAGE_QUOTA_STATE="
+    static let usageQuotaStateEnvironmentKey = "OPENLENS_SCREENSHOT_USAGE_QUOTA_STATE"
+
+    static var usageQuotaScenario: String? {
+        let processInfo = ProcessInfo.processInfo
+
+        if let rawValue = processInfo.environment[usageQuotaStateEnvironmentKey] {
+            return rawValue.lowercased()
+        }
+
+        return processInfo.arguments
+            .first { $0.hasPrefix(usageQuotaStateArgumentPrefix) }
+            .map { String($0.dropFirst(usageQuotaStateArgumentPrefix.count)).lowercased() }
+    }
+
+    @MainActor static func applyUsageQuota(to service: UsageQuotaService) {
+        guard let scenario = usageQuotaScenario else { return }
+        switch scenario {
+        case "rejected":
+            service.applyFixtureState(.keyRejected("HTTP 403 Forbidden"))
+        case "nolimits":
+            service.applyFixtureState(.noLimitsReported)
+        case "failed":
+            service.applyFixtureState(.failed("The request timed out."))
+        default:
+            service.applyFixtureState(.loaded(quotaSnapshot))
+        }
+    }
+
+    static var quotaSnapshot: UsageQuotaService.QuotaSnapshot {
+        UsageQuotaService.QuotaSnapshot(
+            planName: "GLM Coding Plan",
+            windows: [
+                UsageQuotaService.QuotaWindow(
+                    id: "TOKENS_LIMIT-0",
+                    title: AppText.quotaWindow5Hour,
+                    percentage: 82,
+                    resetAt: Date(timeIntervalSinceNow: 47 * 60)
+                ),
+                UsageQuotaService.QuotaWindow(
+                    id: "TOKENS_LIMIT-1",
+                    title: AppText.quotaWindowWeekly,
+                    percentage: 41,
+                    resetAt: Date(timeIntervalSinceNow: 62 * 3600)
+                )
+            ],
+            fetchedAt: Date()
+        )
+    }
+
+    static var showsUsageLimitRetry: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled
+            && (processInfo.arguments.contains("SCREENSHOT_USAGE_LIMIT_RETRY")
+                || processInfo.environment["OPENLENS_SCREENSHOT_USAGE_LIMIT_RETRY"] == "1")
+    }
+
+    static var showsUsageLimitBanner: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled
+            && (processInfo.arguments.contains("SCREENSHOT_USAGE_LIMIT_BANNER")
+                || processInfo.environment["OPENLENS_SCREENSHOT_USAGE_LIMIT_BANNER"] == "1")
     }
 
     static let projectID = "proj_openlens_ios"
@@ -493,6 +687,28 @@ enum ScreenshotFixtures {
             outcome: outcome
         )
     }
+
+    /// Archived conversations, reachable directly via `SCREENSHOT_ARCHIVED_SESSIONS`.
+    static let archivedSessions: [OCSession] = [
+        OCSession(
+            id: "session-screenshot-archived-1", projectID: projectID, directory: projectPath,
+            title: "Ship polished App Store screenshots", version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (6 * dayMilliseconds), updated: nowMilliseconds - (2 * dayMilliseconds),
+                                archived: nowMilliseconds - (2 * dayMilliseconds))
+        ),
+        OCSession(
+            id: "session-screenshot-archived-2", projectID: projectID, directory: projectPath,
+            title: "Tighten workspace information architecture", version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (12 * dayMilliseconds), updated: nowMilliseconds - (9 * dayMilliseconds),
+                                archived: nowMilliseconds - (9 * dayMilliseconds))
+        ),
+        OCSession(
+            id: "session-screenshot-archived-3", projectID: projectID, directory: projectPath,
+            title: "Review onboarding copy for precision", version: "v1",
+            time: OCSessionTime(created: nowMilliseconds - (40 * dayMilliseconds), updated: nowMilliseconds - (35 * dayMilliseconds),
+                                archived: nowMilliseconds - (35 * dayMilliseconds))
+        )
+    ]
 
     static var sessionStatuses: [String: OCSessionStatus] {
         if outcomeRefreshHasCompleted { return [:] }
@@ -894,12 +1110,12 @@ enum ScreenshotFixtures {
 
     private static let workingTreeFiles: [ReviewFileChange] = [
         ReviewFileChange(
-            path: "OpenLens/Views/Workspace/WorkspaceRootView.swift",
-            status: "M",
-            additions: 42,
-            deletions: 11,
-            beforeText: "Text(\"Workspace\")\n",
-            afterText: "Text(\"Workspace\")\nText(\"Source control and commands in one place\")\n"
+            path: "OpenLens/Services/ScreenshotFixtures.swift",
+            status: "A",
+            additions: 214,
+            deletions: 0,
+            beforeText: nil,
+            afterText: "enum ScreenshotFixtures {\n    static let providersResult = ProvidersService.ProvidersResult(...)\n}"
         ),
         ReviewFileChange(
             path: "OpenLens/Views/Review/ReviewRootView.swift",
@@ -910,12 +1126,44 @@ enum ScreenshotFixtures {
             afterText: "Text(\"Review\")\nText(\"Inspect scoped code changes\")\n"
         ),
         ReviewFileChange(
-            path: "OpenLens/Services/ScreenshotFixtures.swift",
+            path: "OpenLens/Views/SessionsListView.swift",
+            status: "M",
+            additions: 12,
+            deletions: 4,
+            beforeText: "Text(session.title)\n",
+            afterText: "Text(session.title)\nText(session.updatedAt, style: .relative)\n"
+        ),
+        ReviewFileChange(
+            path: "OpenLens/Views/Workspace/WorkspaceRootView.swift",
+            status: "M",
+            additions: 42,
+            deletions: 11,
+            beforeText: "Text(\"Workspace\")\n",
+            afterText: "Text(\"Workspace\")\nText(\"Source control and commands in one place\")\n"
+        ),
+        ReviewFileChange(
+            path: "OpenLensTests/WorkspaceNameStoreTests.swift",
             status: "A",
-            additions: 214,
+            additions: 96,
             deletions: 0,
             beforeText: nil,
-            afterText: "enum ScreenshotFixtures {\n    static let providersResult = ProvidersService.ProvidersResult(...)\n}"
+            afterText: "struct WorkspaceNameStoreTests {\n    @Test func customNameOverridesDefaultName() {}\n}"
+        ),
+        ReviewFileChange(
+            path: "PromoScreenshots/hero-dark.png",
+            status: "A",
+            additions: 1042,
+            deletions: 0,
+            beforeText: nil,
+            afterText: nil
+        ),
+        ReviewFileChange(
+            path: "docs/release-checklist.md",
+            status: "M",
+            additions: 8,
+            deletions: 2,
+            beforeText: "- [ ] Run full test suite\n",
+            afterText: "- [ ] Run full test suite\n- [ ] Refresh App Store screenshots\n"
         )
     ]
 

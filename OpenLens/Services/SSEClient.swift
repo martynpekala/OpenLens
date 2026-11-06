@@ -18,6 +18,9 @@ nonisolated struct SSEMessageUpdate {
     let providerID: String?
     let finish: String?
     let parentID: String?
+    /// Provider error for turns ending in `finish == "error"` (e.g. quota limits).
+    let errorMessage: String?
+    let errorStatus: Int?
     let completesStep: Bool
 
     init?(event: OCEvent) {
@@ -50,6 +53,11 @@ nonisolated struct SSEMessageUpdate {
         self.parentID = (decodedInfo?.parentID ?? info["parentID"] as? String).flatMap {
             StreamDisplayValue.fitsIdentifier($0) ? $0 : nil
         }
+        self.errorMessage = StreamDisplayValue.preview(
+            decodedInfo?.error?.message ?? (info["error"] as? [String: Any])?["message"] as? String,
+            maximumBytes: 512
+        )
+        self.errorStatus = decodedInfo?.error?.status ?? (info["error"] as? [String: Any])?["status"] as? Int
     }
 }
 
@@ -786,7 +794,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
 
     // MARK: - Private state (protected by `queue`)
 
-    private let queue = DispatchQueue(label: "com.opencode.SSEClient", qos: .userInitiated)
+    private let queue: DispatchQueue
 
     private var baseURL: URL
     private var authHeader: String?
@@ -927,6 +935,7 @@ final class SSEClient: NSObject, URLSessionDataDelegate {
         contextDirectory: String? = nil,
         transport: (any OpenCodeTransport)? = nil
     ) {
+        self.queue = DispatchQueue(label: "com.opencode.SSEClient.\(baseURL.host() ?? "unknown")", qos: .userInitiated)
         self.baseURL = baseURL
         self.authHeader = authHeader
         self.protocolVersion = protocolVersion

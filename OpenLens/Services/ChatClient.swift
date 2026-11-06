@@ -151,6 +151,33 @@ final class ChatClient: SSEEventHandlerDelegate {
         contextEntries = transcript.contextEntries
         transcriptEntryOrder = transcript.entryOrder
         messages = transcript.messages
+        surfaceFailedExecution(in: transcript)
+    }
+
+    /// A native v2 turn that ends in a provider error (for example a usage
+    /// limit) records the reason only on its closing `idle` entry; the live
+    /// stream carries no error, so the canonical transcript is the source.
+    private func surfaceFailedExecution(in transcript: SessionTranscript) {
+        guard let lastID = transcript.entryOrder.last,
+              let entry = transcript.contextEntries.first(where: { $0.id == lastID }),
+              entry.kind == .idle, entry.idleOutcome == "failed",
+              lastFailedTurnMessageID != entry.id else { return }
+        // The closing idle entry may omit the error; the failed assistant
+        // message of the same turn carries it too.
+        let messagesByID = Dictionary(transcript.messages.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var failure: (message: String, status: Int?)? = entry.idleError?.message.map { ($0, entry.idleError?.status) }
+        if failure == nil {
+            for id in transcript.entryOrder.dropLast().reversed() {
+                guard let message = messagesByID[id] else { continue }
+                if message.role == .user { break }
+                if let text = message.errorMessage { failure = (text, message.errorStatus); break }
+            }
+        }
+        guard let failure else { return }
+        lastFailedTurnMessageID = entry.id
+        // Same terminal path as legacy failed turns: it also ends the loading
+        // state, which keeps the chat from re-pinning to the bottom forever.
+        markResponseFailed(failure.message, status: failure.status)
     }
 
     func timelineItems(showsThinking: Bool) -> [ChatTimelineItem] {
@@ -173,6 +200,12 @@ final class ChatClient: SSEEventHandlerDelegate {
     var isUndoingMessage: Bool = false
     var responseState: ChatResponseState = .idle
     var errorMessage: String?
+    /// Set when the active failure was detected as a provider usage limit,
+    /// so the banner can show the reset moment instead of a generic error.
+    private(set) var usageLimitInfo: UsageLimitInfo?
+    /// The last assistant message whose terminal error was surfaced, so repeat
+    /// `message.updated` snapshots don't re-present the same failure.
+    @ObservationIgnored private var lastFailedTurnMessageID: String?
     @ObservationIgnored private var draftsBySessionID: [String: String] = [:]
     /// Generated catch-ups keyed by the session that requested them, so a late
     /// result lands with its own session rather than the one now open.
@@ -187,16 +220,27 @@ final class ChatClient: SSEEventHandlerDelegate {
         case location(String)
         case operation(String)
         case viewing(String)
+        case usageLimit(UsageLimitInfo)
 
         var message: String {
             switch self {
             case .location(let message), .operation(let message), .viewing(let message): message
+            case .usageLimit(let info): info.message
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .location, .operation, .viewing: "exclamationmark.triangle.fill"
+            case .usageLimit: "hourglass"
             }
         }
 
         var canRetry: Bool {
-            if case .operation = self { return false }
-            return true
+            switch self {
+            case .operation, .usageLimit: return false
+            case .location, .viewing: return true
+            }
         }
     }
 
@@ -204,6 +248,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// from sending or another operation. A location failure still blocks work.
     var presentedError: PresentedError? {
         if let sessionLocationError { return .location(sessionLocationError) }
+        if let usageLimitInfo { return .usageLimit(usageLimitInfo) }
         if let errorMessage { return .operation(errorMessage) }
         if let resultViewingError { return .viewing(resultViewingError) }
         return nil
@@ -260,6 +305,34 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     /// Session status from SSE.
     var sessionStatus: OCSessionStatus?
+
+    /// What the chat should present while the server retries a failed turn
+    /// (for example a provider usage limit): the provider message, the next
+    /// attempt moment, the attempt count, and the parsed usage limit if any.
+    var retryPresentation: RetryPresentation? {
+        guard let sessionStatus, sessionStatus.type == .retry else { return nil }
+        return RetryPresentation(status: sessionStatus)
+    }
+
+    struct RetryPresentation: Equatable {
+        let message: String?
+        let nextAttempt: Date?
+        let attempt: Int?
+        let usageLimit: UsageLimitInfo?
+
+        init(status: OCSessionStatus) {
+            message = status.message
+            attempt = status.attempt
+            usageLimit = status.message.flatMap { UsageLimitInfo.detect(message: $0) }
+            if let next = status.next, next > 0 {
+                // Epoch seconds; tolerate millisecond timestamps defensively.
+                let seconds = next > 10_000_000_000 ? next / 1000 : next
+                nextAttempt = Date(timeIntervalSince1970: TimeInterval(seconds))
+            } else {
+                nextAttempt = nil
+            }
+        }
+    }
 
     private var observedExecution: (sessionID: String, idle: Double?)?
 
@@ -392,6 +465,16 @@ final class ChatClient: SSEEventHandlerDelegate {
         let costTiers: [OCModelCost]
         var id: String { "\(providerID)/\(modelID)" }
 
+        /// True only when pricing is known and every tier is $0. Missing cost data is unknown, not free.
+        var isFree: Bool {
+            let tiers = costTiers + (cost.map { [$0] } ?? [])
+            guard !tiers.isEmpty else { return false }
+            return tiers.allSatisfy { tier in
+                tier.input == 0 && tier.output == 0
+                    && (tier.cacheRead ?? 0) == 0 && (tier.cacheWrite ?? 0) == 0
+            }
+        }
+
         // Hashable conformance ignoring cost/limit (non-Hashable)
         func hash(into hasher: inout Hasher) {
             hasher.combine(id)
@@ -454,7 +537,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         guard !selectedProviderID.isEmpty, !selectedModelID.isEmpty else { return }
 
         let selectionID = "\(selectedProviderID)/\(selectedModelID)"
-        guard let connID = savedConnectionsStore?.activeConnectionID else {
+        guard let connID = connection?.connectionID else {
             guard isDemoMode else { return }
             inMemoryRecentModelIDs.removeAll { $0 == selectionID }
             inMemoryRecentModelIDs.insert(selectionID, at: 0)
@@ -482,7 +565,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func persistDefaultModelSelection(providerID: String, modelID: String) {
-        guard let connID = savedConnectionsStore?.activeConnectionID else { return }
+        guard let connID = connection?.connectionID else { return }
         savedConnectionsStore?.updateDefaultModelSelection(
             connectionID: connID,
             providerID: providerID,
@@ -491,7 +574,7 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     private func clearDefaultModelSelection() {
-        guard let connID = savedConnectionsStore?.activeConnectionID else { return }
+        guard let connID = connection?.connectionID else { return }
         savedConnectionsStore?.clearDefaultModelSelection(connectionID: connID)
     }
 
@@ -566,8 +649,8 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     var defaultModelSelection: (providerID: String, modelID: String)? {
-        guard let activeConnectionID = savedConnectionsStore?.activeConnectionID else { return nil }
-        guard let saved = savedConnectionsStore?.defaultModelSelection(connectionID: activeConnectionID) else { return nil }
+        guard let connectionID = connection?.connectionID else { return nil }
+        guard let saved = savedConnectionsStore?.defaultModelSelection(connectionID: connectionID) else { return nil }
         return Self.resolveSavedModelSelection(
             providerID: saved.providerID,
             modelID: saved.modelID,
@@ -670,7 +753,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     private var quickModelConnectionID: String? {
         guard let savedConnectionsStore else { return nil }
-        return savedConnectionsStore.activeConnectionID ?? savedConnectionsStore.mostRecent?.id
+        return connection?.connectionID ?? savedConnectionsStore.mostRecent?.id
     }
 
     /// Saves a model and optional reasoning variant for a quick action without
@@ -1443,6 +1526,8 @@ final class ChatClient: SSEEventHandlerDelegate {
         locallyStoppedSessionID = nil
         responseState = .generating
         errorMessage = nil
+        usageLimitInfo = nil
+        lastFailedTurnMessageID = nil
         isLoading = true
         currentActivity = AgentActivity()
         currentActivity?.currentLabel = "Thinking..."
@@ -1503,7 +1588,8 @@ final class ChatClient: SSEEventHandlerDelegate {
 
         let haptics = HapticController()
         let tracker = LiveActivityTracker(
-            liveActivity: liveActivity
+            liveActivity: liveActivity,
+            serverID: { [weak connection] in connection?.connectionID }
         )
 
         self.haptics = haptics
@@ -1515,7 +1601,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.sseHandler?.delegate = self
 
         // Restore persisted model selection from the most recent saved connection
-        if let activeID = savedConnectionsStore.activeConnectionID,
+        if let activeID = connection.connectionID,
            let saved = savedConnectionsStore.savedModelSelection(connectionID: activeID) {
             self.selectedProviderID = saved.providerID
             self.selectedModelID = saved.modelID
@@ -1665,6 +1751,13 @@ final class ChatClient: SSEEventHandlerDelegate {
                 ScreenshotFixtures.applySubagentTools(to: self)
             } else if ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes {
                 ScreenshotFixtures.applyExecutionOutcome(to: self)
+            } else if ScreenshotFixtures.showsUsageLimitRetry {
+                applyScreenshotUsageLimitRetry()
+            } else if ScreenshotFixtures.showsUsageLimitBanner {
+                markResponseFailed(
+                    "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+                    status: 429
+                )
             } else {
                 demoPlayer?.play(demoScript)
             }
@@ -1727,6 +1820,13 @@ final class ChatClient: SSEEventHandlerDelegate {
                 ScreenshotFixtures.applySubagentTools(to: self)
             } else if ScreenshotFixtures.isEnabled && ScreenshotFixtures.showsExecutionOutcomes {
                 ScreenshotFixtures.applyExecutionOutcome(to: self)
+            } else if ScreenshotFixtures.showsUsageLimitRetry {
+                applyScreenshotUsageLimitRetry()
+            } else if ScreenshotFixtures.showsUsageLimitBanner {
+                markResponseFailed(
+                    "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+                    status: 429
+                )
             } else {
                 demoPlayer?.play(demoScript)
             }
@@ -2796,10 +2896,10 @@ final class ChatClient: SSEEventHandlerDelegate {
         self.enabledProviders = configResult.enabledProviders
         self.disabledProviders = configResult.disabledProviders
 
-        let savedDefault = savedConnectionsStore?.activeConnectionID.flatMap {
+        let savedDefault = connection?.connectionID.flatMap {
             savedConnectionsStore?.defaultModelSelection(connectionID: $0)
         }
-        let savedSelection = savedConnectionsStore?.activeConnectionID.flatMap {
+        let savedSelection = connection?.connectionID.flatMap {
             savedConnectionsStore?.savedModelSelection(connectionID: $0)
         }
         var serverDefault: (providerID: String, modelID: String)?
@@ -2983,7 +3083,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         if providers.isEmpty {
             await loadProviders()
         }
-        if let saved = savedConnectionsStore?.activeConnectionID.flatMap({
+        if let saved = connection?.connectionID.flatMap({
                savedConnectionsStore?.savedModelSelection(connectionID: $0)
            }),
            let model = Self.resolveSavedModelSelection(
@@ -3128,8 +3228,24 @@ final class ChatClient: SSEEventHandlerDelegate {
         locallyStoppedSessionID = nil
         responseState = .generating
         errorMessage = nil
+        usageLimitInfo = nil
+        lastFailedTurnMessageID = nil
         isLoading = true
         haptics.prepareForResponse()
+    }
+
+    /// Screenshot fixture: the server is retrying a provider usage limit.
+    private func applyScreenshotUsageLimitRetry() {
+        isLoading = true
+        responseState = .generating
+        currentActivity = AgentActivity()
+        currentActivity?.currentLabel = "Retrying…"
+        sessionStatus = OCSessionStatus(
+            type: .retry,
+            attempt: 3,
+            message: "Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 03:21:58",
+            next: Int(Date().timeIntervalSince1970 + 142)
+        )
     }
 
     private func observeExecutionStart() {
@@ -3137,19 +3253,29 @@ final class ChatClient: SSEEventHandlerDelegate {
         observedExecution = (session.id, session.time.idle)
     }
 
-    private func markResponseFailed(_ message: String) {
+    private func markResponseFailed(_ message: String, status: Int? = nil) {
         cancelStoppedStateClear()
         isLoading = false
         responseState = .failed
         errorMessage = message
+        usageLimitInfo = UsageLimitInfo.detect(message: message, status: status)
         currentActivity = nil
         responseStartDate = nil
         sessionStatus = nil
         liveActivityTracker?.end(phase: .failed)
     }
 
+    /// An assistant turn ended with a provider error (for example a usage
+    /// limit). Surfaces the server's reason instead of stopping silently.
+    func assistantTurnDidFail(sessionID: String, messageID: String, error: OCAPIError) {
+        guard lastFailedTurnMessageID != messageID else { return }
+        lastFailedTurnMessageID = messageID
+        markResponseFailed(error.message ?? AppText.responseTurnFailed, status: error.status)
+    }
+
     func dismissError() {
         errorMessage = nil
+        usageLimitInfo = nil
         if responseState == .failed {
             responseState = .idle
         }
@@ -3316,6 +3442,7 @@ final class ChatClient: SSEEventHandlerDelegate {
 
             var requestStarted = false
             do {
+                try await ensureSessionUnarchived(session)
                 try await awaitSessionSettingsChanges(for: session.id)
                 if tracksAdmission {
                     await reconcileUncertainSubmissions(in: session.id, before: queuedPrompt.messageID)
@@ -4294,6 +4421,17 @@ final class ChatClient: SSEEventHandlerDelegate {
         }
     }
 
+    /// Sending in an archived conversation restores it first, so the new turn
+    /// is not filed away with it. The canonical restored snapshot becomes
+    /// current, keeping later sends from repeating the mutation; a failed
+    /// restore stops the send rather than hiding the turn in the archive.
+    private func ensureSessionUnarchived(_ session: OCSession) async throws {
+        guard session.isArchived, let sessionsService else { return }
+        let restored = try await sessionsService.unarchiveSession(session)
+        guard currentSession?.id == session.id else { return }
+        currentSession = restored
+    }
+
     private func sendPromptAsync(
         text: String,
         agent: String? = nil,
@@ -4306,6 +4444,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let tracksAdmission = usesV2SessionAPI && messageID != nil
         var requestStarted = false
         do {
+            try await ensureSessionUnarchived(session)
             if let agent {
                 enqueueSessionSettingsChange(.agent(agent), for: session.id)
             }
@@ -4395,6 +4534,7 @@ final class ChatClient: SSEEventHandlerDelegate {
         let session = context.session
 
         do {
+            try await ensureSessionUnarchived(session)
             try await awaitSessionSettingsChanges(for: session.id)
             try requireCurrentWorkLocation(context)
             try await messagesService!.sendCommand(
@@ -4591,6 +4731,10 @@ final class ChatClient: SSEEventHandlerDelegate {
 
     // MARK: - SSE Setup
 
+    /// Whether this client belongs to the server the UI is showing. The registry replaces it;
+    /// everything else (previews, tests, a single server) is the active one.
+    @ObservationIgnored var isActiveServer: () -> Bool = { true }
+
     func setupSSEHandlers() {
         guard let connection, let sseClient = connection.sseClient else { return }
 
@@ -4611,6 +4755,13 @@ final class ChatClient: SSEEventHandlerDelegate {
     /// Routes one event from the session stream. Reconcile and inbox-change
     /// events trigger authoritative reads for the open session only.
     func receiveStreamEvent(_ inboundEvent: SSEInboundEvent) {
+        // The connection binds every client to its stream whether or not a chat was ever opened,
+        // so a non-active server's client with no session sees every session's prompts.
+        // `SSEEventHandler` treats "no current session" as "any session", which would raise
+        // another session's permission, question or form here and reject a pending question on
+        // the server. The active client keeps that deliberate early-prompt behaviour; recovery
+        // reads prompts authoritatively once a session is loaded.
+        guard currentSession != nil || isActiveServer() || !Self.isInteractivePromptEvent(inboundEvent) else { return }
         if usesV2SessionAPI, case .cold(.sessionUpdated(let update), _) = inboundEvent,
            let update, update.sessionID == currentSession?.id,
            let directory = update.update?.directory, directory != currentSession?.directory {
@@ -4643,6 +4794,18 @@ final class ChatClient: SSEEventHandlerDelegate {
         if usesV2SessionAPI, case .cold(.sessionUpdated(let update), _) = inboundEvent,
            let update, update.sessionID == currentSession?.id, update.refreshesTranscript {
             synchronizeCurrentSessionFromServer()
+        }
+    }
+
+    private static func isInteractivePromptEvent(_ inboundEvent: SSEInboundEvent) -> Bool {
+        switch inboundEvent {
+        case .cold(.permissionAsked, _), .cold(.questionAsked, _), .cold(.formCreated, _):
+            true
+        case .raw(let event):
+            ["permission.asked", "permission.v2.asked", "question.asked", "form.created", "form.asked"]
+                .contains(event.type)
+        default:
+            false
         }
     }
 
@@ -5839,17 +6002,19 @@ extension ChatClient {
 #endif
 
 private final class NoopLiveActivityProvider: LiveActivityProviding {
-    func isActive(sessionID: String?) -> Bool { false }
+    func isActive(serverID: String?, sessionID: String?) -> Bool { false }
 
-    func startActivity(sessionID: String?, directory: String?, title: String?) {}
+    func startActivity(serverID: String?, sessionID: String?, directory: String?, title: String?) {}
 
-    func update(sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
+    func update(serverID: String?, sessionID: String?, pendingUserResponse: OpenLensActivityAttributes.PendingUserResponse?) {}
 
-    func endActivity(sessionID: String?, phase: OpenLensActivityAttributes.Phase) {}
+    func endActivity(serverID: String?, sessionID: String?, phase: OpenLensActivityAttributes.Phase) {}
 
-    func dismissImmediately(sessionID: String?) {}
+    func dismissImmediately(serverID: String?, sessionID: String?) {}
 
-    func dismissAll() {}
+    func dismissAll(serverID: String?) {}
+
+    func dismissEverything() {}
 
     func previewLiveActivity() {}
 }

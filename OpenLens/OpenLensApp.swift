@@ -98,10 +98,14 @@ struct InitialSessionsReadiness: Equatable {
 
     private(set) var state: State
     private(set) var generation = 0
+    /// The server the loaded sessions came from. The list attributes its seed to this server, so
+    /// switching the active server can never show one server's sessions under another.
+    private(set) var readyServerID: String?
 
-    init(initialSessions: [OCSession]? = nil) {
+    init(initialSessions: [OCSession]? = nil, serverID: String? = nil) {
         if let initialSessions {
             state = .loaded(initialSessions)
+            readyServerID = serverID
         } else {
             state = .idle
         }
@@ -122,9 +126,10 @@ struct InitialSessionsReadiness: Equatable {
         return generation
     }
 
-    mutating func succeed(with sessions: [OCSession], generation expectedGeneration: Int) {
+    mutating func succeed(with sessions: [OCSession], generation expectedGeneration: Int, serverID: String? = nil) {
         guard generation == expectedGeneration else { return }
         state = .loaded(sessions)
+        readyServerID = serverID
     }
 
     mutating func fail(with message: String, generation expectedGeneration: Int) {
@@ -140,6 +145,7 @@ struct InitialSessionsReadiness: Equatable {
     mutating func reset() {
         generation &+= 1
         state = .idle
+        readyServerID = nil
     }
 }
 
@@ -170,26 +176,41 @@ struct OpenLensApp: App {
     private static let turnDiffPreviewLaunchArgument = "CHAT_TURN_DIFF_PREVIEW_MODE"
     private let screenshotModeEnabled: Bool
     private let streamStressModeEnabled: Bool
-    @State private var connection: ConnectionManager
-    
+    /// Every server context. The UI still shows one at a time: the registry's active context.
+    @State private var serverRegistry: ServerRegistry
+    @State private var resumeTask: Task<Void, Never>?
+    @Environment(\.scenePhase) private var scenePhase
+    /// Set once the remaining saved servers have been connected for this launch.
+    @State private var hasConnectedRemainingServers = false
+
     @State private var router = AppRouter()
 
     private let liveActivity: LiveActivityManager
-    private let sessionsService: SessionsService
-    private let messagesService: MessagesService
-    private let providersService: ProvidersService
-    private let questionService: QuestionService
-    private let reviewService: ReviewService
-    private let inboxService: InboxService
-    private let workspaceService: WorkspaceService
+
+    private let workspaceNameStore: WorkspaceNameStore
     private let sessionInsightsService: SessionInsightsService
     private let gitHubStarsService: GitHubStarsService
+    private let usageQuotaService: UsageQuotaService
     private let savedConnectionsStore: SavedConnectionsStore
     private let recordedReplayStore: RecordedReplayStore
     private let chatEasterEgg: ChatEasterEggController
     private let pendingAppActions: PendingAppActions
 
-    @State private var chatClient: ChatClient
+    private var serverContext: ServerContext { serverRegistry.activeContext }
+    private var connection: ConnectionManager { serverContext.connection }
+
+    /// What the root observes about the active server. Including the context id makes switching
+    /// the active server re-run everything that keys off connection state.
+    private struct ActiveConnectionKey: Equatable {
+        let contextID: String
+        let state: ConnectionManager.State
+    }
+
+    private var activeConnectionKey: ActiveConnectionKey {
+        ActiveConnectionKey(contextID: serverContext.id, state: connection.state)
+    }
+    private var chatClient: ChatClient { serverContext.chatClient }
+    private var sessionsService: SessionsService { serverContext.sessionsService }
 
     /// When non-nil, presents a preview ChatView over the connect screen.
     @State private var activePreviewSource: ChatPreviewSource?
@@ -202,9 +223,9 @@ struct OpenLensApp: App {
     /// Deep link connection received via `openlens://connect` URL.
     @State private var pendingDeepLink: DeepLinkConnection?
     @State private var pendingSessionNavigationID: String?
+    /// Server the pending navigation belongs to; nil searches every connected server.
+    @State private var pendingSessionNavigationServerID: String?
 
-    /// Alert shown when a deep link arrives while already connected.
-    @State private var showDeepLinkSwitch: Bool = false
     /// Set by `openlens://setup` while connected or reconnecting; presented once the connected root is on screen.
     @State private var isOpenCodeV2SupportRequested = false
     @State private var isOpenCodeV2SupportPresented = false
@@ -294,17 +315,30 @@ struct OpenLensApp: App {
         self.streamStressModeEnabled = streamStressModeEnabled
         self._initialSessionsReadiness = State(
             initialValue: InitialSessionsReadiness(
-                initialSessions: screenshotModeEnabled ? ScreenshotFixtures.sessions : nil
+                initialSessions: screenshotModeEnabled ? ScreenshotFixtures.sessions : nil,
+                serverID: screenshotModeEnabled ? ScreenshotFixtures.defaultServerID : nil
             )
         )
 
-        var initialRouter = AppRouter()
+        let initialRouter = AppRouter()
+        // Paths are kept per server, so the router must name the server before anything is seeded.
+        // The prepared screenshot context is built below with this id; otherwise it is corrected
+        // to the registry's choice once the registry exists.
+        initialRouter.activate(serverID: ScreenshotFixtures.defaultServerID)
         if screenshotModeEnabled,
            ScreenshotFixtures.opensDefaultChatSession
             || ScreenshotFixtures.opensPermissionSheet
             || ScreenshotFixtures.opensFormSheet {
             initialRouter.selectedTab = .chat
-            initialRouter.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
+            initialRouter.chatPath = [initialRouter.chatSessionDestination(for: ScreenshotFixtures.defaultSession)]
+        }
+        if screenshotModeEnabled, ScreenshotFixtures.opensServers {
+            initialRouter.selectedTab = .settings
+            initialRouter.settingsPath = [.servers]
+        }
+        if screenshotModeEnabled, ScreenshotFixtures.opensArchivedSessions {
+            initialRouter.selectedTab = .chat
+            initialRouter.chatPath = [.archivedSessions]
         }
         if screenshotModeEnabled, let launchTab = ScreenshotFixtures.launchTab {
             initialRouter.selectedTab = launchTab
@@ -312,27 +346,16 @@ struct OpenLensApp: App {
         self._router = State(initialValue: initialRouter)
 
         let savedConnections = SavedConnectionsStore()
-        let connection = ConnectionManager()
-        connection.savedConnectionsStore = savedConnections
-
-        if screenshotModeEnabled {
-            connection.configureDemoState(
-                projectName: ScreenshotFixtures.projectName,
-                branch: ScreenshotFixtures.branchName
-            )
-        }
 
         let liveActivity = LiveActivityManager()
 
-        let sessions = SessionsService(connection: connection)
-        let messages = MessagesService(connection: connection)
-        let providers = ProvidersService(connection: connection)
-        let questions = QuestionService(connection: connection)
-        let review = ReviewService(connection: connection)
-        let inbox = InboxService(connection: connection)
-        let workspace = WorkspaceService(connection: connection)
+        let workspaceNames = WorkspaceNameStore()
         let sessionInsights = SessionInsightsService()
         let gitHubStars = GitHubStarsService()
+        let usageQuota = UsageQuotaService()
+        if screenshotModeEnabled {
+            ScreenshotFixtures.applyUsageQuota(to: usageQuota)
+        }
         let recordedReplayStore = RecordedReplayStore()
         let chatEasterEgg = ChatEasterEggController()
         let pendingAppActions = PendingAppActions()
@@ -341,21 +364,15 @@ struct OpenLensApp: App {
 
         self.savedConnectionsStore = savedConnections
         self.liveActivity = liveActivity
-        self.sessionsService = sessions
-        self.messagesService = messages
-        self.providersService = providers
-        self.questionService = questions
-        self.reviewService = review
-        self.inboxService = inbox
-        self.workspaceService = workspace
+        self.workspaceNameStore = workspaceNames
         self.sessionInsightsService = sessionInsights
         self.gitHubStarsService = gitHubStars
+        self.usageQuotaService = usageQuota
         self.recordedReplayStore = recordedReplayStore
         self.chatEasterEgg = chatEasterEgg
         self.pendingAppActions = pendingAppActions
 
-        self._connection = State(initialValue: connection)
-
+        var demoChatClient: ChatClient?
         if screenshotModeEnabled {
             let demoClient = ChatClient(demoMode: true)
             demoClient.providers = ScreenshotFixtures.providersResult.providers
@@ -375,19 +392,63 @@ struct OpenLensApp: App {
                 demoClient.pendingForm = ScreenshotFixtures.inboxSnapshot.forms.first
                 demoClient.showFormSheet = demoClient.pendingForm != nil
             }
-            self._chatClient = State(initialValue: demoClient)
-        } else {
-            self._chatClient = State(initialValue: ChatClient(
-                connection: connection,
-                liveActivity: liveActivity,
-                sessionsService: sessions,
-                messagesService: messages,
-                providersService: providers,
-                questionService: questions,
-                savedConnectionsStore: savedConnections,
-                recordedReplayStore: recordedReplayStore
-            ))
+            demoChatClient = demoClient
         }
+        // Screenshot mode hands the registry a ready-made demo context; otherwise the registry
+        // builds one context per saved profile itself.
+        var preparedContext: ServerContext?
+        if screenshotModeEnabled {
+            let demoConnection = ConnectionManager()
+            demoConnection.savedConnectionsStore = savedConnections
+            demoConnection.configureDemoState(
+                projectName: ScreenshotFixtures.projectName,
+                branch: ScreenshotFixtures.branchName
+            )
+            preparedContext = ServerContext(
+                id: ScreenshotFixtures.defaultServerID,
+                profile: ScreenshotFixtures.holdsMultipleServers ? ScreenshotFixtures.defaultServerProfile : nil,
+                connection: demoConnection,
+                liveActivity: liveActivity,
+                savedConnectionsStore: savedConnections,
+                recordedReplayStore: recordedReplayStore,
+                chatClient: demoChatClient
+            )
+        }
+        var additionalContexts: [ServerContext] = []
+        if screenshotModeEnabled, ScreenshotFixtures.holdsMultipleServers {
+            let demoServers: [(id: String, profile: SavedConnection, project: String, branch: String, state: ConnectionManager.State)] = [
+                (ScreenshotFixtures.devboxServerID, ScreenshotFixtures.devboxServerProfile,
+                 "OpenLens", "perf/session-list", ScreenshotFixtures.devboxConnectionState),
+                (ScreenshotFixtures.ciServerID, ScreenshotFixtures.ciServerProfile,
+                 "release-pipeline", "main", ScreenshotFixtures.ciConnectionState)
+            ]
+            additionalContexts = demoServers.map { server in
+                let connection = ConnectionManager()
+                connection.savedConnectionsStore = savedConnections
+                connection.configureDemoState(projectName: server.project, branch: server.branch, state: server.state)
+                return ServerContext(
+                    id: server.id,
+                    profile: server.profile,
+                    connection: connection,
+                    liveActivity: liveActivity,
+                    savedConnectionsStore: savedConnections,
+                    recordedReplayStore: recordedReplayStore,
+                    chatClient: ChatClient(demoMode: true)
+                )
+            }
+        }
+        let registry = ServerRegistry(
+            savedConnectionsStore: savedConnections,
+            liveActivity: liveActivity,
+            recordedReplayStore: recordedReplayStore,
+            preparedContext: preparedContext,
+            additionalPreparedContexts: additionalContexts
+        )
+        registry.onServerRemoved = { [initialRouter] id in initialRouter.forgetServer(id) }
+        if !screenshotModeEnabled, let activeID = registry.activeServerID {
+            initialRouter.activate(serverID: activeID)
+        }
+        self._serverRegistry = State(initialValue: registry)
 
         if streamStressModeEnabled {
             let preview = turnDiffPreviewModeEnabled
@@ -447,7 +508,9 @@ struct OpenLensApp: App {
                 case .connected(let initialSessions):
                     ConnectedRootView(
                         chatClient: chatClient,
-                        initialSessions: initialSessions
+                        initialSessions: initialSessions,
+                        initialServerID: initialSessionsReadiness.readyServerID,
+                        onActivateServer: switchServer(to:)
                     )
                         .environment(\.connection, connection)
                         .environment(router)
@@ -488,22 +551,40 @@ struct OpenLensApp: App {
             .openLensTheme(OpenLensAppearance.fallback.theme)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .environment(\.liveActivity, liveActivity)
+            .environment(\.serverRegistry, serverRegistry)
             .environment(\.savedConnections, savedConnectionsStore)
-            .environment(\.sessionsService, sessionsService)
-            .environment(\.messagesService, messagesService)
-            .environment(\.providersService, providersService)
-            .environment(\.questionService, questionService)
-            .environment(\.reviewService, reviewService)
-            .environment(\.inboxService, inboxService)
-            .environment(\.workspaceService, workspaceService)
+            .environment(\.sessionsService, serverContext.sessionsService)
+            .environment(\.messagesService, serverContext.messagesService)
+            .environment(\.providersService, serverContext.providersService)
+            .environment(\.questionService, serverContext.questionService)
+            .environment(\.reviewService, serverContext.reviewService)
+            .environment(\.inboxService, serverContext.inboxService)
+            .environment(\.workspaceService, serverContext.workspaceService)
+            .environment(\.workspaceNames, workspaceNameStore)
             .environment(\.sessionInsightsService, sessionInsightsService)
             .environment(\.gitHubStarsService, gitHubStarsService)
+            .environment(\.usageQuotaService, usageQuotaService)
             .environment(\.recordedReplayStore, recordedReplayStore)
             .environment(\.chatEasterEgg, chatEasterEgg)
             .environment(\.requestReviewPrompt, {
                 presentSystemReviewPrompt()
             })
-            .task(id: connection.state) {
+            .onChange(of: scenePhase) { _, newPhase in
+                resumeTask?.cancel()
+                switch newPhase {
+                case .active:
+                    resumeTask = Task { await serverRegistry.resumeAll() }
+                case .background:
+                    serverRegistry.suspendAll()
+                default:
+                    break
+                }
+            }
+            .onChange(of: serverRegistry.activeServerID) { _, newID in
+                // Backstop for changes that bypass `switchServer`, such as removing the active server.
+                if let newID { router.activate(serverID: newID) }
+            }
+            .task(id: activeConnectionKey) {
                 await prepareInitialSessions(for: connection.state)
             }
             .sheet(isPresented: previewPresentationBinding) {
@@ -530,8 +611,8 @@ struct OpenLensApp: App {
                 }
             }
             .onOpenURL { url in
-                if let sessionID = OpenLensActivityAttributes.sessionID(from: url) {
-                    openLiveActivitySession(sessionID)
+                if let link = OpenLensActivityAttributes.sessionLink(from: url) {
+                    openLiveActivitySession(link)
                     return
                 }
                 if ConnectionSetupLink.matches(url) {
@@ -545,14 +626,20 @@ struct OpenLensApp: App {
                 }
                 guard let deepLink = DeepLinkConnection(from: url) else { return }
                 pendingSessionNavigationID = deepLink.sessionID
-                if connection.isConnected || connection.isReconnecting || isPreviewMode {
-                    pendingDeepLink = deepLink
-                    showDeepLinkSwitch = true
+                pendingSessionNavigationServerID = nil
+                if connection.isConnected || connection.isReconnecting {
+                    // Already connected: add the server alongside the current one and switch to it.
+                    Task { await addDeepLinkedServer(deepLink) }
                 } else {
+                    if isPreviewMode { exitPreview() }
                     pendingDeepLink = deepLink
                 }
             }
-            .onChange(of: connection.state) { oldState, newState in
+            .onChange(of: activeConnectionKey) { oldKey, newKey in
+                let oldState = oldKey.state
+                let newState = newKey.state
+                // A change of active server is a switch, not a connect.
+                let isSameServer = oldKey.contextID == newKey.contextID
                 switch newState {
                 case .disconnected, .error:
                     // The awaited (re)connection did not happen; the user stays on connection setup.
@@ -563,10 +650,24 @@ struct OpenLensApp: App {
 
                 if newState == .connected {
                     onboardingCompleted = true
+                    // A draft context only gets its saved profile once it connects.
+                    serverRegistry.recordActiveServerAsLastActive()
                 }
 
-                if shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
+                if isSameServer, shouldHandleConnectionAsFreshConnect(from: oldState, to: newState) {
                     router.selectedTab = .chat
+                }
+
+                // The connect screen drives the first connection; once it is up, bring the other
+                // saved servers up in the background. With one saved server this does nothing.
+                if newState == .connected, !hasConnectedRemainingServers {
+                    hasConnectedRemainingServers = true
+                    Task {
+                        await serverRegistry.connectAll()
+                        // A link held above because its server was still connecting gets its
+                        // second and final chance here.
+                        await openDeepLinkedSessionIfNeeded()
+                    }
                 }
 
                 if newState == .connected {
@@ -582,23 +683,6 @@ struct OpenLensApp: App {
                     await createRequestedSessionIfNeeded()
                 }
             }
-            .alert(
-                AppText.switchServerTitle,
-                isPresented: $showDeepLinkSwitch
-            ) {
-                Button(AppText.switchAction, role: .destructive) {
-                    if isPreviewMode { exitPreview() }
-                    liveActivity.dismissAll()
-                    connection.disconnect()
-                    // pendingDeepLink is already set — ConnectView will pick it up
-                }
-                Button(AppText.cancel, role: .cancel) {
-                    pendingDeepLink = nil
-                    pendingSessionNavigationID = nil
-                }
-            } message: {
-                Text(AppText.switchMessage)
-            }
         }
     }
 
@@ -612,14 +696,38 @@ struct OpenLensApp: App {
             guard case .idle = initialSessionsReadiness.state else { return }
             let generation = initialSessionsReadiness.beginLoading()
 
-            do {
-                let sessions = try await sessionsService.listAllSessions()
-                guard !Task.isCancelled, connection.isConnected else { return }
-                initialSessionsReadiness.succeed(with: sessions, generation: generation)
-            } catch is CancellationError {
+            // The list shows every server, so the first one to answer opens it; the others fill
+            // in as they arrive. With one server this is that server's own load.
+            let activeID = serverContext.id
+            var servers = serverRegistry.savedServerContexts.filter { $0.id == activeID || $0.connection.isConnected }
+            if servers.isEmpty { servers = [serverContext] }
+            let outcome = await withTaskGroup(of: (String, Result<[OCSession], Error>).self) { group in
+                for context in servers {
+                    let service = context.id == activeID ? sessionsService : context.sessionsService
+                    group.addTask { @MainActor in
+                        do { return (context.id, .success(try await service.listAllSessions())) }
+                        catch { return (context.id, .failure(error)) }
+                    }
+                }
+                var firstFailure: Error?
+                for await (serverID, result) in group {
+                    switch result {
+                    case .success(let sessions):
+                        group.cancelAll()
+                        return (serverID, Result<[OCSession], Error>.success(sessions))
+                    case .failure(let error):
+                        if serverID == activeID || firstFailure == nil { firstFailure = error }
+                    }
+                }
+                return (activeID, Result<[OCSession], Error>.failure(firstFailure ?? CancellationError()))
+            }
+            guard !Task.isCancelled, connection.isConnected else { return }
+            switch outcome.1 {
+            case .success(let sessions):
+                initialSessionsReadiness.succeed(with: sessions, generation: generation, serverID: outcome.0)
+            case .failure(is CancellationError):
                 return
-            } catch {
-                guard !Task.isCancelled, connection.isConnected else { return }
+            case .failure(let error):
                 initialSessionsReadiness.fail(
                     with: error.localizedDescription,
                     generation: generation
@@ -694,7 +802,7 @@ struct OpenLensApp: App {
         }
 
         router.selectedTab = .chat
-        router.chatPath = [.chatSession(session: ScreenshotFixtures.defaultSession)]
+        router.chatPath = [router.chatSessionDestination(for: ScreenshotFixtures.defaultSession)]
     }
 
     private var previewPresentationBinding: Binding<Bool> {
@@ -713,6 +821,48 @@ struct OpenLensApp: App {
         )
     }
 
+    /// Switches the visible server. The registry and the router change together in one
+    /// transaction with animations off, so no frame shows one server's client with the other's
+    /// paths, and the stacks do not animate a push or pop for the change.
+    @MainActor
+    private func switchServer(to serverID: String) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            guard serverRegistry.activate(id: serverID) else { return }
+            router.activate(serverID: serverID)
+        }
+    }
+
+    /// `openlens://connect` while connected: save the server, connect it next to the current one
+    /// and make it the active server. Nothing is disconnected.
+    @MainActor
+    private func addDeepLinkedServer(_ deepLink: DeepLinkConnection) async {
+        let profile = serverRegistry.add(
+            serverURL: deepLink.serverURL,
+            username: deepLink.username,
+            password: deepLink.password
+        )
+        do {
+            try await serverRegistry.connect(profile: profile, method: .deepLink)
+        } catch {
+            Logger.connection.error("Couldn't connect the server a deep link added: \(error.localizedDescription, privacy: .public)")
+            pendingSessionNavigationID = nil
+            return
+        }
+        guard let context = serverRegistry.context(forProfileID: profile.id), context.connection.isConnected else {
+            pendingSessionNavigationID = nil
+            return
+        }
+        if context.id != serverRegistry.activeContext.id {
+            // The new server needs its own first sessions load before the root shows it.
+            initialSessionsReadiness.reset()
+            switchServer(to: context.id)
+        }
+        router.selectedTab = .chat
+        await openDeepLinkedSessionIfNeeded()
+    }
+
     @MainActor
     private func openDeepLinkedSessionIfNeeded() async {
         guard !isPreviewMode,
@@ -721,15 +871,44 @@ struct OpenLensApp: App {
         else {
             return
         }
+        let linkedServerID = pendingSessionNavigationServerID
 
-        do {
-            let session = try await sessionsService.getSession(id: sessionID)
-            router.selectedTab = .chat
-            router.chatPath = [.chatSession(session: session)]
-            pendingSessionNavigationID = nil
-        } catch {
-            pendingSessionNavigationID = nil
+        // Tapping a Live Activity is usually a cold start, so the server the link names is very
+        // often still connecting: only the first server is up at this point, and connectAll()
+        // brings up the rest. Clearing the link here would make the tap do nothing, which is the
+        // one thing it exists for. Hold it until the other servers have been brought up -- that
+        // completion re-runs this -- after which an unresolvable link is cleared as before.
+        if let linkedServerID,
+           let linkedContext = serverRegistry.context(forProfileID: linkedServerID),
+           !linkedContext.connection.isConnected,
+           !hasConnectedRemainingServers {
+            return
         }
+
+        let candidates = activityLinkCandidateServerIDs(
+            linkedServerID: linkedServerID.flatMap { serverRegistry.context(forProfileID: $0)?.id },
+            activeServerID: serverRegistry.activeContext.id,
+            connectedServerIDs: serverRegistry.contexts.filter { $0.connection.isConnected }.map(\.id)
+        )
+
+        // An unknown or disconnected server in the link leaves no candidates and clears the link.
+        var found: (context: ServerContext, session: OCSession)?
+        for id in candidates {
+            guard let context = serverRegistry.context(id: id),
+                  let session = try? await context.sessionsService.getSession(id: sessionID)
+            else { continue }
+            found = (context, session)
+            break
+        }
+        pendingSessionNavigationID = nil
+        pendingSessionNavigationServerID = nil
+        guard let found else { return }
+
+        if found.context.id != serverRegistry.activeContext.id {
+            switchServer(to: found.context.id)
+        }
+        router.selectedTab = .chat
+        router.chatPath = [router.chatSessionDestination(for: found.session)]
     }
 
     /// Creates the session an App Shortcut asked for once the app is connected to a server.
@@ -754,13 +933,16 @@ struct OpenLensApp: App {
     }
 
     /// Opens the session a Live Activity belongs to, unless its chat is already on screen.
-    private func openLiveActivitySession(_ sessionID: String) {
+    private func openLiveActivitySession(_ link: OpenLensActivityAttributes.SessionLink) {
+        let activeConnectionID = serverContext.connection.connectionID
         if router.selectedTab == .chat,
-           case .chatSession(let session)? = router.chatPath.last,
-           session.id == sessionID {
+           case .chatSession(let session, _)? = router.chatPath.last,
+           session.id == link.sessionID,
+           link.serverID == nil || link.serverID == activeConnectionID {
             return
         }
-        pendingSessionNavigationID = sessionID
+        pendingSessionNavigationID = link.sessionID
+        pendingSessionNavigationServerID = link.serverID
         Task {
             await openDeepLinkedSessionIfNeeded()
         }

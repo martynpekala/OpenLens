@@ -39,6 +39,9 @@ final class ConnectionManager: ConnectionProviding {
 
     private(set) var client: OpenCodeClient?
     private(set) var sseClient: SSEClient?
+    /// Called each time this connection builds a fresh `SSEClient`, before it connects, so whoever
+    /// consumes the stream can bind to it without waiting for a view to appear.
+    @ObservationIgnored var onSSEClientReady: ((SSEClient) -> Void)?
 
     /// Continuation used to bridge the SSE callback-based connection into async/await.
     /// Resumed once when SSE reports `.connected` or fails to connect.
@@ -49,24 +52,47 @@ final class ConnectionManager: ConnectionProviding {
     private var lastHeartbeat: Date = .distantPast
     private var heartbeatWatchdog: Timer?
 
+    /// Id of the saved profile this manager is connected to. Unknown until a connect succeeds:
+    /// `saveConnection` dedupes by URL + username, so it may resolve to an existing profile.
+    /// Everything that scopes per-server state (model choice, project folder) reads this, never
+    /// the store's global `activeConnectionID`.
+    private(set) var connectionID: String?
+
     @ObservationIgnored private let localNetworkAccessProbe: any LocalNetworkAccessProbing
+
+    /// Builds the transport for a server URL. `nil` means the real network (`DirectOpenCodeTransport`).
+    /// Used for both the API client and the SSE client, so a test can fake a whole server by
+    /// faking only the transport.
+    @ObservationIgnored private let makeTransport: (@Sendable (URL) -> any OpenCodeTransport)?
 
     /// If no heartbeat arrives within this interval, the connection is considered stale.
     /// OpenCode server typically sends heartbeats every ~30s; 90s allows 3 missed beats.
     private static let heartbeatTimeout: TimeInterval = 90
 
-    init() {
+    init(makeTransport: (@Sendable (URL) -> any OpenCodeTransport)? = nil) {
         self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+        self.makeTransport = makeTransport
     }
 
-    init(localNetworkAccessProbe: any LocalNetworkAccessProbing) {
+    init(
+        localNetworkAccessProbe: any LocalNetworkAccessProbing,
+        makeTransport: (@Sendable (URL) -> any OpenCodeTransport)? = nil
+    ) {
         self.localNetworkAccessProbe = localNetworkAccessProbe
+        self.makeTransport = makeTransport
     }
 
 #if DEBUG
     /// Installs a negotiated client without opening a live network connection.
-    init(testClient: OpenCodeClient, capabilities: OpenCodeServerCapabilities, testSSEClient: SSEClient? = nil) {
+    init(
+        testClient: OpenCodeClient,
+        capabilities: OpenCodeServerCapabilities,
+        testSSEClient: SSEClient? = nil,
+        connectionID: String? = nil
+    ) {
         self.localNetworkAccessProbe = LocalNetworkAccessProbe()
+        self.makeTransport = nil
+        self.connectionID = connectionID
         self.client = testClient
         self.serverCapabilities = capabilities
         self.sseClient = testSSEClient
@@ -104,6 +130,14 @@ final class ConnectionManager: ConnectionProviding {
         password: String = "",
         method: ConnectionMethod = .manual
     ) async {
+        let transient = SavedConnection(id: UUID().uuidString, serverURL: url, username: username, password: password)
+        await connect(profile: transient, method: method)
+    }
+
+    func connect(profile: SavedConnection, method: ConnectionMethod = .manual) async {
+        let url = profile.serverURL
+        let username = profile.username
+        let password = profile.password
         didManuallyDisconnect = false
         hasAttemptedConnection = true
         connectionMethod = method
@@ -149,10 +183,12 @@ final class ConnectionManager: ConnectionProviding {
 
         Logger.connection.debug("Connecting to \(urlString, privacy: .public) with restored project directory \(restoredProjectDirectory ?? "nil", privacy: .public)")
 
+        let transport = makeTransport?(baseURL)
         let apiClient = OpenCodeClient(
             baseURL: baseURL,
             authHeader: authHeader,
-            contextDirectory: restoredProjectDirectory
+            contextDirectory: restoredProjectDirectory,
+            transport: transport
         )
         do {
             let capabilities = try await apiClient.probeCapabilities()
@@ -168,22 +204,25 @@ final class ConnectionManager: ConnectionProviding {
             self.serverURL = baseURL
             self.selectedProjectDirectory = restoredProjectDirectory?.nilIfBlank
 
-            SharedConnectionStore.save(
-                baseURL: baseURL.absoluteString, authHeader: authHeader,
-                protocolVersion: capabilities.protocolVersion.rawValue
-            )
-
             await refreshProjectMetadata()
 
-            savedConnectionsStore?.saveConnection(
+            // `saveConnection` returns the profile it created or updated, so the id comes from it
+            // rather than a read-back of `activeConnectionID` -- there is then no path where the
+            // App Group goes unwritten. This runs after `refreshProjectMetadata()`; no Live
+            // Activity can exist this early in a connect.
+            if let saved = savedConnectionsStore?.saveConnection(
                 serverURL: urlString,
                 username: username,
                 password: password
-            )
-            if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
+            ) {
+                connectionID = saved.id
                 savedConnectionsStore?.updateProjectSelection(
-                    connectionID: activeConnectionID,
+                    connectionID: saved.id,
                     directory: self.selectedProjectDirectory
+                )
+                SharedConnectionStore.save(
+                    serverID: saved.id, baseURL: baseURL.absoluteString, authHeader: authHeader,
+                    protocolVersion: capabilities.protocolVersion.rawValue
                 )
             }
 
@@ -191,10 +230,12 @@ final class ConnectionManager: ConnectionProviding {
                 baseURL: baseURL,
                 authHeader: authHeader,
                 protocolVersion: capabilities.protocolVersion,
-                contextDirectory: selectedProjectDirectory
+                contextDirectory: selectedProjectDirectory,
+                transport: transport
             )
             self.sseClient = sse
             configureSSECallbacks(sse)
+            onSSEClientReady?(sse)
             await connectSSEAndWait(sse)
         } catch {
             guard !Task.isCancelled else { return }
@@ -204,13 +245,11 @@ final class ConnectionManager: ConnectionProviding {
 
     /// Reconnect using saved config.
     func reconnect() async {
-        guard let saved = savedConnectionsStore?.mostRecent, saved.isConfigured else { return }
-        await connect(
-            url: saved.serverURL,
-            username: saved.username,
-            password: saved.password,
-            method: .autoReconnect
-        )
+        guard let store = savedConnectionsStore,
+              let saved = store.lastActiveConnectionID.flatMap({ id in store.connections.first { $0.id == id } })
+                ?? store.mostRecent,
+              saved.isConfigured else { return }
+        await connect(profile: saved, method: .autoReconnect)
     }
 
     // MARK: - Disconnect
@@ -235,8 +274,15 @@ final class ConnectionManager: ConnectionProviding {
         selectedProjectDirectory = nil
         connectionMethod = nil
         localNetworkAccessRequired = false
+        let disconnectedServerID = connectionID
+        connectionID = nil
         savedConnectionsStore?.clearActiveConnection()
-        SharedConnectionStore.clear()
+        // Only this server's entry. A manager that never learned its id -- a connect that was
+        // cancelled before it saved -- wrote nothing, so it clears nothing: clearAll() here
+        // would wipe every other connected server's credentials too.
+        if let disconnectedServerID {
+            SharedConnectionStore.clear(serverID: disconnectedServerID)
+        }
     }
 
     private func configureSSECallbacks(_ sse: SSEClient) {
@@ -317,9 +363,9 @@ final class ConnectionManager: ConnectionProviding {
         projectName = nil
         branch = nil
 
-        if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
+        if let connectionID {
             savedConnectionsStore?.updateProjectSelection(
-                connectionID: activeConnectionID,
+                connectionID: connectionID,
                 directory: normalizedDirectory
             )
         }
@@ -396,9 +442,9 @@ final class ConnectionManager: ConnectionProviding {
                 guard generation == projectContextGeneration else { return }
                 sseClient?.updateContextDirectory(inferredDirectory)
 
-                if let activeConnectionID = savedConnectionsStore?.activeConnectionID {
+                if let connectionID {
                     savedConnectionsStore?.updateProjectSelection(
-                        connectionID: activeConnectionID,
+                        connectionID: connectionID,
                         directory: inferredDirectory
                     )
                 }
@@ -515,8 +561,12 @@ final class ConnectionManager: ConnectionProviding {
 
     /// Configures the connection manager with fake state for demo mode.
     /// The header toolbar reads projectName/branch/state from the connection.
-    func configureDemoState(projectName: String = "my-project", branch: String = "main") {
-        self.state = .connected
+    func configureDemoState(
+        projectName: String = "my-project",
+        branch: String = "main",
+        state: State = .connected
+    ) {
+        self.state = state
         self.projectName = projectName
         self.branch = branch
         self.serverVersion = "demo"

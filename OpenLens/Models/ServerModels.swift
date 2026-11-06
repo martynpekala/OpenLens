@@ -21,6 +21,11 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     let model: OCV2ModelRef?
     /// Last completed V2 execution; unknown future values remain decodable.
     let outcome: String?
+    /// Server-confirmed archive timestamp. Older v2 servers never set it.
+    var isArchived: Bool {
+        guard let archived = time.archived, archived.isFinite else { return false }
+        return archived > 0
+    }
 
     /// Convenience: Unix timestamp (seconds) when last updated. Used for sorting.
     var updatedAt: Double { time.updated / 1000.0 }
@@ -70,7 +75,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
             id: id, projectID: projectID, directory: directory, parentID: parentID,
             title: title, version: version,
             time: .init(created: time.created, updated: time.updated, compacting: time.compacting,
-                        idle: time.idle, viewed: max(time.viewed ?? 0, viewed)),
+                        idle: time.idle, viewed: max(time.viewed ?? 0, viewed), archived: time.archived),
             share: share, revert: revert, agent: agent, model: model, outcome: outcome
         )
     }
@@ -156,6 +161,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
             && lhs.outcome == rhs.outcome
             && lhs.time.idle == rhs.time.idle
             && lhs.time.viewed == rhs.time.viewed
+            && lhs.time.archived == rhs.time.archived
     }
 
     /// Returns a copy with v2 canonical selection fields replaced.
@@ -222,13 +228,16 @@ nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
     let compacting: Double?
     let idle: Double?
     let viewed: Double?
+    /// v2 archive timestamp in epoch milliseconds; nil while the session is active.
+    let archived: Double?
 
-    init(created: Double, updated: Double, compacting: Double? = nil, idle: Double? = nil, viewed: Double? = nil) {
+    init(created: Double, updated: Double, compacting: Double? = nil, idle: Double? = nil, viewed: Double? = nil, archived: Double? = nil) {
         self.created = created
         self.updated = updated
         self.compacting = compacting
         self.idle = idle
         self.viewed = viewed
+        self.archived = archived
     }
 
     init(from decoder: Decoder) throws {
@@ -238,10 +247,11 @@ nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
         compacting = try container.decodeIfPresent(Double.self, forKey: .compacting)
         idle = try? container.decodeIfPresent(Double.self, forKey: .idle)
         viewed = try? container.decodeIfPresent(Double.self, forKey: .viewed)
+        archived = try? container.decodeIfPresent(Double.self, forKey: .archived)
     }
 
     enum CodingKeys: String, CodingKey {
-        case created, updated, compacting, idle, viewed
+        case created, updated, compacting, idle, viewed, archived
     }
 }
 
@@ -461,8 +471,16 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
  struct OCAPIError: Codable, Sendable {
     let name: String?
     let data: OCAPIErrorData?
+    /// HTTP status carried by structured errors (e.g. 429 for quota limits).
+    let status: Int?
 
     nonisolated var message: String? { data?.message }
+
+    init(name: String? = nil, data: OCAPIErrorData? = nil, status: Int? = nil) {
+        self.name = name
+        self.data = data
+        self.status = status
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -470,16 +488,18 @@ nonisolated struct OCMessage: Codable, Identifiable, Sendable {
             ?? container.decodeIfPresent(String.self, forKey: .type)
         data = try container.decodeIfPresent(OCAPIErrorData.self, forKey: .data)
             ?? container.decodeIfPresent(String.self, forKey: .message).map { OCAPIErrorData(message: $0) }
+        status = try container.decodeIfPresent(Int.self, forKey: .status)
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(name, forKey: .name)
         try container.encodeIfPresent(data, forKey: .data)
+        try container.encodeIfPresent(status, forKey: .status)
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, data, type, message
+        case name, data, type, message, status
     }
 }
 
@@ -957,6 +977,26 @@ nonisolated struct OCSessionStatus: Codable, Sendable {
     let attempt: Int?
     let message: String?
     let next: Int?
+}
+
+// MARK: - Credentials
+
+/// One stored integration credential from `GET /api/credential` (v2 only).
+/// Values are secrets; never log them.
+nonisolated struct OCCredentialEntry: Codable, Sendable, Equatable {
+    let integrationID: String
+    let label: String?
+    let active: Bool?
+    let value: OCCredentialValue?
+
+    enum CodingKeys: String, CodingKey {
+        case integrationID, label, active, value
+    }
+}
+
+nonisolated struct OCCredentialValue: Codable, Sendable, Equatable {
+    let type: String?
+    let key: String?
 }
 
 // MARK: - Provider / Config

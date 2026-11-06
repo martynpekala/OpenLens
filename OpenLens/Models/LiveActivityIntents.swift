@@ -76,8 +76,8 @@ private enum LiveActivityReplySender {
         else { return }
 
         if !activity.attributes.isPreview {
-            guard let baseURLString = SharedConnectionStore.baseURL,
-                  let baseURL = URL(string: baseURLString)
+            guard let credentials = SharedConnectionStore.credentials(for: activity.attributes.serverID),
+                  let baseURL = URL(string: credentials.baseURL)
             else { throw URLError(.userAuthenticationRequired) }
 
             let request = try SharedConnectionStore.replyRequest(
@@ -85,8 +85,8 @@ private enum LiveActivityReplySender {
                 with: reply,
                 directory: activity.attributes.directory,
                 baseURL: baseURL,
-                authHeader: SharedConnectionStore.authHeader,
-                usesV2: SharedConnectionStore.usesV2
+                authHeader: credentials.authHeader,
+                usesV2: credentials.usesV2
             )
             let (_, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {

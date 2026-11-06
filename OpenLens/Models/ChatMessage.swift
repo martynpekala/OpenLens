@@ -550,6 +550,10 @@ final class ChatMessage: Identifiable {
     var modelID: String?
     var providerID: String?
     var finish: String?
+    /// Provider error payload for assistant turns that ended in `finish == "error"`
+    /// (for example a usage-limit message), kept so the failure reason survives.
+    var errorMessage: String?
+    var errorStatus: Int?
     private(set) var parentUserMessageID: String?
     private(set) var turnFileChanges: [TurnFileChangeSummary]
 
@@ -586,7 +590,9 @@ final class ChatMessage: Identifiable {
         providerID: String? = nil,
         finish: String? = nil,
         parentUserMessageID: String? = nil,
-        turnFileChanges: [TurnFileChangeSummary] = []
+        turnFileChanges: [TurnFileChangeSummary] = [],
+        errorMessage: String? = nil,
+        errorStatus: Int? = nil
     ) {
         self.id = id
         self.role = role
@@ -601,6 +607,8 @@ final class ChatMessage: Identifiable {
         self.providerID = providerID
         self.finish = finish
         self.parentUserMessageID = parentUserMessageID
+        self.errorMessage = errorMessage
+        self.errorStatus = errorStatus
         self.turnFileChanges = turnFileChanges.sorted { lhs, rhs in
             lhs.path.localizedCaseInsensitiveCompare(rhs.path) == .orderedAscending
         }

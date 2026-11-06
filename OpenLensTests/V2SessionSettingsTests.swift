@@ -313,7 +313,9 @@ struct V2SessionSettingsTests {
         store: SavedConnectionsStore = SavedConnectionsStore(initialConnections: [])
     ) async throws -> ChatClient {
         let api = OpenCodeClient(baseURL: URL(string: "https://example.com")!, transport: server)
-        let connection = ConnectionManager(testClient: api, capabilities: try await api.probeCapabilities())
+        // The manager is connected to the profile the store marks active.
+        let connection = ConnectionManager(
+            testClient: api, capabilities: try await api.probeCapabilities(), connectionID: store.activeConnectionID)
         return ChatClient(
             connection: connection, liveActivity: TestLiveActivityProvider(),
             sessionsService: SessionsService(connection: connection), messagesService: MessagesService(connection: connection),

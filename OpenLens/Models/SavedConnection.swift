@@ -26,6 +26,7 @@ enum ModelQuickAction: String, CaseIterable, Hashable, Identifiable {
     case code
     case review
     case prsAndStuff
+    case free
 
     var id: String { rawValue }
 
@@ -34,6 +35,7 @@ enum ModelQuickAction: String, CaseIterable, Hashable, Identifiable {
         case .code: AppText.code
         case .review: AppText.review
         case .prsAndStuff: AppText.prsAndStuff
+        case .free: AppText.free
         }
     }
 
@@ -42,6 +44,7 @@ enum ModelQuickAction: String, CaseIterable, Hashable, Identifiable {
         case .code: "chevron.left.forwardslash.chevron.right"
         case .review: "checkmark.circle"
         case .prsAndStuff: "arrow.triangle.merge"
+        case .free: "gift"
         }
     }
 }
@@ -84,13 +87,20 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     /// Recent project/worktree directories for this connection, newest first.
     var recentProjectDirectories: [String]?
 
-    /// Timestamp of last successful connection (for sorting recent-first).
+    /// Timestamp of last successful connection (drives recency queries such as
+    /// auto-connect and suggestions; it does not order `connections`).
     var lastConnectedAt: Date?
 
-    /// Display label derived from the URL.
+    /// Optional user-chosen name for this server.
+    var nickname: String?
+
+    /// Display label: the nickname when set, otherwise the URL without its scheme.
     var displayName: String {
+        if let nickname = nickname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank {
+            return nickname
+        }
         // Strip scheme for a cleaner label
-        serverURL
+        return serverURL
             .replacingOccurrences(of: "http://", with: "")
             .replacingOccurrences(of: "https://", with: "")
     }
@@ -108,7 +118,8 @@ struct SavedConnection: Codable, Identifiable, Hashable {
         recentModelSelections: [SavedModelSelection]? = nil,
         selectedProjectDirectory: String? = nil,
         recentProjectDirectories: [String]? = nil,
-        lastConnectedAt: Date? = nil
+        lastConnectedAt: Date? = nil,
+        nickname: String? = nil
     ) {
         self.id = id
         self.serverURL = serverURL
@@ -123,6 +134,7 @@ struct SavedConnection: Codable, Identifiable, Hashable {
         self.selectedProjectDirectory = selectedProjectDirectory
         self.recentProjectDirectories = recentProjectDirectories
         self.lastConnectedAt = lastConnectedAt
+        self.nickname = nickname
     }
 
     var isConfigured: Bool {
@@ -168,6 +180,7 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
     var selectedProjectDirectory: String?
     var recentProjectDirectories: [String]?
     var lastConnectedAt: Date?
+    var nickname: String?
 
     nonisolated init(connection: SavedConnection) {
         id = connection.id
@@ -182,6 +195,7 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
         selectedProjectDirectory = connection.selectedProjectDirectory
         recentProjectDirectories = connection.recentProjectDirectories
         lastConnectedAt = connection.lastConnectedAt
+        nickname = connection.nickname
     }
 
     nonisolated func savedConnectionWithoutPassword() -> SavedConnection {
@@ -196,7 +210,8 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
             recentModelSelections: recentModelSelections,
             selectedProjectDirectory: selectedProjectDirectory,
             recentProjectDirectories: recentProjectDirectories,
-            lastConnectedAt: lastConnectedAt
+            lastConnectedAt: lastConnectedAt,
+            nickname: nickname
         )
         connection.defaultProviderID = defaultProviderID
         connection.defaultModelID = defaultModelID
@@ -211,15 +226,33 @@ struct SavedConnectionPublicSnapshot: Codable, Equatable {
 @Observable
 final class SavedConnectionsStore {
 
-    /// Saved connections, kept most-recently-used first.
+    /// Saved connections in stable display order: newly added first, never
+    /// reordered by connect activity. Use `mostRecent` / `suggestions(for:)` for recency.
     private(set) var connections: [SavedConnection] = []
 
     /// The connection currently in use (set after successful connect).
     private(set) var activeConnectionID: String?
 
+    /// The connection that was most recently made active, persisted across launches.
+    /// Unlike `activeConnectionID`, disconnecting does not clear it; forgetting the connection does.
+    private(set) var lastActiveConnectionID: String? {
+        didSet {
+            guard lastActiveConnectionID != oldValue, let lastActiveDefaults else { return }
+            if let lastActiveConnectionID {
+                lastActiveDefaults.set(lastActiveConnectionID, forKey: Self.lastActiveConnectionDefaultsKey)
+            } else {
+                lastActiveDefaults.removeObject(forKey: Self.lastActiveConnectionDefaultsKey)
+            }
+        }
+    }
+
+    /// Number of coalesced write attempts, counted before the `shouldPersist` guard so tests can observe coalescing.
+    private(set) var persistWriteAttempts = 0
+
     /// Keychain key for the entire connections list.
     private static let keychainKey = "saved_connections_v1"
     private static let publicSnapshotDefaultsKey = "saved_connections_public_snapshots_v1"
+    private static let lastActiveConnectionDefaultsKey = "saved_connections_last_active_id_v1"
 
     /// Flag to track whether migration from legacy UserDefaults has run.
     private static let migrationDoneKey = "saved_connections_migrated"
@@ -230,23 +263,48 @@ final class SavedConnectionsStore {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "OpenLens", category: "SavedConnectionsStore")
     private let shouldPersist: Bool
     private let userDefaults: UserDefaults
+    /// Where `lastActiveConnectionID` is stored; nil for test stores without an injected suite.
+    private let lastActiveDefaults: UserDefaults?
+    private var hasPendingPersist = false
+    private var isPersistFlushScheduled = false
 
     init() {
         userDefaults = .standard
+        lastActiveDefaults = .standard
         shouldPersist = true
         connections = Self.loadPersistedConnections(userDefaults: userDefaults)
+        lastActiveConnectionID = Self.loadLastActiveConnectionID(
+            userDefaults: userDefaults,
+            connections: connections
+        )
         migrateFromLegacyIfNeeded()
         trimToSavedConnectionLimitIfNeeded()
     }
 
-    init(initialConnections: [SavedConnection]) {
-        userDefaults = .standard
+    /// Test initializer: never touches the Keychain. Pass `userDefaults` (an ephemeral suite) to
+    /// exercise `lastActiveConnectionID` persistence; without it nothing is written anywhere.
+    init(initialConnections: [SavedConnection], userDefaults: UserDefaults? = nil) {
+        self.userDefaults = userDefaults ?? .standard
+        lastActiveDefaults = userDefaults
         shouldPersist = false
-        connections = initialConnections
-        sortAndLimitConnections()
+        connections = Self.limited(initialConnections)
+        if let userDefaults {
+            lastActiveConnectionID = Self.loadLastActiveConnectionID(
+                userDefaults: userDefaults,
+                connections: connections
+            )
+        }
     }
 
     // MARK: - Public API
+
+    /// Records which server the user is on. The registry owns this: saving a profile does not
+    /// make it the active one, because several servers connect at once and the last to connect is
+    /// not necessarily the one on screen. Ignored when the id names no saved profile.
+    func setLastActiveConnection(id: String) {
+        guard connections.contains(where: { $0.id == id }) else { return }
+        lastActiveConnectionID = id
+    }
 
     /// The currently active connection (if any).
     var activeConnection: SavedConnection? {
@@ -275,7 +333,7 @@ final class SavedConnectionsStore {
             connections[index].lastConnectedAt = Date()
             let connection = connections[index]
             activeConnectionID = connection.id
-            persist()
+            persistSoon()
             return connection
         } else {
             // Create new
@@ -288,7 +346,7 @@ final class SavedConnectionsStore {
             )
             connections.insert(connection, at: 0)
             activeConnectionID = connection.id
-            persist()
+            persistSoon()
             return connection
         }
     }
@@ -336,6 +394,13 @@ final class SavedConnectionsStore {
                 selected: normalizedDirectory
             )
         }
+        persistSoon()
+    }
+
+    /// Sets or clears (nil or blank) the nickname for a specific connection.
+    func updateNickname(connectionID: String, nickname: String?) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
+        connections[index].nickname = nickname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         persist()
     }
 
@@ -421,6 +486,9 @@ final class SavedConnectionsStore {
         if activeConnectionID == connection.id {
             activeConnectionID = nil
         }
+        if lastActiveConnectionID == connection.id {
+            lastActiveConnectionID = nil
+        }
         persist()
     }
 
@@ -430,6 +498,9 @@ final class SavedConnectionsStore {
         if activeConnectionID == id {
             activeConnectionID = nil
         }
+        if lastActiveConnectionID == id {
+            lastActiveConnectionID = nil
+        }
         persist()
     }
 
@@ -438,16 +509,21 @@ final class SavedConnectionsStore {
         activeConnectionID = nil
     }
 
-    /// Returns the most recently used connection (for auto-reconnect).
+    /// Returns the most recently connected connection.
     var mostRecent: SavedConnection? {
-        connections.first
+        connectionsByRecency.first
+    }
+
+    /// Connections ordered by `lastConnectedAt`, newest first; ties keep array order.
+    var connectionsByRecency: [SavedConnection] {
+        Self.byRecency(connections)
     }
 
     /// Saved connections matching a URL prefix (for suggestions/autocomplete).
     func suggestions(for urlPrefix: String) -> [SavedConnection] {
         let prefix = urlPrefix.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prefix.isEmpty else { return connections }
-        return connections.filter {
+        guard !prefix.isEmpty else { return connectionsByRecency }
+        return connectionsByRecency.filter {
             $0.displayName.lowercased().contains(prefix) ||
             $0.serverURL.lowercased().contains(prefix)
         }
@@ -455,9 +531,36 @@ final class SavedConnectionsStore {
 
     // MARK: - Persistence
 
+    /// Marks the store dirty and schedules one write for the next main-actor turn, so several
+    /// synchronous mutations collapse into a single Keychain write. The in-memory cap applies immediately.
+    /// Writes now. Use for anything the user did on purpose -- naming a server, forgetting one,
+    /// choosing a model -- so a termination straight after the action cannot lose it.
     private func persist() {
-        // Sort most-recently-used first
-        sortAndLimitConnections()
+        limitConnections()
+        hasPendingPersist = true
+        flushPendingPersist()
+    }
+
+    /// Defers the write to the next main-actor turn, collapsing a burst into one. Only for state
+    /// the connect path re-derives anyway: a single connect calls `updateProjectSelection` three
+    /// times, so N servers connecting at launch would otherwise cost 3N whole-array Keychain
+    /// writes -- passwords included -- in the first second.
+    private func persistSoon() {
+        limitConnections()
+        hasPendingPersist = true
+        guard !isPersistFlushScheduled else { return }
+        isPersistFlushScheduled = true
+        Task { [weak self] in
+            self?.flushPendingPersist()
+        }
+    }
+
+    /// Writes pending changes now. Safe to call at any time; does nothing when nothing is pending.
+    func flushPendingPersist() {
+        isPersistFlushScheduled = false
+        guard hasPendingPersist else { return }
+        hasPendingPersist = false
+        persistWriteAttempts += 1
         guard shouldPersist else { return }
 
         let snapshotsSaved = Self.savePublicSnapshots(
@@ -479,6 +582,15 @@ final class SavedConnectionsStore {
             loadFromKeychain(),
             withPublicSnapshots: loadPublicSnapshots(userDefaults: userDefaults)
         )
+    }
+
+    private static func loadLastActiveConnectionID(
+        userDefaults: UserDefaults,
+        connections: [SavedConnection]
+    ) -> String? {
+        guard let id = userDefaults.string(forKey: lastActiveConnectionDefaultsKey),
+              connections.contains(where: { $0.id == id }) else { return nil }
+        return id
     }
 
     private static func loadFromKeychain() -> [SavedConnection] {
@@ -508,7 +620,7 @@ final class SavedConnectionsStore {
             }
         }
 
-        return sortedAndLimited(merged)
+        return limited(merged)
     }
 
     private static func loadPublicSnapshots(userDefaults: UserDefaults) -> [SavedConnectionPublicSnapshot] {
@@ -543,27 +655,35 @@ final class SavedConnectionsStore {
     }
 
     private func trimToSavedConnectionLimitIfNeeded() {
-        let originalIDs = connections.map(\.id)
-        sortAndLimitConnections()
+        let originalCount = connections.count
+        limitConnections()
 
-        if connections.map(\.id) != originalIDs {
-            persist()
+        if connections.count != originalCount {
+            persistSoon()
         }
     }
 
-    private func sortAndLimitConnections() {
-        connections = Self.sortedAndLimited(connections)
+    private func limitConnections() {
+        connections = Self.limited(connections)
 
         if let activeConnectionID, !connections.contains(where: { $0.id == activeConnectionID }) {
             self.activeConnectionID = nil
         }
     }
 
-    private static func sortedAndLimited(_ connections: [SavedConnection]) -> [SavedConnection] {
-        let sorted = connections.sorted {
-            ($0.lastConnectedAt ?? .distantPast) > ($1.lastConnectedAt ?? .distantPast)
-        }
-        return Array(sorted.prefix(maximumSavedConnections))
+    /// Caps the list while preserving array order, dropping the least recently connected first.
+    private static func limited(_ connections: [SavedConnection]) -> [SavedConnection] {
+        guard connections.count > maximumSavedConnections else { return connections }
+        let keptIDs = Set(byRecency(connections).prefix(maximumSavedConnections).map(\.id))
+        return connections.filter { keptIDs.contains($0.id) }
+    }
+
+    private static func byRecency(_ connections: [SavedConnection]) -> [SavedConnection] {
+        connections.enumerated().sorted { lhs, rhs in
+            let l = lhs.element.lastConnectedAt ?? .distantPast
+            let r = rhs.element.lastConnectedAt ?? .distantPast
+            return l != r ? l > r : lhs.offset < rhs.offset
+        }.map(\.element)
     }
 
     private func normalizeProjectDirectory(_ directory: String?) -> String? {
@@ -638,6 +758,8 @@ final class SavedConnectionsStore {
         )
 
         connections.insert(migrated, at: 0)
+        // Synchronous, because the legacy password is deleted just below and a kill in between
+        // would lose the credential.
         persist()
 
         // Clean up legacy storage
@@ -677,6 +799,7 @@ private extension SavedConnection {
         selectedProjectDirectory = snapshot.selectedProjectDirectory
         recentProjectDirectories = snapshot.recentProjectDirectories
         lastConnectedAt = snapshot.lastConnectedAt
+        nickname = snapshot.nickname
     }
 }
 

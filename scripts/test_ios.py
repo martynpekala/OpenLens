@@ -19,7 +19,7 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SIMULATOR = "F323E9E4-4B39-4EB6-A42B-AB9E203A3E9A"
+DEFAULT_SIMULATOR = "A2A555E1-94A1-41D1-99EA-70919AB319EB"
 LAUNCH_FAILURE = "Simulator device failed to launch "
 TEST_STARTED = re.compile(r"Test run started\.|Test Suite .+ started at|◇ (?:Test|Suite) ")
 

@@ -116,8 +116,10 @@ struct MessageBubbleView: View {
                 Spacer(minLength: isRetroChat ? 42 : 64)
                 userBubble
             } else {
+                // Fill the row so long responses wrap at the same margin the
+                // left edge uses; short content stays leading-aligned.
                 assistantBubble
-                Spacer(minLength: isRetroChat ? 24 : 32)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .messageCopyActions(canCopy: canCopyText, makeText: makeCopyText)

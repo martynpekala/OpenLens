@@ -253,7 +253,9 @@ final class MessagesService {
             modelID: resolvedModelID,
             providerID: resolvedProviderID,
             finish: msg.info.finish,
-            parentUserMessageID: msg.info.parentID
+            parentUserMessageID: msg.info.parentID,
+            errorMessage: msg.info.error?.message,
+            errorStatus: msg.info.error?.status
         )
     }
 }

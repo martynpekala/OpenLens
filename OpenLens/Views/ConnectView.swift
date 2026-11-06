@@ -161,18 +161,20 @@ struct ConnectView: View {
     private var discoveredServersSection: some View {
         if discovery.localNetworkAccessRequired {
             localNetworkAccessCard
-        } else if discovery.discoveredServers.count == 1,
-           let server = discovery.discoveredServers.first
-        {
-            Button {
-                connectToDiscovered(server)
-            } label: {
-                nearbySuggestionRow(server)
+        } else if !discovery.discoveredServers.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(discovery.discoveredServers) { server in
+                    Button {
+                        connectToDiscovered(server)
+                    } label: {
+                        nearbySuggestionRow(server)
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .accessibilityLabel("Found nearby: \(server.url)")
+                    .accessibilityHint("Connect to this server")
+                }
             }
-            .buttonStyle(.plain)
-            .transition(.opacity.combined(with: .move(edge: .top)))
-            .accessibilityLabel("Found nearby: \(server.url)")
-            .accessibilityHint("Connect to this server")
         }
     }
 

@@ -34,7 +34,9 @@
 - The script preserves failed attempts and retries only startup failures before tests begin. Report assertion failures, execution timeouts after tests begin, or an exhausted recovery attempt as failed verification, with the saved log/result bundle; resolve the failure before rerunning.
 - Keep the simulator booted between successful runs. Recovery stops only the script's own command processes and restarts the selected simulator.
 - Tests are hosted in the iOS app, so they cannot run without a simulator unless the app is signed for "My Mac (Designed for iPad)".
-- Use the local booted `iPhone 18 Pro` simulator (`F323E9E4-4B39-4EB6-A42B-AB9E203A3E9A`) for OpenLens verification unless the user explicitly asks for another destination.
+- OpenLens connects to several servers at once. Run `./scripts/test-ios.sh --only-testing OpenLensTests/MultiServerSuite` for that feature alone, and `./scripts/verify-ui-parity.sh` for the rule that one saved server leaves the UI pixel-identical to `.interface-design/baselines/`. Both need a build first, and both take the same simulator lock as the test runner, so never run two at once.
+- Changing the sessions list, the servers screen or the toolbar capsule means running the parity script: a green suite does not catch a layout shift, and has not.
+- Use the local booted `iPhone 18 Pro` simulator (`A2A555E1-94A1-41D1-99EA-70919AB319EB`) for OpenLens verification unless the user explicitly asks for another destination.
 
 ## Token Efficiency
 - Search first, then read only the line ranges you need; do not re-read files that have not changed.

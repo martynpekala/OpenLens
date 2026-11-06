@@ -19,11 +19,12 @@ struct InboxRootView: View {
     @Bindable var chatClient: ChatClient
 
     @Environment(\.inboxService) private var inboxService
+    @Environment(\.serverRegistry) private var registry
 
     @State private var viewState: ViewState = .idle
-    @State private var snapshot = InboxSnapshot(permissions: [], questions: [], forms: [])
-    @State private var activeQuestion: OCQuestionRequest?
-    @State private var activeForm: OCFormRequest?
+    @State private var snapshot = AggregatedInbox()
+    @State private var activeQuestion: ServerScoped<OCQuestionRequest>?
+    @State private var activeForm: ServerScoped<OCFormRequest>?
     @State private var isResolvingForm = false
 
     var body: some View {
@@ -50,7 +51,7 @@ struct InboxRootView: View {
         }
         .sheet(item: $activeQuestion) { question in
             QuestionView(
-                request: question,
+                request: question.item,
                 onSubmit: { answers in
                     Task {
                         await submitQuestion(question, answers: answers)
@@ -65,7 +66,7 @@ struct InboxRootView: View {
         }
         .sheet(item: $activeForm) { form in
             FormView(
-                form: form,
+                form: form.item,
                 onSubmit: { answer in
                     Task {
                         await submitForm(form, answer: answer)
@@ -158,12 +159,14 @@ struct InboxRootView: View {
                 emptyRow(symbol: "checkmark.circle", text: "No pending permission requests.")
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(snapshot.permissions.enumerated()), id: \.element.id) { index, permission in
+                    ForEach(Array(snapshot.permissions.enumerated()), id: \.element.id) { index, scopedPermission in
+                        let permission = scopedPermission.item
                         VStack(alignment: .leading, spacing: 14) {
                             HStack(alignment: .top, spacing: 12) {
                                 itemBadge(title: "Permission", tint: .orange)
 
                                 VStack(alignment: .leading, spacing: 6) {
+                                    serverLine(scopedPermission.tag)
                                     Text(permission.title?.nilIfBlank ?? "Permission request")
                                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                                         .foregroundStyle(Color.appPrimary)
@@ -183,17 +186,17 @@ struct InboxRootView: View {
                             HStack(spacing: 10) {
                                 actionButton(title: AppText.deny, fill: Color.appTertiary, foreground: Color.appPrimary) {
                                     Task {
-                                        await respondToPermission(permission, reply: .reject)
+                                        await respondToPermission(scopedPermission, reply: .reject)
                                     }
                                 }
                                 actionButton(title: AppText.allowOnce, fill: Color.appAccent, foreground: Color.appOnAccent) {
                                     Task {
-                                        await respondToPermission(permission, reply: .once)
+                                        await respondToPermission(scopedPermission, reply: .once)
                                     }
                                 }
                                 actionButton(title: AppText.allowAll, fill: Color.appWarning.opacity(0.14), foreground: Color.appWarning) {
                                     Task {
-                                        await respondToPermission(permission, reply: .always)
+                                        await respondToPermission(scopedPermission, reply: .always)
                                     }
                                 }
                             }
@@ -216,12 +219,14 @@ struct InboxRootView: View {
                 emptyRow(symbol: "checkmark.circle", text: "No pending questions from the agent.")
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(snapshot.questions.enumerated()), id: \.element.id) { index, question in
+                    ForEach(Array(snapshot.questions.enumerated()), id: \.element.id) { index, scopedQuestion in
+                        let question = scopedQuestion.item
                         VStack(alignment: .leading, spacing: 14) {
                             HStack(alignment: .top, spacing: 12) {
                                 itemBadge(title: "Question", tint: Color.appPrimary)
 
                                 VStack(alignment: .leading, spacing: 6) {
+                                    serverLine(scopedQuestion.tag)
                                     Text(question.questions.first?.header.nilIfBlank ?? "Agent question")
                                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                                         .foregroundStyle(Color.appPrimary)
@@ -240,11 +245,11 @@ struct InboxRootView: View {
 
                             HStack(spacing: 10) {
                                 actionButton(title: "Answer", fill: Color.appAccent, foreground: Color.appOnAccent) {
-                                    activeQuestion = question
+                                    activeQuestion = scopedQuestion
                                 }
                                 actionButton(title: "Dismiss", fill: Color.appTertiary, foreground: Color.appPrimary) {
                                     Task {
-                                        await rejectQuestion(question)
+                                        await rejectQuestion(scopedQuestion)
                                     }
                                 }
                             }
@@ -261,18 +266,20 @@ struct InboxRootView: View {
         }
     }
 
-    private func formsCard(_ forms: [OCFormRequest]) -> some View {
+    private func formsCard(_ forms: [ServerScoped<OCFormRequest>]) -> some View {
         SurfaceCard(padding: 0) {
             if forms.isEmpty {
                 emptyRow(symbol: "checkmark.circle", text: "No pending forms from the agent.")
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(forms.enumerated()), id: \.element.identity) { index, form in
+                    ForEach(Array(forms.enumerated()), id: \.element.id) { index, scopedForm in
+                        let form = scopedForm.item
                         VStack(alignment: .leading, spacing: 14) {
                             HStack(alignment: .top, spacing: 12) {
                                 itemBadge(title: form.isGlobal ? "MCP" : "Form", tint: Color.appPrimary)
 
                                 VStack(alignment: .leading, spacing: 6) {
+                                    serverLine(scopedForm.tag)
                                     Text(form.title.nilIfBlank ?? "Agent form")
                                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                                         .foregroundStyle(Color.appPrimary)
@@ -300,11 +307,11 @@ struct InboxRootView: View {
 
                             HStack(spacing: 10) {
                                 actionButton(title: "Open", fill: Color.appAccent, foreground: Color.appOnAccent) {
-                                    activeForm = form
+                                    activeForm = scopedForm
                                 }
                                 actionButton(title: "Cancel", fill: Color.appTertiary, foreground: Color.appPrimary) {
                                     Task {
-                                        await cancelForm(form)
+                                        await cancelForm(scopedForm)
                                     }
                                 }
                             }
@@ -318,6 +325,14 @@ struct InboxRootView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Which server a pending item belongs to; nothing at one saved server.
+    @ViewBuilder
+    private func serverLine(_ tag: ServerTag?) -> some View {
+        if let tag {
+            ServerBadge(tag: tag)
         }
     }
 
@@ -386,7 +401,7 @@ struct InboxRootView: View {
 
     private var isInitialLoading: Bool {
         if case .loading = viewState {
-            return snapshot.permissions.isEmpty && snapshot.questions.isEmpty && snapshot.forms.isEmpty
+            return snapshot.isEmpty
         }
         return false
     }
@@ -405,17 +420,29 @@ struct InboxRootView: View {
 
         viewState = .loading
         do {
-            snapshot = try await inboxService.loadInbox()
+            snapshot = try await registry.loadAggregatedInbox(activeInbox: inboxService)
             viewState = .loaded
         } catch {
             viewState = .error(error.localizedDescription)
         }
     }
 
-    private func respondToPermission(_ permission: OCPermissionRequest, reply: OCPermissionReply) async {
+    /// Replies go to the server that owns the item, never to whichever one is active.
+    private func service(for serverID: String) -> InboxService {
+        serverID == registry.activeContext.id
+            ? inboxService
+            : (registry.context(id: serverID)?.inboxService ?? inboxService)
+    }
+
+    private func isActive(_ serverID: String) -> Bool {
+        serverID == registry.activeContext.id
+    }
+
+    private func respondToPermission(_ scoped: ServerScoped<OCPermissionRequest>, reply: OCPermissionReply) async {
+        let permission = scoped.item
         do {
-            try await inboxService.respondToPermission(permission, reply: reply)
-            if chatClient.pendingPermission?.id == permission.id {
+            try await service(for: scoped.serverID).respondToPermission(permission, reply: reply)
+            if isActive(scoped.serverID), chatClient.pendingPermission?.id == permission.id {
                 chatClient.pendingPermission = nil
                 chatClient.showPermissionAlert = false
             }
@@ -425,10 +452,11 @@ struct InboxRootView: View {
         }
     }
 
-    private func submitQuestion(_ question: OCQuestionRequest, answers: [[String]]) async {
+    private func submitQuestion(_ scoped: ServerScoped<OCQuestionRequest>, answers: [[String]]) async {
+        let question = scoped.item
         do {
-            try await inboxService.respondToQuestion(requestID: question.id, answers: answers)
-            if chatClient.pendingQuestion?.id == question.id {
+            try await service(for: scoped.serverID).respondToQuestion(requestID: question.id, answers: answers)
+            if isActive(scoped.serverID), chatClient.pendingQuestion?.id == question.id {
                 chatClient.pendingQuestion = nil
                 chatClient.showQuestionSheet = false
             }
@@ -439,10 +467,11 @@ struct InboxRootView: View {
         }
     }
 
-    private func rejectQuestion(_ question: OCQuestionRequest) async {
+    private func rejectQuestion(_ scoped: ServerScoped<OCQuestionRequest>) async {
+        let question = scoped.item
         do {
-            try await inboxService.rejectQuestion(requestID: question.id)
-            if chatClient.pendingQuestion?.id == question.id {
+            try await service(for: scoped.serverID).rejectQuestion(requestID: question.id)
+            if isActive(scoped.serverID), chatClient.pendingQuestion?.id == question.id {
                 chatClient.pendingQuestion = nil
                 chatClient.showQuestionSheet = false
             }
@@ -453,14 +482,15 @@ struct InboxRootView: View {
         }
     }
 
-    private func submitForm(_ form: OCFormRequest, answer: [String: OCFormValue]) async {
+    private func submitForm(_ scoped: ServerScoped<OCFormRequest>, answer: [String: OCFormValue]) async {
         guard !isResolvingForm else { return }
         isResolvingForm = true
         defer { isResolvingForm = false }
+        let form = scoped.item
 
         do {
-            try await inboxService.respondToForm(form, answer: answer)
-            if chatClient.pendingForm?.id == form.id, chatClient.pendingForm?.owner == form.owner {
+            try await service(for: scoped.serverID).respondToForm(form, answer: answer)
+            if isActive(scoped.serverID), chatClient.pendingForm?.id == form.id, chatClient.pendingForm?.owner == form.owner {
                 chatClient.pendingForm = nil
                 chatClient.showFormSheet = false
             }
@@ -471,14 +501,15 @@ struct InboxRootView: View {
         }
     }
 
-    private func cancelForm(_ form: OCFormRequest) async {
+    private func cancelForm(_ scoped: ServerScoped<OCFormRequest>) async {
         guard !isResolvingForm else { return }
         isResolvingForm = true
         defer { isResolvingForm = false }
+        let form = scoped.item
 
         do {
-            try await inboxService.cancelForm(form)
-            if chatClient.pendingForm?.id == form.id, chatClient.pendingForm?.owner == form.owner {
+            try await service(for: scoped.serverID).cancelForm(form)
+            if isActive(scoped.serverID), chatClient.pendingForm?.id == form.id, chatClient.pendingForm?.owner == form.owner {
                 chatClient.pendingForm = nil
                 chatClient.showFormSheet = false
             }

@@ -1,6 +1,50 @@
 import Foundation
 
 enum AppText {
+    // MARK: Servers
+    static let servers = "Servers"
+    static let sessionsAllServers = "All servers"
+    static let sessionsAllWorkspaces = "All workspaces"
+    static let sessionsClearFilter = "Clear filter"
+    static let workspaces = "Workspaces"
+    static func serverBadgeAccessibility(_ name: String) -> String { "Server \(name)" }
+    static func sessionsServerUnavailable(_ server: String?) -> String {
+        server.map { "Couldn't load sessions from \($0)." } ?? "Couldn't load sessions."
+    }
+    static let serversEmptyTitle = "No Saved Servers"
+    static let serversEmptyMessage = "Add a server to connect OpenLens to it."
+    static let serversAdd = "Add Server"
+    static let serversSettingsFooter = "Add another server to work across several at once."
+    static let serversStatusActive = "Active"
+    static let serversStatusConnected = "Connected"
+    static let serversStatusConnecting = "Connecting…"
+    static let serversStatusReconnecting = "Reconnecting…"
+    static let serversStatusNotConnected = "Not connected"
+    static let serversStatusFailed = "Failed"
+    static let serversRename = "Rename"
+    static let serversForgetTitle = "Forget This Server?"
+    static let serversForgetMessage = "OpenLens disconnects from it and removes its saved credentials. You'll need to re-enter them to connect again."
+    static let serversServerURL = "Server URL"
+    static let serversServerURLPlaceholder = "192.168.1.50:4096"
+    static let serversUsername = "Username"
+    static let serversUsernameDefault = "opencode"
+    static let serversPasswordPlaceholder = "optional"
+    static let serversNickname = "Nickname"
+    static let serversNicknamePlaceholder = "optional"
+    static let serversRenameTitle = "Rename Server"
+    static func serversRowActionsAccessibility(_ name: String) -> String { "Actions for \(name)" }
+    static let serversScanQRCode = "Scan QR Code"
+    static let serversScanQRCodeHintPrefix = "Run "
+    static let serversScanQRCodeCommand = "opencode pair"
+    static let serversScanQRCodeHintSuffix = " on your computer, then scan the code it prints."
+    static let serversPairing = "Pairing…"
+    static func serversPairingFailed(_ reason: String) -> String { "Pairing failed. \(reason)" }
+    static let serversSave = "Save"
+    static let serversAtLimitNotice = "OpenLens is already connected to the most servers it can hold at once. This server will be saved, not connected."
+    static func serversCount(_ count: Int) -> String {
+        count == 1 ? "1 server" : "\(count) servers"
+    }
+
     static let activityEmpty = "No activity recorded yet."
     static let activityThinking = "Thinking"
     static let activityTitle = "Agent Activity"
@@ -22,6 +66,7 @@ enum AppText {
     static let browseCapturesSubtitle = "Replay saved assistant turns without a live server"
     static let cancel = "Cancel"
     static let code = "Code"
+    static let free = "Free"
     static let connect = "Connect"
     static let connected = "Connected"
     static let connecting = "Connecting..."
@@ -76,6 +121,11 @@ enum AppText {
     static let delete = "Delete"
     static let deleteSessionMessage = "This will permanently delete the session and all its messages."
     static let deleteSession = "Delete Session"
+    static let archive = "Archive"
+    static let archivedSessions = "Archived"
+    static let archivedSessionsEmptyMessage = "Conversations you archive stay here until you restore or delete them."
+    static let archivedSessionsEmptyTitle = "No Archived Conversations"
+    static let unarchive = "Unarchive"
     static let developer = "Developer"
     static let deny = "Deny"
     static let sessionSummaryButton = "Catch up"
@@ -296,7 +346,67 @@ enum AppText {
     static let responseGenerating = "Generating"
     static let responseStopped = "Stopped"
     static let responseStopping = "Stopping..."
+    static let responseTurnFailed = "The assistant response failed."
+    static let retrying = "Retrying…"
+    static func retryingIn(_ duration: String) -> String { "Retrying in \(duration)" }
+    static func retryAttempt(_ attempt: Int) -> String { "attempt \(attempt)" }
+    static let usageLimitReached = "Usage limit reached"
+    static let usageLimitNoResetTime = "The provider usage limit was reached. Wait for the limit to reset before sending again."
+    static func usageLimitResetsAt(_ date: Date) -> String {
+        "Limit resets " + date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened))
+    }
     static let review = "Review"
+    static let reviewEmptyTitle = "No Sessions"
+    static let reviewEmptyDescription = "Start a chat or pick a session once one exists."
+    static let reviewUnavailableTitle = "Review Unavailable"
+    static let reviewScopeAccessibility = "Review scope"
+    static let reviewScopeSession = "Whole session"
+    static let reviewScopeUpdate = "Single update"
+    static let reviewUpdatePickerLabel = "Update"
+    static func reviewUpdateLabel(isLatest: Bool, date: String) -> String {
+        isLatest ? "\(reviewLatest) · \(date)" : date
+    }
+    static let reviewLatest = "Latest"
+    static let reviewFilesHeaderSession = "Session changes"
+    static let reviewFilesHeaderUpdate = "Update changes"
+    static let reviewNoFileChanges = "No file changes available for this selection."
+    static func reviewFileCount(_ count: Int) -> String {
+        count == 1 ? "1 file" : "\(count) files"
+    }
+    static func reviewUpdateCount(_ count: Int) -> String {
+        count == 1 ? "1 agent update" : "\(count) agent updates"
+    }
+    static func reviewFilesFooterSession(files: String, updates: String) -> String {
+        "\(files) across \(updates)"
+    }
+    static func reviewFilesFooterUpdate(files: String) -> String {
+        "\(files) in this update"
+    }
+    static let reviewUpdateFooter = "Undo only the changes introduced by this update. The session itself is kept, but the code changes from this update are removed after confirmation."
+    static let reviewRevertUpdate = "Revert update"
+    static let reviewRevertDialogTitle = "Revert changes"
+    static func reviewRevertDialogAction(_ title: String) -> String { "Revert \"\(title)\"" }
+    static let reviewRevertDialogMessage = "This will revert the selected change set from the selected review session."
+    static let reviewRevertRefreshFailed = "The revert state could not be refreshed. Pull to refresh and retry once the session is idle."
+    static let inbox = "Inbox"
+    static let inboxOpen = "Open inbox"
+    static func inboxOpenPending(_ count: Int) -> String {
+        let itemLabel = count == 1 ? "item" : "items"
+        return "Open inbox, \(count) pending \(itemLabel)"
+    }
+    static let reviewPickerHint = "Choose another session to review"
+    static func reviewPickerAccessibility(title: String, additions: Int, deletions: Int) -> String {
+        "Reviewed session, \(title), \(additions) lines added, \(deletions) lines removed"
+    }
+    static let reviewPickerLoadMore = "Load more sessions"
+    static let workspaceProjectAccessibility = "Project"
+    static func workspaceProjectAccessibilityLabel(_ title: String) -> String {
+        "\(workspaceProjectAccessibility), \(title)"
+    }
+    static let workspaceProjectHint = "Choose another project"
+    static let workspaceBranchLabel = "Branch"
+    static let workspaceWorkingTreeLabel = "Working tree"
+    static let workspaceLoadingWorkspaces = "Loading workspaces..."
     static let reasoning = "Reasoning"
     static let reconnecting = "Reconnecting..."
     static let reconnectingSubtitle = "Reconnecting to your saved server"
@@ -351,11 +461,35 @@ enum AppText {
     static let settingsHapticsSubtitle = "Subtle feedback for agent events"
     static let settingsLiveActivities = "Live Activities"
     static let settingsLiveActivitiesSubtitle = "Show agent progress on the Lock Screen"
+    static let settingsFullSwipeAction = "Full Swipe Action"
+    static let settingsFullSwipeActionSubtitle = "What a full swipe does on a conversation"
+    static let settingsUsageLimits = "Usage Limits"
+    static let settingsUsageLimitsSubtitle = "Track remaining provider coding-plan usage"
+    static let settingsUsagePlan = "Plan"
+    static let settingsUsageReadingKey = "Reading key from server"
+    static let settingsUsageZaiOnlyFooter = "Currently supports z.ai / BigModel GLM coding plans only. The API key is read automatically from your connected OpenCode server (v2) and stored in your Keychain."
+    static let settingsUsageImportNoServer = "Connect to your OpenCode server first."
+    static let settingsUsageImportNotFound = "No z.ai / BigModel API key found in the server's stored credentials."
+    static let settingsUsageImportUnsupported = "Stored credentials need a V2 OpenCode server."
+    static let settingsUsageImportFailed = "Couldn't read credentials from the server."
+    static let settingsUsageRefresh = "Refresh Usage"
+    static let settingsUsageKeyRejected = "This API key can't read usage limits. It is invalid or lacks the required grants — check the key's permissions in your provider console."
+    static let settingsUsageNoLimits = "The key is valid, but it reports no usage limits. The account may have no coding plan, or the key lacks usage grants."
+    static let settingsUsageFailed = "Couldn't load usage limits."
+    static let settingsUsagePercentUsed = "used"
+    static let quotaWindow5Hour = "5-Hour Window"
+    static let quotaWindowWeekly = "Weekly Window"
+    static let quotaWindowUsage = "Usage Window"
     static let settingsServerEventsStreaming = "Streaming"
     static let settingsServerEventsUnavailable = "Unavailable"
     static let settingsWorktree = "Worktree"
-    static let showFewerSessions = "Show Less"
-    static let showMoreSessions = "Show More"
+    static func sessionSectionTitle(_ kind: SessionSectionKind) -> String {
+        switch kind {
+        case .running: "Running"
+        case .today: "Today"
+        case .earlier: "Earlier"
+        }
+    }
     static let showContextStatus = "Shows context status"
     static let showThinking = "Show Thinking"
     static let showThinkingSubtitle = "Display model reasoning in chat"
@@ -367,9 +501,6 @@ enum AppText {
     static let statusOffline = "Offline"
     static let statusReconnecting = "Reconnecting..."
     static let submit = "Submit"
-    static let switchAction = "Switch"
-    static let switchMessage = "You are currently connected. Disconnect and connect to the new server?"
-    static let switchServerTitle = "Switch Server?"
     static let tryDebugChat = "Open Debug Chat"
     static let tryDebugChatSubtitle = "Replay a heavy streaming scenario for chat comparison"
     static let tryHeavyLoadChat = "Open Heavy Load Chat"
@@ -516,10 +647,6 @@ enum AppText {
 
     static func groupedProjectCount(_ count: Int) -> String {
         "\(count) chat\(count == 1 ? "" : "s")"
-    }
-
-    static func showMoreSessions(_ remainingCount: Int) -> String {
-        "\(showMoreSessions) (\(remainingCount))"
     }
 
     static let executionOutcomeUnavailable = "Outcome unavailable"

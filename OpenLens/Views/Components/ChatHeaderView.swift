@@ -3,6 +3,8 @@ import SwiftUI
 /// Navigation bar toolbar content for the chat view.
 struct ChatHeaderToolbar: ToolbarContent {
     let projectName: String?
+    /// Set only while several servers are saved.
+    var serverTag: ServerTag?
     let branch: String?
     let connectionState: ConnectionManager.State
     let sessionTitle: String?
@@ -10,6 +12,7 @@ struct ChatHeaderToolbar: ToolbarContent {
     let isRecordingStream: Bool
     let visualMode: ChatVisualMode
     let onToggleRecording: (() -> Void)?
+    var onOpenWorkspace: (() -> Void)?
 
     private var statusColor: Color {
         if visualMode.isRetro {
@@ -57,6 +60,38 @@ struct ChatHeaderToolbar: ToolbarContent {
         visualMode.isRetro
     }
 
+    /// The folder icon and workspace name, tappable when a handler is provided
+    /// so the header can hand off to the Workspace tab. The visual is identical
+    /// to the static label — only the touch target changes.
+    @ViewBuilder
+    private func workspaceNameLabel(_ projectName: String) -> some View {
+        if let onOpenWorkspace {
+            Button {
+                onOpenWorkspace()
+            } label: {
+                workspaceNameContent(projectName)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("Workspace: \(projectName)"))
+            .accessibilityHint(Text("Opens the Workspace tab"))
+        } else {
+            workspaceNameContent(projectName)
+        }
+    }
+
+    private func workspaceNameContent(_ projectName: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "folder")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
+            Text(projectName)
+                .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
+                .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
+                .lineLimit(1)
+        }
+    }
+
     var body: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             VStack(alignment: .center, spacing: 0) {
@@ -74,14 +109,16 @@ struct ChatHeaderToolbar: ToolbarContent {
                         .symbolEffect(.pulse, isActive: connectionState == .connected)
                         .padding(.trailing, 4)
 
-                    if let projectName {
-                        Image(systemName: "folder")
-                            .font(.system(size: 10, weight: .medium))
+                    if let serverTag {
+                        ServerBadge(tag: serverTag, size: 13, truncation: .tail)
+                            .layoutPriority(-1)
+                        Text("\u{00B7}")
+                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13))
                             .foregroundStyle(isRetroChat ? RetroChatStyle.mutedInk : .gray)
-                        Text(projectName)
-                            .font(isRetroChat ? RetroChatStyle.smallFont : .system(size: 13, weight: .medium))
-                            .foregroundStyle(isRetroChat ? RetroChatStyle.secondaryInk : .secondary)
-                            .lineLimit(1)
+                    }
+
+                    if let projectName {
+                        workspaceNameLabel(projectName)
                     }
 
                     if let branch {

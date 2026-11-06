@@ -16,9 +16,9 @@ struct FileChangeRow: View {
 
                 HStack(spacing: 12) {
                     Text("+\(file.additions)")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Color.appSuccess)
                     Text("-\(file.deletions)")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.appDanger)
                     if file.hasReadableDiff {
                         Text("Open diff")
                             .foregroundStyle(Color.appSecondary)
@@ -41,26 +41,17 @@ struct FileChangeStatusBadge: View {
     var body: some View {
         Text(statusLabel(status))
             .font(.system(size: 11, weight: .bold, design: .rounded))
-            .foregroundStyle(statusForegroundColor(status))
+            .foregroundStyle(Color.appBackground)
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(statusColor(status), in: Capsule())
     }
 
-    private func statusForegroundColor(_ status: String) -> Color {
-        switch status.uppercased() {
-        case "A", "D", "R":
-            .white
-        default:
-            Color.appOnAccent
-        }
-    }
-
     private func statusColor(_ status: String) -> Color {
         switch status.uppercased() {
-        case "A": .green
-        case "D": .red
-        case "R": .orange
+        case "A": Color.appSuccess
+        case "D": Color.appDanger
+        case "R": Color.appWarning
         default: Color.appAccent
         }
     }
