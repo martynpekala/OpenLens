@@ -423,4 +423,55 @@ struct ChatClientPreviewModeTests {
             "openai/gpt-5.2": "gpt-5.2-coder"
         ])
     }
+
+    @Test func selectableModelIsFreeOnlyWhenEveryPriceTierIsZero() {
+        func model(cost: OCModelCost?, tiers: [OCModelCost] = []) -> ChatClient.SelectableModel {
+            ChatClient.SelectableModel(
+                providerID: "p",
+                providerName: "P",
+                modelID: "m",
+                modelName: "M",
+                reasoning: false,
+                attachment: false,
+                toolCall: true,
+                cost: cost,
+                limit: nil,
+                variants: [],
+                costTiers: tiers
+            )
+        }
+
+        #expect(model(cost: OCModelCost(input: 0, output: 0)).isFree)
+        #expect(model(cost: OCModelCost(input: 0, output: 0, cacheRead: 0, cacheWrite: 0)).isFree)
+        #expect(!model(cost: OCModelCost(input: 0, output: 0, cacheRead: 0.3)).isFree)
+        #expect(!model(cost: OCModelCost(input: 0, output: 1)).isFree)
+        #expect(!model(cost: OCModelCost(input: 0, output: nil)).isFree)
+        #expect(!model(cost: nil).isFree)
+        #expect(!model(cost: nil, tiers: [OCModelCost(input: 0, output: 0), OCModelCost(tier: 200_000, input: 1, output: 1)]).isFree)
+    }
+
+    @MainActor
+    @Test func freeQuickActionIsAssignableAndPersisted() {
+        let client = ChatClient(demoMode: true)
+        client.clearQuickModelAssignment(for: .free)
+        defer { client.clearQuickModelAssignment(for: .free) }
+        let freeModel = ChatClient.SelectableModel(
+            providerID: "opencode",
+            providerName: "OpenCode",
+            modelID: "big-pickle",
+            modelName: "Big Pickle",
+            reasoning: false,
+            attachment: false,
+            toolCall: true,
+            cost: OCModelCost(input: 0, output: 0),
+            limit: nil,
+            variants: []
+        )
+
+        client.assignQuickModel(freeModel, variant: nil, for: .free)
+        #expect(client.quickModelAssignment(for: .free)?.id == "opencode/big-pickle")
+
+        client.clearQuickModelAssignment(for: .free)
+        #expect(client.quickModelAssignment(for: .free) == nil)
+    }
 }

@@ -2,6 +2,7 @@ import Foundation
 
 enum RouterDestination: Hashable {
     case chatSession(session: OCSession)
+    case archivedSessions
     case sessionInsights(sessionID: String?)
     case reviewMessage(messageID: String)
     case reviewFile(path: String)

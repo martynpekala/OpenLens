@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnect = true
     @AppStorage(AppPreferenceKeys.hapticsEnabled) private var hapticsEnabled = true
     @AppStorage(AppPreferenceKeys.liveActivitiesEnabled) private var liveActivitiesEnabled = true
+    @AppStorage(AppPreferenceKeys.fullSwipeAction) private var fullSwipeAction = SessionFullSwipeAction.archive
     private let accentColor = AccentColorPreference.shared
     @AppStorage(FeatureFlags.debugFeaturesKey) private var debugFeaturesEnabled = FeatureFlags.debugFeaturesDefault
 
@@ -33,8 +34,20 @@ struct SettingsView: View {
                 Toggle(isOn: $autoReconnect) {
                     preferenceLabel(AppText.autoReconnect, subtitle: AppText.autoReconnectSubtitle, icon: "arrow.triangle.2.circlepath")
                 }
+                Picker(selection: $fullSwipeAction) {
+                    Text(AppText.archive).tag(SessionFullSwipeAction.archive)
+                    Text(AppText.delete).tag(SessionFullSwipeAction.delete)
+                } label: {
+                    preferenceLabel(
+                        AppText.settingsFullSwipeAction,
+                        subtitle: AppText.settingsFullSwipeActionSubtitle,
+                        icon: "chevron.left.2"
+                    )
+                }
             }
             .tint(Color.appUserAccent)
+
+            UsageQuotaSectionView()
 
             Section(AppText.appearance) {
                 ColorPicker(

@@ -224,6 +224,7 @@ struct SavedConnectionsStoreTests {
                 variant: "high"
             ),
             .review: QuickModelAssignment(providerID: "openai", modelID: "gpt-5"),
+            .free: QuickModelAssignment(providerID: "opencode", modelID: "big-pickle"),
         ]
 
         AppPreferences.saveQuickModelAssignments(assignments, userDefaults: defaults)
