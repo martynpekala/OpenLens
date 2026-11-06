@@ -142,6 +142,36 @@ struct V2ContextTimelineTests {
         #expect(chat.timelineItems(showsThinking: true).map(\.id) == ["message-msg_user", "context-msg_model", "context-msg_agent", "context-msg_location", "context-msg_system"])
     }
 
+    @Test func failedExecutionWithQuotaErrorSurfacesUsageLimit() async throws {
+        let transport = ContextTimelineTransport()
+        await transport.setHistory(#"""
+        {"data":[
+          {"id":"msg_user","type":"user","time":{"created":1},"text":"hi"},
+          {"id":"msg_fail_idle","type":"idle","time":{"created":2},"outcome":"failed","error":{"type":"provider.quota","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 08:49:26","status":429}}
+        ],"cursor":{"next":null}}
+        """#)
+        let chat = try await makeChat(transport)
+        #expect(await chat.loadMessages())
+        #expect(chat.contextEntries[0].summary.hasPrefix("Usage limit reached"))
+        #expect(chat.usageLimitInfo?.resetAt != nil)
+        #expect(chat.presentedError == .usageLimit(try #require(chat.usageLimitInfo)))
+    }
+
+    @Test func failedExecutionFallsBackToAssistantErrorWhenIdleOmitsIt() async throws {
+        let transport = ContextTimelineTransport()
+        await transport.setHistory(#"""
+        {"data":[
+          {"id":"msg_user","type":"user","time":{"created":1},"text":"hi"},
+          {"id":"msg_asst","type":"assistant","time":{"created":2},"content":[],"finish":"error","error":{"type":"provider.quota","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 08:49:26","status":429}},
+          {"id":"msg_fail_idle","type":"idle","time":{"created":3},"outcome":"failed"}
+        ],"cursor":{"next":null}}
+        """#)
+        let chat = try await makeChat(transport)
+        #expect(await chat.loadMessages())
+        #expect(chat.usageLimitInfo?.resetAt != nil)
+        #expect(!chat.isLoading)
+    }
+
     @Test(arguments: [#"{"type":"unknown","message":"Provider offline"}"#, #"{"name":"UnknownError","data":{"message":"Provider offline"}}"#])
     func resultStatesAndContextOnlyHistoryStayInspectable(_ error: String) async throws {
         let transport = ContextTimelineTransport()

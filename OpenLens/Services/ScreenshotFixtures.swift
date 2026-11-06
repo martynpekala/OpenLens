@@ -438,6 +438,70 @@ enum ScreenshotFixtures {
             .map { String($0.dropFirst(settingsSectionArgumentPrefix.count)).lowercased() }
     }
 
+    static let usageQuotaStateArgumentPrefix = "SCREENSHOT_USAGE_QUOTA_STATE="
+    static let usageQuotaStateEnvironmentKey = "OPENLENS_SCREENSHOT_USAGE_QUOTA_STATE"
+
+    static var usageQuotaScenario: String? {
+        let processInfo = ProcessInfo.processInfo
+
+        if let rawValue = processInfo.environment[usageQuotaStateEnvironmentKey] {
+            return rawValue.lowercased()
+        }
+
+        return processInfo.arguments
+            .first { $0.hasPrefix(usageQuotaStateArgumentPrefix) }
+            .map { String($0.dropFirst(usageQuotaStateArgumentPrefix.count)).lowercased() }
+    }
+
+    @MainActor static func applyUsageQuota(to service: UsageQuotaService) {
+        guard let scenario = usageQuotaScenario else { return }
+        switch scenario {
+        case "rejected":
+            service.applyFixtureState(.keyRejected("HTTP 403 Forbidden"))
+        case "nolimits":
+            service.applyFixtureState(.noLimitsReported)
+        case "failed":
+            service.applyFixtureState(.failed("The request timed out."))
+        default:
+            service.applyFixtureState(.loaded(quotaSnapshot))
+        }
+    }
+
+    static var quotaSnapshot: UsageQuotaService.QuotaSnapshot {
+        UsageQuotaService.QuotaSnapshot(
+            planName: "GLM Coding Plan",
+            windows: [
+                UsageQuotaService.QuotaWindow(
+                    id: "TOKENS_LIMIT-0",
+                    title: AppText.quotaWindow5Hour,
+                    percentage: 82,
+                    resetAt: Date(timeIntervalSinceNow: 47 * 60)
+                ),
+                UsageQuotaService.QuotaWindow(
+                    id: "TOKENS_LIMIT-1",
+                    title: AppText.quotaWindowWeekly,
+                    percentage: 41,
+                    resetAt: Date(timeIntervalSinceNow: 62 * 3600)
+                )
+            ],
+            fetchedAt: Date()
+        )
+    }
+
+    static var showsUsageLimitRetry: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled
+            && (processInfo.arguments.contains("SCREENSHOT_USAGE_LIMIT_RETRY")
+                || processInfo.environment["OPENLENS_SCREENSHOT_USAGE_LIMIT_RETRY"] == "1")
+    }
+
+    static var showsUsageLimitBanner: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return isEnabled
+            && (processInfo.arguments.contains("SCREENSHOT_USAGE_LIMIT_BANNER")
+                || processInfo.environment["OPENLENS_SCREENSHOT_USAGE_LIMIT_BANNER"] == "1")
+    }
+
     static let projectID = "proj_openlens_ios"
     static let projectName = showsSessionMove && !failsSessionRebind ? "OpenLens-feature" : "OpenLens"
     static let projectPath = "/workspace/" + projectName

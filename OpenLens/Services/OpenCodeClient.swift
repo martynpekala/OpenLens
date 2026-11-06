@@ -291,6 +291,19 @@ actor OpenCodeClient {
         return try await get("/session/status")
     }
 
+    /// Stored integration credentials, including secret values (v2 only).
+    /// Secrets must never be logged or persisted outside the Keychain.
+    func getCredentialEntries() async throws -> [OCCredentialEntry] {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Stored credentials require a V2 server.")
+        }
+        let response: OCV2Envelope<[OCCredentialEntry]> = try await getV2(
+            "/api/credential",
+            includesLocation: false
+        )
+        return response.data
+    }
+
     func abortSession(id: String) async throws -> Bool {
         if usesV2 {
             let response: OCV2InterruptResponse = try await sendV2Request(

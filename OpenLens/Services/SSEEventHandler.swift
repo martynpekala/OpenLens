@@ -96,6 +96,11 @@ protocol SSEEventHandlerDelegate: AnyObject {
 
     /// Clears a form that the server has answered or cancelled elsewhere.
     func formDidResolve(id: String)
+
+    /// An assistant turn ended with `finish == "error"` and a provider error
+    /// payload (for example a usage-limit rejection). Owners surface the
+    /// failure reason instead of ending the turn silently.
+    func assistantTurnDidFail(sessionID: String, messageID: String, error: OCAPIError)
 }
 
 extension SSEEventHandlerDelegate {
@@ -123,6 +128,7 @@ extension SSEEventHandlerDelegate {
     func waitForStreamingRenderCapacity() async -> Bool { !Task.isCancelled }
     func presentForm(_ form: OCFormRequest) -> Bool { false }
     func formDidResolve(id: String) {}
+    func assistantTurnDidFail(sessionID: String, messageID: String, error: OCAPIError) {}
 }
 
 // MARK: - SSEEventHandler
@@ -353,7 +359,9 @@ final class SSEEventHandler {
                             modelID: serverModelID ?? existing.modelID,
                             providerID: serverProviderID ?? existing.providerID,
                             finish: finish,
-                            parentUserMessageID: update.parentID ?? existing.parentUserMessageID
+                            parentUserMessageID: update.parentID ?? existing.parentUserMessageID,
+                            errorMessage: finish == "error" ? (update.errorMessage ?? existing.errorMessage) : existing.errorMessage,
+                            errorStatus: finish == "error" ? (update.errorStatus ?? existing.errorStatus) : existing.errorStatus
                         )
                         delegate.pendingAssistantMessage = replacement
                     }
@@ -364,6 +372,10 @@ final class SSEEventHandler {
                 if let mid = serverModelID { existing.modelID = mid }
                 if let pid = serverProviderID { existing.providerID = pid }
                 existing.finish = finish
+                if finish == "error" {
+                    existing.errorMessage = update.errorMessage
+                    existing.errorStatus = update.errorStatus
+                }
                 existing.setParentUserMessageID(update.parentID)
             } else if !delegate.messages.contains(where: { $0.id == messageID }) {
                 // New assistant message — create as pending (hidden from chat).
@@ -377,11 +389,24 @@ final class SSEEventHandler {
                     modelID: serverModelID,
                     providerID: serverProviderID,
                     finish: finish,
-                    parentUserMessageID: update.parentID
+                    parentUserMessageID: update.parentID,
+                    errorMessage: finish == "error" ? update.errorMessage : nil,
+                    errorStatus: finish == "error" ? update.errorStatus : nil
                 )
                 if !delegate.isLoading {
                     delegate.beginExternalResponse()
                 }
+            }
+            if finish == "error", let errorMessage = update.errorMessage {
+                delegate.assistantTurnDidFail(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    error: OCAPIError(
+                        name: nil,
+                        data: OCAPIErrorData(message: errorMessage),
+                        status: update.errorStatus
+                    )
+                )
             }
             if update.completesStep {
                 delegate.finishAssistantStep(messageID: messageID)

@@ -36,6 +36,8 @@ struct SettingsView: View {
             }
             .tint(Color.appUserAccent)
 
+            UsageQuotaSectionView()
+
             Section(AppText.appearance) {
                 ColorPicker(
                     AppText.settingsAccentColor,
