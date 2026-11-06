@@ -182,6 +182,20 @@ actor OpenCodeClient {
         )
     }
 
+    /// List archived sessions across every directory known to the connected
+    /// server. Legacy v1 servers have no archive contract, so they report none.
+    func listArchivedSessions() async throws -> [OCSession] {
+        guard usesV2 else { return [] }
+
+        return try await getAllV2Pages(
+            endpoint: "/api/session",
+            order: "desc",
+            includesLocation: false,
+            allowsEmptyContinuationPages: true,
+            queryItems: [URLQueryItem(name: "archived", value: "true")]
+        )
+    }
+
     func getSession(id: String) async throws -> OCSession {
         if usesV2 {
             let response: OCV2Envelope<OCSession> = try await getV2(
@@ -260,6 +274,22 @@ actor OpenCodeClient {
             return try await getSession(id: id)
         }
         return try await patch("/session/\(id)", body: ["title": title])
+    }
+
+    /// Archive (`archived: true`) or restore (`archived: false`) a session.
+    /// Servers acknowledge with 204; some older v2 servers silently ignore the
+    /// field, so callers must confirm the canonical state via `getSession`.
+    func setSessionArchived(id: String, archived: Bool) async throws {
+        guard usesV2 else {
+            throw OpenCodeError.invalidPayload("Archiving a session requires a v2 OpenCode server.")
+        }
+        try await sendV2RequestDiscardingResponse(
+            method: "PATCH",
+            path: "/api/session",
+            pathParameter: id,
+            body: ["archived": archived],
+            includesLocation: false
+        )
     }
 
     /// Advance only the idle watermark the viewer actually observed.

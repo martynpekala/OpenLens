@@ -56,11 +56,16 @@ struct SessionsListView: View {
     @State private var sessionToDelete: OCSession?
     @State private var showDeleteConfirmation = false
     @State private var expandedProjectIDs = Set<String>()
+    @State private var showArchivedSessions = false
+
+    /// Chooses which swipe action a full swipe triggers on a conversation row.
+    @AppStorage(AppPreferenceKeys.fullSwipeAction) private var fullSwipeAction = SessionFullSwipeAction.archive
 
     let presentationStyle: PresentationStyle
     let selectedSessionID: String?
     var onSelect: (OCSession) -> Void
     var onDelete: (OCSession) -> Void
+    var onArchive: (OCSession) -> Void
     /// Resolves the model a new session starts with; nil uses the server default.
     var newSessionModel: @MainActor () async -> OCV2ModelRef?
 
@@ -74,12 +79,14 @@ struct SessionsListView: View {
         selectedSessionID: String? = nil,
         onSelect: @escaping (OCSession) -> Void,
         onDelete: @escaping (OCSession) -> Void = { _ in },
+        onArchive: @escaping (OCSession) -> Void = { _ in },
         newSessionModel: @escaping @MainActor () async -> OCV2ModelRef? = { nil }
     ) {
         self.presentationStyle = presentationStyle
         self.selectedSessionID = selectedSessionID
         self.onSelect = onSelect
         self.onDelete = onDelete
+        self.onArchive = onArchive
         self.newSessionModel = newSessionModel
 
         switch initialState {
@@ -108,6 +115,12 @@ struct SessionsListView: View {
 
     private var isSidebar: Bool {
         presentationStyle == .sidebar
+    }
+
+    /// Archiving needs the v2 session archive contract; v1 servers never
+    /// support it, so their rows only offer deletion.
+    private var supportsArchiving: Bool {
+        connection.serverCapabilities?.protocolVersion == .v2 || ScreenshotFixtures.isEnabled
     }
 
     private var groupedSessions: [SessionProjectGroup] {
@@ -151,6 +164,13 @@ struct SessionsListView: View {
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.appBackground)
         }
+        .sheet(isPresented: $showArchivedSessions) {
+            NavigationStack {
+                ArchivedSessionsView(dismissable: true)
+            }
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.appBackground)
+        }
         .confirmationDialog(
             AppText.deleteSession,
             isPresented: $showDeleteConfirmation,
@@ -169,6 +189,11 @@ struct SessionsListView: View {
         }
         .onChange(of: sessionsService.confirmedViewedMarkers, initial: true) { _, _ in
             sessions = sessionsService.applyingConfirmedViewedMarkers(to: sessions)
+        }
+        .onChange(of: sessionsService.archiveMutationCount) {
+            // Archive mutations can happen in the archived list while this view
+            // is beneath it; reconcile the catalog when one is confirmed.
+            Task { await loadSessions() }
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
@@ -192,7 +217,10 @@ struct SessionsListView: View {
     private var presentationContent: some View {
         if isSidebar {
             VStack(spacing: 0) {
-                SessionsSidebarHeader(onCreate: presentNewSessionSheet)
+                SessionsSidebarHeader(
+                    onCreate: presentNewSessionSheet,
+                    onShowArchived: supportsArchiving ? { showArchivedSessions = true } : nil
+                )
                 sessionStateContent
             }
         } else {
@@ -211,6 +239,15 @@ struct SessionsListView: View {
                             ConnectedHostCapsule(host: host, isReconnecting: connection.isReconnecting)
                         }
                         .sharedBackgroundVisibility(.hidden)
+                    }
+
+                    if supportsArchiving {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            NavigationLink(value: RouterDestination.archivedSessions) {
+                                Image(systemName: "archivebox")
+                            }
+                            .accessibilityLabel(AppText.archivedSessions)
+                        }
                     }
                 }
         }
@@ -249,90 +286,156 @@ struct SessionsListView: View {
 
     // MARK: - Session List
 
+    /// Rows are hosted in a `List` so swipe actions behave natively. Insets and
+    /// backgrounds are cleared to keep the custom layout: project groups render
+    /// as a header row followed by its session rows.
     private var sessionList: some View {
-        ScrollView {
-            LazyVStack(spacing: isSidebar ? 12 : 18) {
-                ForEach(groupedSessions) { group in
-                    projectSection(group)
-                }
+        List {
+            ForEach(groupedSessions) { group in
+                projectSection(group)
             }
-            .padding(.horizontal, isSidebar ? 12 : 24)
-            .padding(.top, isSidebar ? 10 : 16)
-            .padding(.bottom, 16)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.top, isSidebar ? 10 : 16, for: .scrollContent)
+        .contentMargins(.bottom, 16, for: .scrollContent)
         .refreshable {
             await loadSessions()
         }
     }
 
+    @ViewBuilder
     private func projectSection(_ group: SessionProjectGroup) -> some View {
         let isExpanded = expandedProjectIDs.contains(group.id)
         let displayedSessions = isExpanded ? group.sessions : group.visibleSessions
 
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading) {
-                    HStack(alignment: .center) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
+        projectHeader(group)
 
-                        Text(group.title)
-                            .font(.system(size: isSidebar ? 15 : 18, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appPrimary)
-                            .lineLimit(1)
-
-                        Text("\u{00B7}")
-                            .font(.system(size: 12, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-
-                        Text(AppText.groupedProjectCount(group.sessions.count))
-                            .font(.system(size: 12, design: .rounded))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                }
-
-                Spacer()
-
-                if group.hiddenSessionCount > 0 {
-                    Button {
-                        toggleProjectExpansion(group.id)
-                    } label: {
-                        Text(isExpanded ? AppText.showFewerSessions : AppText.showMoreSessions(group.hiddenSessionCount))
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.appAccent)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            VStack(spacing: 0) {
-                ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
-                    Button {
-                        openedSessionIDs.insert(session.id)
-                        onSelect(session)
-                    } label: {
-                        sessionRow(session)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(role: .destructive) {
-                            sessionToDelete = session
-                            showDeleteConfirmation = true
-                        } label: {
-                            Label(AppText.delete, systemImage: "trash")
+        ForEach(Array(displayedSessions.enumerated()), id: \.element.id) { index, session in
+            sessionRowButton(session)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(
+                    top: 0,
+                    leading: (isSidebar ? 12.0 : 24.0) + 22,
+                    bottom: 0,
+                    trailing: isSidebar ? 12.0 : 24.0
+                ))
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    // The first action is what a full swipe triggers; the
+                    // Settings preference decides whether that archives or
+                    // starts the delete confirmation.
+                    if supportsArchiving, fullSwipeAction == .delete {
+                        deleteSwipeButton(session)
+                        archiveSwipeButton(session)
+                    } else {
+                        if supportsArchiving {
+                            archiveSwipeButton(session)
                         }
+                        deleteSwipeButton(session)
                     }
-                    .transition(.asymmetric(
-                        insertion: .opacity
-                            .combined(with: .move(edge: .top))
-                            .combined(with: .scale(scale: 0.98, anchor: .top)),
-                        removal: .opacity
-                            .combined(with: .scale(scale: 0.98, anchor: .top))
-                    ))
+                }
+                .transition(.asymmetric(
+                    insertion: .opacity
+                        .combined(with: .move(edge: .top))
+                        .combined(with: .scale(scale: 0.98, anchor: .top)),
+                    removal: .opacity
+                        .combined(with: .scale(scale: 0.98, anchor: .top))
+                ))
+        }
+    }
+
+    private func projectHeader(_ group: SessionProjectGroup) -> some View {
+        let isExpanded = expandedProjectIDs.contains(group.id)
+
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading) {
+                HStack(alignment: .center) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+
+                    Text(group.title)
+                        .font(.system(size: isSidebar ? 15 : 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appPrimary)
+                        .lineLimit(1)
+
+                    Text("\u{00B7}")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
+
+                    Text(AppText.groupedProjectCount(group.sessions.count))
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundStyle(Color.appSecondary)
                 }
             }
-            .padding(.leading, 22)
+
+            Spacer()
+
+            if group.hiddenSessionCount > 0 {
+                Button {
+                    toggleProjectExpansion(group.id)
+                } label: {
+                    Text(isExpanded ? AppText.showFewerSessions : AppText.showMoreSessions(group.hiddenSessionCount))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.appAccent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.bottom, 8)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(
+            top: isSidebar ? 12.0 : 18.0,
+            leading: isSidebar ? 12.0 : 24.0,
+            bottom: 0,
+            trailing: isSidebar ? 12.0 : 24.0
+        ))
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private func sessionRowButton(_ session: OCSession) -> some View {
+        Button {
+            openedSessionIDs.insert(session.id)
+            onSelect(session)
+        } label: {
+            sessionRow(session)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if supportsArchiving {
+                Button {
+                    archiveSession(session)
+                } label: {
+                    Label(AppText.archive, systemImage: "archivebox")
+                }
+            }
+
+            Button(role: .destructive) {
+                sessionToDelete = session
+                showDeleteConfirmation = true
+            } label: {
+                Label(AppText.delete, systemImage: "trash")
+            }
+        }
+    }
+
+    private func archiveSwipeButton(_ session: OCSession) -> some View {
+        Button {
+            archiveSession(session)
+        } label: {
+            Label(AppText.archive, systemImage: "archivebox")
+        }
+        .tint(Color.appAccent)
+    }
+
+    private func deleteSwipeButton(_ session: OCSession) -> some View {
+        Button(role: .destructive) {
+            sessionToDelete = session
+            showDeleteConfirmation = true
+        } label: {
+            Label(AppText.delete, systemImage: "trash")
         }
     }
 
@@ -519,6 +622,21 @@ struct SessionsListView: View {
         }
     }
 
+    private func archiveSession(_ session: OCSession) {
+        Task {
+            do {
+                try await sessionsService.archiveSession(session)
+                outcomeRefreshGeneration &+= 1
+                if case .loading = viewState { viewState = .loaded }
+                sessions.removeAll { $0.id == session.id }
+                pruneExpandedProjects(using: sessions)
+                onArchive(session)
+            } catch {
+                viewState = .error(error.localizedDescription)
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private static let relativeDateFormatter: RelativeDateTimeFormatter = {
@@ -589,6 +707,7 @@ struct SessionsListView: View {
 
 private struct SessionsSidebarHeader: View {
     let onCreate: () -> Void
+    var onShowArchived: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -597,6 +716,18 @@ private struct SessionsSidebarHeader: View {
                 .foregroundStyle(Color.appSecondary)
 
             Spacer()
+
+            if let onShowArchived {
+                Button(action: onShowArchived) {
+                    Image(systemName: "archivebox")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.appPrimary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppText.archivedSessions)
+            }
 
             Button(action: onCreate) {
                 Image(systemName: "plus")

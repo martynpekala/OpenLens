@@ -21,6 +21,11 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
     let model: OCV2ModelRef?
     /// Last completed V2 execution; unknown future values remain decodable.
     let outcome: String?
+    /// Server-confirmed archive timestamp. Older v2 servers never set it.
+    var isArchived: Bool {
+        guard let archived = time.archived, archived.isFinite else { return false }
+        return archived > 0
+    }
 
     /// Convenience: Unix timestamp (seconds) when last updated. Used for sorting.
     var updatedAt: Double { time.updated / 1000.0 }
@@ -70,7 +75,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
             id: id, projectID: projectID, directory: directory, parentID: parentID,
             title: title, version: version,
             time: .init(created: time.created, updated: time.updated, compacting: time.compacting,
-                        idle: time.idle, viewed: max(time.viewed ?? 0, viewed)),
+                        idle: time.idle, viewed: max(time.viewed ?? 0, viewed), archived: time.archived),
             share: share, revert: revert, agent: agent, model: model, outcome: outcome
         )
     }
@@ -156,6 +161,7 @@ nonisolated struct OCSession: Codable, Identifiable, Hashable, Sendable {
             && lhs.outcome == rhs.outcome
             && lhs.time.idle == rhs.time.idle
             && lhs.time.viewed == rhs.time.viewed
+            && lhs.time.archived == rhs.time.archived
     }
 
     /// Returns a copy with v2 canonical selection fields replaced.
@@ -222,13 +228,16 @@ nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
     let compacting: Double?
     let idle: Double?
     let viewed: Double?
+    /// v2 archive timestamp in epoch milliseconds; nil while the session is active.
+    let archived: Double?
 
-    init(created: Double, updated: Double, compacting: Double? = nil, idle: Double? = nil, viewed: Double? = nil) {
+    init(created: Double, updated: Double, compacting: Double? = nil, idle: Double? = nil, viewed: Double? = nil, archived: Double? = nil) {
         self.created = created
         self.updated = updated
         self.compacting = compacting
         self.idle = idle
         self.viewed = viewed
+        self.archived = archived
     }
 
     init(from decoder: Decoder) throws {
@@ -238,10 +247,11 @@ nonisolated struct OCSessionTime: Codable, Hashable, Sendable {
         compacting = try container.decodeIfPresent(Double.self, forKey: .compacting)
         idle = try? container.decodeIfPresent(Double.self, forKey: .idle)
         viewed = try? container.decodeIfPresent(Double.self, forKey: .viewed)
+        archived = try? container.decodeIfPresent(Double.self, forKey: .archived)
     }
 
     enum CodingKeys: String, CodingKey {
-        case created, updated, compacting, idle, viewed
+        case created, updated, compacting, idle, viewed, archived
     }
 }
 
