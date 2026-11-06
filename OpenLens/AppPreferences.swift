@@ -3,10 +3,20 @@ import Foundation
 enum AppPreferenceKeys {
     static let accentColor = "accentColor"
     static let autoReconnect = "autoReconnect"
+    static let fullSwipeAction = "fullSwipeAction"
     static let hapticsEnabled = "hapticsEnabled"
     static let liveActivitiesEnabled = "liveActivitiesEnabled"
     static let quickModelAssignments = "quickModelAssignments"
     static let showThinking = "showThinking"
+    static let usageQuotaRegion = "usageQuotaRegion"
+}
+
+/// The action a full swipe triggers on a conversation row.
+enum SessionFullSwipeAction: String, CaseIterable, Identifiable {
+    case archive
+    case delete
+
+    var id: String { rawValue }
 }
 
 enum AppPreferences {
