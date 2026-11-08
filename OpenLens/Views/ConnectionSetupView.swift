@@ -910,6 +910,7 @@ struct ConnectionSetupDetail: View {
     let systemImage: String
     let title: String
     let text: String
+    var badge: String?
 
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
@@ -924,6 +925,15 @@ struct ConnectionSetupDetail: View {
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.appPrimary)
                     .accessibilityAddTraits(.isHeader)
+
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.appSecondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .overlay(Capsule().stroke(Color.appSeparator, lineWidth: 1))
+                }
 
                 Text(text)
                     .font(.system(size: 14))

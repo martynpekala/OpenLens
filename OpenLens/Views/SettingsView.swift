@@ -8,8 +8,10 @@ struct SettingsView: View {
     @Environment(\.liveActivity) private var liveActivity
     @Environment(\.requestReviewPrompt) private var requestReviewPrompt
     @Environment(\.gitHubStarsService) private var gitHubStars
+    @Environment(\.whatsNewService) private var whatsNew
 
     @State private var showDisconnectConfirmation = false
+    @State private var whatsNewPresentation: WhatsNewPresentation?
 
     @AppStorage(AppPreferenceKeys.showThinking) private var showThinking = true
     @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnect = true
@@ -61,6 +63,14 @@ struct SettingsView: View {
                     requestReviewPrompt()
                 } label: {
                     Label(AppText.settingsSupportReviewCTA, systemImage: "star.bubble.fill")
+                }
+                if let release = whatsNew.latestReleaseHighlights {
+                    Button {
+                        whatsNewPresentation = WhatsNewPresentation(releases: [release])
+                    } label: {
+                        Label(AppText.whatsNewSettingsRow, systemImage: "sparkles")
+                    }
+                    .accessibilityIdentifier("settings.whatsNew")
                 }
             } header: {
                 Text(AppText.settingsAboutSupport)
@@ -129,6 +139,12 @@ struct SettingsView: View {
         }
         .task {
             await gitHubStars.refresh()
+        }
+        .sheet(item: $whatsNewPresentation) { presentation in
+            WhatsNewView(releases: presentation.releases)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Color.appBackground)
         }
     }
 
