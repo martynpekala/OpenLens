@@ -184,6 +184,7 @@ struct OpenLensApp: App {
     private let workspaceService: WorkspaceService
     private let sessionInsightsService: SessionInsightsService
     private let gitHubStarsService: GitHubStarsService
+    private let whatsNewService: WhatsNewService
     private let savedConnectionsStore: SavedConnectionsStore
     private let recordedReplayStore: RecordedReplayStore
     private let chatEasterEgg: ChatEasterEggController
@@ -208,6 +209,7 @@ struct OpenLensApp: App {
     /// Set by `openlens://setup` while connected or reconnecting; presented once the connected root is on screen.
     @State private var isOpenCodeV2SupportRequested = false
     @State private var isOpenCodeV2SupportPresented = false
+    @State private var whatsNewPresentation: WhatsNewPresentation?
     @AppStorage(AppPreferenceKeys.autoReconnect) private var autoReconnectEnabled: Bool = true
     @State private var initialSessionsReadiness: InitialSessionsReadiness
     /// Keeps the connect screen up while it shows a fresh connection's connected moment.
@@ -333,6 +335,7 @@ struct OpenLensApp: App {
         let workspace = WorkspaceService(connection: connection)
         let sessionInsights = SessionInsightsService()
         let gitHubStars = GitHubStarsService()
+        let whatsNew = WhatsNewService()
         let recordedReplayStore = RecordedReplayStore()
         let chatEasterEgg = ChatEasterEggController()
         let pendingAppActions = PendingAppActions()
@@ -350,6 +353,7 @@ struct OpenLensApp: App {
         self.workspaceService = workspace
         self.sessionInsightsService = sessionInsights
         self.gitHubStarsService = gitHubStars
+        self.whatsNewService = whatsNew
         self.recordedReplayStore = recordedReplayStore
         self.chatEasterEgg = chatEasterEgg
         self.pendingAppActions = pendingAppActions
@@ -465,6 +469,16 @@ struct OpenLensApp: App {
                                 .presentationDragIndicator(.visible)
                                 .presentationBackground(Color.appBackground)
                         }
+                        .onChange(of: shouldPresentWhatsNew, initial: true) { _, shouldPresent in
+                            guard shouldPresent else { return }
+                            whatsNewPresentation = WhatsNewPresentation(releases: whatsNewService.takePendingReleases())
+                        }
+                        .sheet(item: $whatsNewPresentation) { presentation in
+                            WhatsNewView(releases: presentation.releases)
+                                .presentationDetents([.large])
+                                .presentationDragIndicator(.visible)
+                                .presentationBackground(Color.appBackground)
+                        }
                         .transition(.opacity)
 
                 case .connect:
@@ -498,6 +512,7 @@ struct OpenLensApp: App {
             .environment(\.workspaceService, workspaceService)
             .environment(\.sessionInsightsService, sessionInsightsService)
             .environment(\.gitHubStarsService, gitHubStarsService)
+            .environment(\.whatsNewService, whatsNewService)
             .environment(\.recordedReplayStore, recordedReplayStore)
             .environment(\.chatEasterEgg, chatEasterEgg)
             .environment(\.requestReviewPrompt, {
@@ -562,6 +577,9 @@ struct OpenLensApp: App {
                 }
 
                 if newState == .connected {
+                    if !screenshotModeEnabled, !isPreviewMode {
+                        whatsNewService.connectionEstablished(isFirstConnection: !onboardingCompleted)
+                    }
                     onboardingCompleted = true
                 }
 
@@ -632,6 +650,15 @@ struct OpenLensApp: App {
         case .disconnected, .connecting, .error:
             initialSessionsReadiness.reset()
         }
+    }
+
+    /// Work-blocking presentations go first; What's New waits until none is showing.
+    private var shouldPresentWhatsNew: Bool {
+        !whatsNewService.pendingReleases.isEmpty
+            && whatsNewPresentation == nil
+            && !chatClient.showPermissionAlert
+            && !showDeepLinkSwitch
+            && !isOpenCodeV2SupportPresented
     }
 
     private var isPreviewMode: Bool {

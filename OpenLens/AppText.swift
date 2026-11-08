@@ -235,6 +235,23 @@ enum AppText {
     static let openCodeV2SupportServerV2Detail = "You’re all set."
     static let openCodeV2SupportServerV1Title = "Connected to OpenCode v1"
     static let openCodeV2SupportServerV1Detail = "To switch to v2, update OpenCode and run opencode pair."
+    static let whatsNewTitle = "What’s New"
+    static let whatsNewSettingsRow = "What’s New"
+    static let whatsNewOpenCodeV2Badge = "OpenCode v2"
+    static let whatsNew22CatchUpTitle = "Catch up on a session"
+    static let whatsNew22CatchUpText = "Tap Catch up in a chat to get a summary and the next step, without adding anything to the conversation."
+    static let whatsNew22SubagentTitle = "Open subagent conversations"
+    static let whatsNew22SubagentText = "Delegated work cards now have Open conversation, so you can follow a subagent and come back with Back."
+    static let whatsNew22DenyReasonTitle = "Deny with a reason"
+    static let whatsNew22DenyReasonText = "When you deny a permission request, add a short note so the agent can adjust its next step."
+    static let whatsNew22FileSearchTitle = "Search files to attach"
+    static let whatsNew22FileSearchText = "Find a file by name or path in the repository picker instead of browsing folder by folder."
+    static let whatsNew22LiveActivityTitle = "A Live Activity for each session"
+    static let whatsNew22LiveActivityText = "Sessions running at the same time each get their own Live Activity, labeled with the session title."
+
+    static func whatsNewVersion(_ version: String) -> String {
+        "Version \(version)"
+    }
     static let optional = "Optional"
     static let openSettings = "Open Settings"
     static let pass = "Pass"
