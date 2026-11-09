@@ -2822,6 +2822,54 @@ struct ChatStreamBehaviorTests {
         ))
     }
 
+    /// Regression: a repin that never arrives must end. Rows that keep changing size under the
+    /// jump leave `isAtBottom` false after every scroll, and each scroll re-runs the geometry
+    /// action that asked for it. Unbounded, that held the main thread inside one scene update
+    /// for ten seconds on device and the watchdog killed the app (`0x8BADF00D`), with the
+    /// transcript re-rendering 190-672 times a second while its inputs never changed.
+    @MainActor
+    @Test func aRepinThatNeverArrivesStopsAfterABoundedNumberOfAttempts() {
+        var attempts = 0
+        // The cap on this loop is the test's own guard: an unbounded policy must fail, not hang.
+        for _ in 0..<1_000 {
+            let repins = ChatScrollPolicy.shouldRepinToBottom(
+                isLoading: false,
+                followLatest: true,
+                interaction: .idle,
+                isAtBottom: false,
+                hasPendingRestoration: false,
+                consecutiveRepins: attempts
+            )
+            guard repins else { break }
+            attempts += 1
+        }
+
+        #expect(attempts == ChatScrollPolicy.maximumConsecutiveRepins)
+    }
+
+    @MainActor
+    @Test func aSpentRepinBudgetStopsOnlyTheRepinAndNothingElseAboutFollowing() {
+        let spent = ChatScrollPolicy.maximumConsecutiveRepins
+        let justUnder = ChatScrollPolicy.maximumConsecutiveRepins - 1
+
+        #expect(ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: false,
+            followLatest: true,
+            interaction: .idle,
+            isAtBottom: false,
+            hasPendingRestoration: false,
+            consecutiveRepins: justUnder
+        ))
+        #expect(!ChatScrollPolicy.shouldRepinToBottom(
+            isLoading: false,
+            followLatest: true,
+            interaction: .idle,
+            isAtBottom: false,
+            hasPendingRestoration: false,
+            consecutiveRepins: spent
+        ))
+    }
+
     @MainActor
     @Test func finishedRowsGrowingBelowTheViewportRepinOnlyWhileFollowingLatest() {
         #expect(ChatScrollPolicy.shouldRepinToBottom(
@@ -2829,7 +2877,8 @@ struct ChatStreamBehaviorTests {
             followLatest: true,
             interaction: .idle,
             isAtBottom: false,
-            hasPendingRestoration: false
+            hasPendingRestoration: false,
+            consecutiveRepins: 0
         ))
         // Streaming growth keeps the paced auto-follow.
         #expect(!ChatScrollPolicy.shouldRepinToBottom(
@@ -2837,7 +2886,8 @@ struct ChatStreamBehaviorTests {
             followLatest: true,
             interaction: .idle,
             isAtBottom: false,
-            hasPendingRestoration: false
+            hasPendingRestoration: false,
+            consecutiveRepins: 0
         ))
         // Reading older messages, or still dragging, must never be yanked down.
         #expect(!ChatScrollPolicy.shouldRepinToBottom(
@@ -2845,28 +2895,32 @@ struct ChatStreamBehaviorTests {
             followLatest: false,
             interaction: .idle,
             isAtBottom: false,
-            hasPendingRestoration: false
+            hasPendingRestoration: false,
+            consecutiveRepins: 0
         ))
         #expect(!ChatScrollPolicy.shouldRepinToBottom(
             isLoading: false,
             followLatest: true,
             interaction: .userControlled,
             isAtBottom: false,
-            hasPendingRestoration: false
+            hasPendingRestoration: false,
+            consecutiveRepins: 0
         ))
         #expect(!ChatScrollPolicy.shouldRepinToBottom(
             isLoading: false,
             followLatest: true,
             interaction: .idle,
             isAtBottom: false,
-            hasPendingRestoration: true
+            hasPendingRestoration: true,
+            consecutiveRepins: 0
         ))
         #expect(!ChatScrollPolicy.shouldRepinToBottom(
             isLoading: false,
             followLatest: true,
             interaction: .idle,
             isAtBottom: true,
-            hasPendingRestoration: false
+            hasPendingRestoration: false,
+            consecutiveRepins: 0
         ))
     }
 

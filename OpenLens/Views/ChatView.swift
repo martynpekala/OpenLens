@@ -2755,6 +2755,9 @@ private struct ChatMessagesListView: View {
     @State private var scrollInteraction = ChatScrollInteraction.idle
     @State private var scrollState = ChatScrollState.initial
     @State private var pendingForcedScroll = false
+    /// Repins since the transcript last arrived at the bottom, was taken over by the person
+    /// scrolling, or received new content. See `ChatScrollPolicy.maximumConsecutiveRepins`.
+    @State private var consecutiveRepins = 0
     @State private var paginationRestoreAnchorID: String?
     @State private var timelineItems: [ChatTimelineItem] = []
 
@@ -2833,13 +2836,16 @@ private struct ChatMessagesListView: View {
                     )
                 } action: { _, state in
                     scrollState = state
+                    if state.isAtBottom { consecutiveRepins = 0 }
                     if ChatScrollPolicy.shouldRepinToBottom(
                         isLoading: chatClient.isLoading,
                         followLatest: followLatest,
                         interaction: scrollInteraction,
                         isAtBottom: state.isAtBottom,
-                        hasPendingRestoration: paginationRestoreAnchorID != nil
+                        hasPendingRestoration: paginationRestoreAnchorID != nil,
+                        consecutiveRepins: consecutiveRepins
                     ) {
+                        consecutiveRepins += 1
                         scrollToBottom(using: proxy, animated: false, now: Date())
                     }
                 }
@@ -2894,6 +2900,8 @@ private struct ChatMessagesListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear(perform: rebuildTimeline)
         .onChange(of: chatClient.timelineVersion) { _, _ in
+            // New content is a reason to follow it again; the budget only has to end a cycle.
+            consecutiveRepins = 0
             rebuildTimeline()
         }
         .onChange(of: showThinking) { _, _ in
@@ -3001,6 +3009,8 @@ private struct ChatMessagesListView: View {
 
         pendingForcedScroll = false
         paginationRestoreAnchorID = nil
+        // An explicit jump to the latest message starts a fresh budget.
+        consecutiveRepins = 0
         scrollToBottom(
             using: proxy,
             animated: false,
@@ -3025,6 +3035,7 @@ private struct ChatMessagesListView: View {
         if interaction.isUserControlled {
             // User intent wins immediately, before the drag has moved far
             // enough for geometry thresholds to change.
+            consecutiveRepins = 0
             return
         }
 
@@ -3468,18 +3479,30 @@ enum ChatScrollPolicy {
     /// example when their Markdown finishes parsing. While the person follows
     /// the latest message, keep it pinned instead of stranding them above the
     /// real end. Streaming growth is left to `shouldAutoFollow`'s pacing.
+    /// How many times in a row a geometry change may re-pin without arriving at the bottom.
+    ///
+    /// A repin scrolls, a scroll changes the geometry, and the geometry change runs the repin
+    /// again. If the content under the jump keeps changing size, `isAtBottom` never becomes true
+    /// and that cycle never ends; on device it held the main thread inside one scene update for
+    /// ten seconds until the watchdog killed the app (`0x8BADF00D`). Five is a judgment: enough
+    /// layout passes for rows to settle after a jump, few enough that a layout which never
+    /// settles stops within a handful of scroll commits.
+    static let maximumConsecutiveRepins = 5
+
     static func shouldRepinToBottom(
         isLoading: Bool,
         followLatest: Bool,
         interaction: ChatScrollInteraction,
         isAtBottom: Bool,
-        hasPendingRestoration: Bool
+        hasPendingRestoration: Bool,
+        consecutiveRepins: Int
     ) -> Bool {
         !isLoading
             && followLatest
             && interaction.allowsProgrammaticScroll
             && !isAtBottom
             && !hasPendingRestoration
+            && consecutiveRepins < maximumConsecutiveRepins
     }
 
     static func shouldLoadEarlierMessages(
