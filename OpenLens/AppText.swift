@@ -331,6 +331,8 @@ enum AppText {
     static let sessionsLoadErrorTitle = "Couldn't Load Sessions"
     static let selectSessionSubtitle = "Choose a session from the sidebar to open its conversation."
     static let selectSessionTitle = "Select a Session"
+    static let hideSidebar = "Hide Sidebar"
+    static let showSidebar = "Show Sidebar"
     static let settings = "Settings"
     static let settingsDebugFeatures = "Show Debug Features"
     static let settingsDebugFeaturesSubtitle = "Keep debug-only tools visible in development builds. Turn this off to match the release app."
