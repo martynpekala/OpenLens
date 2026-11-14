@@ -1389,7 +1389,7 @@ struct ChatView: View {
         defer { if commandLoadToken == token { isLoadingCommands = false } }
         let workspaceSlashActions = await workspaceService.loadSlashActions()
         guard !Task.isCancelled, context == catalogContextID, commandLoadToken == token else { return }
-        let slashActions = [Self.undoSlashAction] + workspaceSlashActions
+        let slashActions = ([Self.undoSlashAction] + workspaceSlashActions).removingDuplicateTokens()
         availableSlashActions = slashActions
         chatClient.updateSlashCatalog(
             commands: slashActions.filter { $0.kind == .command }.map(\.token),
