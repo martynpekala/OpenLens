@@ -68,6 +68,22 @@ struct ConnectedRootTabBarVisibilityTests {
         #expect(shouldUseConnectedRootSidebarLayout(horizontalSizeClass: .regular))
     }
 
+    @Test func sidebarDetailShowsSelectedChatAsRootWithoutBackButton() {
+        let insights = RouterDestination.sessionInsights(sessionID: session.id)
+
+        #expect(sidebarChatDetailPath(chatPath: [.chatSession(session: session)]).isEmpty)
+        #expect(sidebarChatDetailPath(chatPath: [.chatSession(session: session), insights]) == [insights])
+        #expect(sidebarChatDetailPath(chatPath: []).isEmpty)
+    }
+
+    @Test func sidebarDetailPopsKeepTheSelectedChatForFolding() {
+        let insights = RouterDestination.sessionInsights(sessionID: session.id)
+        let fullPath: [RouterDestination] = [.chatSession(session: session), insights]
+
+        #expect(chatPath(fromSidebarDetailPath: [], chatPath: fullPath) == [.chatSession(session: session)])
+        #expect(chatPath(fromSidebarDetailPath: [insights], chatPath: [.chatSession(session: session)]) == fullPath)
+    }
+
     @Test func compactWidthKeepsPhoneTabBar() {
         #expect(!shouldUseConnectedRootSidebarLayout(horizontalSizeClass: .compact))
         #expect(!shouldUseConnectedRootSidebarLayout(horizontalSizeClass: nil))

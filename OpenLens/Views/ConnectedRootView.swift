@@ -228,8 +228,19 @@ private struct ConnectedSidebarLayout: View {
     private var detail: some View {
         switch router.selectedTab {
         case .chat:
-            sidebarNavigationStack(for: .chat) {
-                ChatDetailPlaceholderView()
+            // The selected chat is the detail root, so it has no back button; deeper pushes stay on the stack.
+            NavigationStack(path: sidebarChatDetailPathBinding) {
+                Group {
+                    if case .chatSession(let session) = router.chatPath.first {
+                        SessionChatDestinationView(chatClient: chatClient, session: session)
+                            .id(session.id)
+                    } else {
+                        ChatDetailPlaceholderView()
+                    }
+                }
+                .navigationDestination(for: RouterDestination.self) { destination in
+                    ConnectedDestinationView(chatClient: chatClient, destination: destination)
+                }
             }
         case .micro:
             sidebarNavigationStack(for: .micro) {
@@ -269,6 +280,13 @@ private struct ConnectedSidebarLayout: View {
         )
     }
 
+    private var sidebarChatDetailPathBinding: Binding<[RouterDestination]> {
+        Binding(
+            get: { sidebarChatDetailPath(chatPath: router.chatPath) },
+            set: { router.chatPath = chatPath(fromSidebarDetailPath: $0, chatPath: router.chatPath) }
+        )
+    }
+
     private func selectChatSession(_ session: OCSession) {
         router.selectChatSession(session)
     }
@@ -277,6 +295,17 @@ private struct ConnectedSidebarLayout: View {
         router.clearChatSession(ifMatching: session.id)
         chatClient.unloadSession(ifMatching: session.id)
     }
+}
+
+/// In the sidebar layout the selected chat is the detail root, so the detail stack holds only what was pushed after it.
+func sidebarChatDetailPath(chatPath: [RouterDestination]) -> [RouterDestination] {
+    guard case .chatSession = chatPath.first else { return chatPath }
+    return Array(chatPath.dropFirst())
+}
+
+func chatPath(fromSidebarDetailPath detailPath: [RouterDestination], chatPath: [RouterDestination]) -> [RouterDestination] {
+    guard let root = chatPath.first, case .chatSession = root else { return detailPath }
+    return [root] + detailPath
 }
 
 private struct ConnectedSidebarNavigation: View {
