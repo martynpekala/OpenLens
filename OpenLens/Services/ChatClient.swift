@@ -3104,8 +3104,10 @@ final class ChatClient: SSEEventHandlerDelegate {
     }
 
     func updateSlashCatalog(commands: [String], agents: [String]) {
-        availableSlashCommandMap = Dictionary(uniqueKeysWithValues: commands.map { ($0.lowercased(), $0) })
-        availableSlashAgentMap = Dictionary(uniqueKeysWithValues: agents.map { ($0.lowercased(), $0) })
+        // Servers can repeat a name (case-only variants, or a server `undo`
+        // next to the built-in one); the first entry wins instead of trapping.
+        availableSlashCommandMap = Dictionary(commands.map { ($0.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        availableSlashAgentMap = Dictionary(agents.map { ($0.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     func updateSkillCatalog(_ skills: [String]) {

@@ -39,6 +39,15 @@ struct WorkspaceSlashActionItem: Identifiable, Hashable, Sendable {
     var id: String { "\(kind.rawValue):\(token)" }
 }
 
+extension Array where Element == WorkspaceSlashActionItem {
+    /// Keeps the first item per kind and case-insensitive token, so picker
+    /// rows keep unique IDs and earlier (built-in) actions win.
+    func removingDuplicateTokens() -> [WorkspaceSlashActionItem] {
+        var seen = Set<String>()
+        return filter { seen.insert("\($0.kind.rawValue):\($0.token.lowercased())").inserted }
+    }
+}
+
 struct WorkspaceFileItem: Identifiable, Hashable, Sendable {
     enum Kind: String, Sendable {
         case directory
