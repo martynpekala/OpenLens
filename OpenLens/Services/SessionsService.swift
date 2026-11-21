@@ -547,7 +547,7 @@ final class SessionsService {
             return nil
         }
 
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        return ServerPath.comparisonKey(trimmed)
     }
 
     private func pathsOverlap(_ lhs: String, _ rhs: String) -> Bool {

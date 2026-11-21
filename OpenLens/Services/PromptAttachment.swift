@@ -124,7 +124,7 @@ nonisolated struct ServerFileReference: Identifiable, Hashable, Sendable {
     init(id: String = UUID().uuidString, path: String, sessionDirectory: String, lines: LineRange? = nil) throws {
         guard let directory = Self.normalizedAbsolutePath(sessionDirectory),
               let path = Self.normalizedAbsolutePath(path),
-              path.hasPrefix(directory == "/" ? "/" : directory + "/"),
+              path.hasPrefix(Self.childPrefix(of: directory)),
               path != directory
         else {
             throw PromptAttachmentError.fileOutsideSession
@@ -134,12 +134,12 @@ nonisolated struct ServerFileReference: Identifiable, Hashable, Sendable {
         self.lines = lines
     }
 
-    var name: String { (path as NSString).lastPathComponent }
+    var name: String { ServerPath.lastComponent(path) }
 
     /// `path` relative to `sessionDirectory`, the folder it was checked against.
     func relativePath(in sessionDirectory: String) -> String? {
         guard let directory = Self.normalizedAbsolutePath(sessionDirectory) else { return nil }
-        let prefix = directory == "/" ? "/" : directory + "/"
+        let prefix = Self.childPrefix(of: directory)
         guard path.hasPrefix(prefix) else { return nil }
         return String(path.dropFirst(prefix.count))
     }
@@ -151,8 +151,9 @@ nonisolated struct ServerFileReference: Identifiable, Hashable, Sendable {
     var uri: String {
         var components = URLComponents()
         components.scheme = "file"
-        components.host = ""
-        components.path = path
+        let location = Self.fileURILocation(for: path)
+        components.host = location.host
+        components.path = location.path
         if let lines {
             components.queryItems = [URLQueryItem(name: "start", value: String(lines.start))]
                 + (lines.end.map { [URLQueryItem(name: "end", value: String($0))] } ?? [])
@@ -166,12 +167,18 @@ nonisolated struct ServerFileReference: Identifiable, Hashable, Sendable {
 
     /// The absolute path of `relativePath` inside `directory`.
     static func path(_ relativePath: String, in directory: String) -> String {
+        if ServerPath.components(of: directory)?.style == .windows {
+            return ServerPath.join(directory, relativePath)
+        }
         var base = directory
         while base.count > 1, base.hasSuffix("/") { base.removeLast() }
         return base == "/" ? "/" + relativePath : base + "/" + relativePath
     }
 
     private static func normalizedAbsolutePath(_ path: String) -> String? {
+        if ServerPath.components(of: path)?.style == .windows {
+            return normalizedWindowsPath(path)
+        }
         guard path.hasPrefix("/"), !path.contains("\0"), !path.contains("\\") else { return nil }
         var trimmed = path
         while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed.removeLast() }
@@ -180,6 +187,41 @@ nonisolated struct ServerFileReference: Identifiable, Hashable, Sendable {
             return nil
         }
         return trimmed
+    }
+
+    /// A Windows drive or UNC path in its native `\` spelling, so a file and
+    /// its folder match whichever separator either one used. Empty, `.` and
+    /// `..` segments are refused as for POSIX paths, and so is `:` after the
+    /// root, which would name an alternate data stream.
+    private static func normalizedWindowsPath(_ path: String) -> String? {
+        guard !path.contains("\0"),
+              let parts = ServerPath.components(of: path),
+              parts.style == .windows else {
+            return nil
+        }
+        var segments = parts.segments
+        while segments.last == "" { segments.removeLast() }
+        guard segments.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains(":") }) else {
+            return nil
+        }
+        return parts.root.replacingOccurrences(of: "/", with: "\\") + segments.joined(separator: "\\")
+    }
+
+    /// Paths inside `directory` start with this, whether or not it is a root.
+    private static func childPrefix(of directory: String) -> String {
+        let separator = directory.hasPrefix("/") ? "/" : "\\"
+        return directory.hasSuffix(separator) ? directory : directory + separator
+    }
+
+    /// POSIX paths go in the URI as they are. Windows paths use the
+    /// `file:///C:/folder/file` and `file://server/share/file` forms.
+    private static func fileURILocation(for path: String) -> (host: String, path: String) {
+        guard !path.hasPrefix("/") else { return ("", path) }
+        let slashed = path.replacingOccurrences(of: "\\", with: "/")
+        guard slashed.hasPrefix("//") else { return ("", "/" + slashed) }
+        let rest = slashed.dropFirst(2)
+        let host = rest.prefix { $0 != "/" }
+        return (String(host), String(rest.dropFirst(host.count)))
     }
 }
 

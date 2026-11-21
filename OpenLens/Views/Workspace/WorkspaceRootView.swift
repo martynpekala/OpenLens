@@ -630,7 +630,7 @@ struct WorkspaceRootView: View {
         guard let worktree = snapshot.pathInfo?.worktree?.nilIfBlank else { return nil }
         let dir = snapshot.pathInfo?.directory?.nilIfBlank
         guard worktree != dir else { return nil }
-        return (worktree as NSString).lastPathComponent
+        return ServerPath.lastComponent(worktree)
     }
 
     private var currentWorktreePath: String? {

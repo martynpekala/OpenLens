@@ -70,12 +70,13 @@ struct WorkspaceFolderBrowser: View {
                 .accessibilityIdentifier("folderBrowser.currentPath")
 
             Button {
-                navigate(to: URL(fileURLWithPath: directory).deletingLastPathComponent().path)
+                guard let parent = ServerPath.parent(of: directory) else { return }
+                navigate(to: parent)
             } label: {
                 Label(AppText.parentFolder, systemImage: "arrow.up")
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
             }
-            .disabled(directory == "/")
+            .disabled(ServerPath.parent(of: directory) == nil)
             .accessibilityLabel("Go to parent folder")
             .accessibilityIdentifier("folderBrowser.up")
         }
