@@ -343,14 +343,13 @@ final class ConnectionManager: ConnectionProviding {
     func rebindProjectContext(directory: String, isCurrent: () -> Bool = { true }) async throws {
         guard let client else { throw OpenCodeError.notConnected }
         let generation = projectContextGeneration
-        guard directory.hasPrefix("/"),
-              let normalized = WorkspaceSelectionBuilder.normalizedDirectory(directory) else {
+        guard let normalized = WorkspaceSelectionBuilder.normalizedDirectory(directory) else {
             throw OpenCodeError.invalidPayload("The session's new location is not an absolute directory.")
         }
         let location = try await client.resolveLocation(directory: normalized)
         try Task.checkCancellation()
         guard generation == projectContextGeneration, isCurrent() else { throw CancellationError() }
-        guard WorkspaceSelectionBuilder.normalizedDirectory(location.directory) == normalized else {
+        guard ServerPath.areEquivalent(location.directory, normalized) else {
             throw OpenCodeError.invalidPayload("The server resolved a different session location.")
         }
         await setProjectContext(directory: normalized)

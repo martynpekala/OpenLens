@@ -562,7 +562,7 @@ struct SessionsListView: View {
 
     private func projectTitle(for session: OCSession) -> String {
         if let directory = normalizedDirectory(for: session) {
-            let lastComponent = URL(fileURLWithPath: directory).lastPathComponent
+            let lastComponent = ServerPath.lastComponent(directory)
             if !lastComponent.isEmpty {
                 return lastComponent
             }

@@ -157,17 +157,19 @@ enum WorkspaceSelectionBuilder {
         ] + snapshot.projects.map { ($0.worktree, $0.id) }
     }
 
+    /// The server directory in normalized form, or nil when it is blank or not
+    /// an absolute POSIX, Windows drive, or UNC path.
     nonisolated static func normalizedDirectory(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
             return nil
         }
 
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        return ServerPath.normalized(trimmed)
     }
 
     nonisolated static func displayName(for directory: String) -> String {
-        let lastComponent = URL(fileURLWithPath: directory).lastPathComponent
+        let lastComponent = ServerPath.lastComponent(directory)
         let trimmed = lastComponent.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? directory : trimmed
     }

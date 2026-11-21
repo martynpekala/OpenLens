@@ -539,6 +539,26 @@ struct V2SessionLocationTests {
         #expect(body["text"] as? String == "Continue after the move")
     }
 
+    @Test(arguments: [#"C:\gitrepos\repo"#, "C:/gitrepos/repo"])
+    func externalMoveFollowsAWindowsServerDirectory(directory: String) async throws {
+        let server = LocationServer()
+        let (chat, connection, api) = try await makeChat(server)
+        await chat.loadSession(session())
+        #expect(connection.selectedProjectDirectory == "/workspace/Old")
+
+        // A Windows server reports native drive paths, such as after the
+        // agent's `session_move`. They are absolute and are sent back as is.
+        await server.move(to: directory)
+        chat.synchronizeCurrentSessionFromServer()
+        try await waitUntil { chat.isStreamSynchronized }
+
+        #expect(chat.sessionLocationState == .ready)
+        #expect(chat.currentSession?.directory == directory)
+        #expect(connection.selectedProjectDirectory == directory)
+        #expect(await api.currentContextDirectory() == directory)
+        #expect(connection.branch == "repo")
+    }
+
     private func session() -> OCSession {
         OCSession(id: "ses_move", directory: "/workspace/Old", title: "Moved chat", time: .init(created: 0, updated: 0))
     }
@@ -589,8 +609,9 @@ private actor LocationServer: OpenCodeTransport {
         let url = request.url!
         let selected = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
             .first { $0.name == "location[directory]" }?.value ?? "/workspace/Old"
-        let name = (selected as NSString).lastPathComponent
-        let location = #"{"directory":"\#(selected)","project":{"id":"\#(name)","directory":"\#(selected)"}}"#
+        let name = ServerPath.lastComponent(selected)
+        let selectedJSON = jsonEscaped(selected)
+        let location = #"{"directory":"\#(selectedJSON)","project":{"id":"\#(name)","directory":"\#(selectedJSON)"}}"#
         if url.path == "/api/session/ses_move", canonicalReadsFail {
             return (Data(), HTTPURLResponse(url: url, statusCode: 503, httpVersion: nil, headerFields: nil)!)
         }
@@ -605,7 +626,7 @@ private actor LocationServer: OpenCodeTransport {
         switch url.path {
         case "/api/info": body = #"{"version":"2.0.23"}"#
         case "/api/session/ses_move":
-            let canonicalLocation = directory == "/missing-location" ? "null" : #"{"directory":"\#(directory)"}"#
+            let canonicalLocation = directory == "/missing-location" ? "null" : #"{"directory":"\#(jsonEscaped(directory))"}"#
             body = #"{"data":{"id":"ses_move","title":"Moved chat","location":\#(canonicalLocation),"time":{"created":0,"updated":0}}}"#
         case "/api/location": body = location
         case "/api/vcs": body = #"{"location":\#(location),"data":{"branch":"\#(name)"}}"#
@@ -642,6 +663,11 @@ private actor LocationServer: OpenCodeTransport {
 
     nonisolated func makeEventStream(request: URLRequest, deliveryQueue: DispatchQueue, callbacks: OpenCodeEventStreamCallbacks) -> any OpenCodeEventStream {
         LocationUnusedStream()
+    }
+
+    /// Windows directories contain `\`, which JSON strings must escape.
+    private func jsonEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: #"\"#, with: #"\\"#)
     }
 }
 

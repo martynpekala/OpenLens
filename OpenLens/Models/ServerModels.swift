@@ -2131,7 +2131,7 @@ nonisolated struct OCProject: Decodable, Identifiable, Sendable {
     /// Convenience: extract a display name from the worktree path (last path component).
     var displayName: String? {
         guard let worktree, !worktree.isEmpty else { return nil }
-        return (worktree as NSString).lastPathComponent
+        return ServerPath.lastComponent(worktree)
     }
 
     init(id: String, worktree: String?, vcsDir: String? = nil, vcs: String? = nil, time: OCProjectTime? = nil) {

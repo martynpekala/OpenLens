@@ -576,7 +576,7 @@ final class SavedConnectionsStore {
             return nil
         }
 
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        return ServerPath.normalized(trimmed)
     }
 
     private static func updatedRecentProjectDirectories(existing: [String], selected: String?) -> [String] {

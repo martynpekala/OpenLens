@@ -244,8 +244,7 @@ final class WorkspaceService {
     }
 
     func loadFolders(in directory: String) async throws -> WorkspaceFolderSnapshot {
-        guard directory.hasPrefix("/"),
-              let directory = WorkspaceSelectionBuilder.normalizedDirectory(directory) else {
+        guard let directory = WorkspaceSelectionBuilder.normalizedDirectory(directory) else {
             throw OpenCodeError.invalidPayload("Choose an absolute folder path on the connected computer.")
         }
 
@@ -271,14 +270,14 @@ final class WorkspaceService {
         return entries.compactMap { entry in
             guard entry.type?.lowercased() == "directory" else { return nil }
             let rawPath: String
-            if let absolute = entry.absolute, absolute.hasPrefix("/") {
+            if let absolute = entry.absolute, ServerPath.isAbsolute(absolute) {
                 rawPath = absolute
             } else {
                 rawPath = entry.path
             }
-            let absolutePath = rawPath.hasPrefix("/")
+            let absolutePath = ServerPath.isAbsolute(rawPath)
                 ? rawPath
-                : URL(fileURLWithPath: directory).appendingPathComponent(rawPath).path
+                : ServerPath.join(directory, rawPath)
             guard let path = WorkspaceSelectionBuilder.normalizedDirectory(absolutePath),
                   path != directory,
                   !WorkspaceSelectionBuilder.displayName(for: path).hasPrefix("."),
